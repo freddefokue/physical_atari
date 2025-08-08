@@ -1,0 +1,50 @@
+{
+    "game_config": {
+        "name": "defender",
+        "lives": 3,
+        "minimal_actions": [
+            "NOOP",
+            "FIRE",
+            "UP",
+            "RIGHT",
+            "LEFT",
+            "DOWN",
+            "UPRIGHT",
+            "UPLEFT",
+            "DOWNRIGHT",
+            "DOWNLEFT",
+            "UPFIRE",
+            "RIGHTFIRE",
+            "LEFTFIRE",
+            "DOWNFIRE",
+            "UPRIGHTFIRE",
+            "UPLEFTFIRE",
+            "DOWNRIGHTFIRE",
+            "DOWNLEFTFIRE"
+        ]
+    },
+    "score_config": {
+        "checkpoint": "assets/models/defender_score_lives.pt",
+        "score_crop_info": {
+            "x": 55,
+            "y": 176,
+            "w": 48,
+            "h": 9,
+            "num_digits": 6
+        },
+        "lives_crop_info": {
+            "x": 0,
+            "y": 182,
+            "w": 48,
+            "h": 12,
+            "num_digits": 3
+        },
+        "valid_jumps": [
+            0,
+            50,
+            100,
+            150,
+            1000
+        ]
+    }
+}

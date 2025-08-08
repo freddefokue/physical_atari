@@ -1,0 +1,36 @@
+{
+    "game_config": {
+        "name": "atlantis",
+        "lives": 6,
+        "minimal_actions": [
+            "NOOP",
+            "FIRE",
+            "RIGHTFIRE",
+            "LEFTFIRE"
+        ]
+    },
+    "score_config": {
+        "checkpoint": "assets/models/atlantis_score.pt",
+        "score_crop_info": {
+            "x": 56,
+            "y": 187,
+            "w": 48,
+            "h": 12,
+            "num_digits": 6
+        },
+        "lives_crop_info": {},
+        "valid_jumps": [
+            0,
+            100,
+            200,
+            400,
+            500,
+            1000,
+            1500,
+            2000,
+            2500,
+            3000,
+            3500
+        ]
+    }
+}

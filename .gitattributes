@@ -1,0 +1,42 @@
+# https://help.github.com/en/github/using-git/configuring-git-to-handle-line-endings
+
+# Force Unix-style (LF) line endings for text files
+* text=auto
+
+*.py text eol=lf
+*.ipynb text eol=lf
+
+# C/C++ source and headers
+*.c     text eol=lf
+*.cpp   text eol=lf
+*.h     text eol=lf
+*.hpp   text eol=lf
+
+# Shell and Make
+*.sh     text eol=lf
+Makefile text eol=lf
+
+# Config/data files
+*.json text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.md   text eol=lf
+*.toml text eol=lf
+*.log  text eol=lf
+
+# Binary files
+*.pt binary
+*.model binary
+*.pkl binary
+*.png binary
+*.jpg binary
+*.gif binary
+*.pdf binary
+*.zip binary
+*.so  binary
+*.dll binary
+*.exe binary
+
+# Special diff drivers
+*.json diff=json
+*.ipynb diff=jupyternotebook

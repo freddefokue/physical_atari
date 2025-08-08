@@ -1,0 +1,62 @@
+{
+    "game_config": {
+        "name": "ms_pacman",
+        "lives": 3,
+        "minimal_actions": [
+            "NOOP",
+            "UP",
+            "RIGHT",
+            "LEFT",
+            "DOWN",
+            "UPRIGHT",
+            "UPLEFT",
+            "DOWNRIGHT",
+            "DOWNLEFT"
+        ]
+    },
+    "score_config": {
+        "checkpoint": "assets/models/ms_pacman_score_lives.pt",
+        "score_crop_info": {
+            "x": 55,
+            "y": 184,
+            "w": 48,
+            "h": 12,
+            "num_digits": 6
+        },
+        "lives_crop_info": {
+            "x": 11,
+            "y": 171,
+            "w": 25,
+            "h": 14,
+            "num_digits": 2
+        },
+        "valid_jumps": [
+            0,
+            10,
+            50,
+            60,
+            100,
+            110,
+            200,
+            210,
+            300,
+            310,
+            400,
+            410,
+            500,
+            510,
+            700,
+            710,
+            800,
+            810,
+            1000,
+            1010,
+            1600,
+            1610,
+            2000,
+            2010,
+            5000,
+            5010
+        ]
+    }
+}

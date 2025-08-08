@@ -1,0 +1,7 @@
+{
+    "model_name": "QinHeng Electronics USB Single Serial",
+	"vendor_id": "0x1a86",
+	"product_id": "0x55d3",
+    "port_name": "/dev/ttyACM0",
+    "baud_rate": 2000000
+}

@@ -1,0 +1,50 @@
+{
+    "game_config": {
+        "name": "battle_zone",
+        "lives": 5,
+        "minimal_actions": [
+            "NOOP",
+            "FIRE",
+            "UP",
+            "RIGHT",
+            "LEFT",
+            "DOWN",
+            "UPRIGHT",
+            "UPLEFT",
+            "DOWNRIGHT",
+            "DOWNLEFT",
+            "UPFIRE",
+            "RIGHTFIRE",
+            "LEFTFIRE",
+            "DOWNFIRE",
+            "UPRIGHTFIRE",
+            "UPLEFTFIRE",
+            "DOWNRIGHTFIRE",
+            "DOWNLEFTFIRE"
+        ]
+    },
+    "score_config": {
+        "checkpoint": "assets/models/battle_zone_score_lives.pt",
+        "score_crop_info": {
+            "x": 64,
+            "y": 179,
+            "w": 48,
+            "h": 10,
+            "num_digits": 6
+        },
+        "lives_crop_info": {
+            "x": 64,
+            "y": 188,
+            "w": 40,
+            "h": 10,
+            "num_digits": 5
+        },
+        "valid_jumps": [
+            0,
+            1000,
+            2000,
+            5000,
+            6000
+        ]
+    }
+}

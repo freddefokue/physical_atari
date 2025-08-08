@@ -1,0 +1,57 @@
+{
+    "game_config": {
+        "name": "centipede",
+        "lives": 3,
+        "minimal_actions": [
+            "NOOP",
+            "FIRE",
+            "UP",
+            "RIGHT",
+            "LEFT",
+            "DOWN",
+            "UPRIGHT",
+            "UPLEFT",
+            "DOWNRIGHT",
+            "DOWNLEFT",
+            "UPFIRE",
+            "RIGHTFIRE",
+            "LEFTFIRE",
+            "DOWNFIRE",
+            "UPRIGHTFIRE",
+            "UPLEFTFIRE",
+            "DOWNRIGHTFIRE",
+            "DOWNLEFTFIRE"
+        ]
+    },
+    "score_config": {
+        "checkpoint": "assets/models/centipede_score_lives.pt",
+        "score_crop_info": {
+            "x": 100,
+            "y": 185,
+            "w": 48,
+            "h": 12,
+            "num_digits": 6
+        },
+        "lives_crop_info": {
+            "x": 14,
+            "y": 185,
+            "w": 16,
+            "h": 12,
+            "num_digits": 2
+        },
+        "valid_jumps": [
+            0,
+            1,
+            5,
+            10,
+            20,
+            100,
+            110,
+            200,
+            300,
+            600,
+            900,
+            1000
+        ]
+    }
+}

@@ -1,0 +1,39 @@
+{
+    "game_config": {
+        "name": "qbert",
+        "lives": 4,
+        "minimal_actions": [
+            "NOOP",
+            "FIRE",
+            "UP",
+            "RIGHT",
+            "LEFT",
+            "DOWN"
+        ]
+    },
+    "score_config": {
+        "checkpoint": "assets/models/qbert_score_lives.pt",
+        "score_crop_info": {
+            "x": 26,
+            "y": 5,
+            "w": 56,
+            "h": 10,
+            "num_digits": 6
+        },
+        "lives_crop_info": {
+            "x": 32,
+            "y": 14,
+            "w": 27,
+            "h": 16,
+            "num_digits": 4
+        },
+        "valid_jumps": [
+            0,
+            25,
+            100,
+            300,
+            500,
+            3100
+        ]
+    }
+}

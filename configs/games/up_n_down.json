@@ -1,0 +1,42 @@
+{
+    "game_config": {
+        "name": "up_n_down",
+        "lives": 5,
+        "minimal_actions": [
+            "NOOP",
+            "FIRE",
+            "UP",
+            "DOWN",
+            "UPFIRE",
+            "DOWNFIRE"
+        ]
+    },
+    "score_config": {
+        "checkpoint": "assets/models/up_n_down_score_lives.pt",
+        "score_crop_info": {
+            "x": 16,
+            "y": 5,
+            "w": 48,
+            "h": 10,
+            "num_digits": 6
+        },
+        "lives_crop_info": {
+            "x": 14,
+            "y": 194,
+            "w": 32,
+            "h": 12,
+            "num_digits": 4
+        },
+        "valid_jumps": [
+            0,
+            10,
+            100,
+            110,
+            400,
+            410,
+            600,
+            610,
+            650
+        ]
+    }
+}

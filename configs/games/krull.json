@@ -1,0 +1,53 @@
+{
+    "game_config": {
+        "name": "krull",
+        "lives": 3,
+        "minimal_actions": [
+            "NOOP",
+            "FIRE",
+            "UP",
+            "RIGHT",
+            "LEFT",
+            "DOWN",
+            "UPRIGHT",
+            "UPLEFT",
+            "DOWNRIGHT",
+            "DOWNLEFT",
+            "UPFIRE",
+            "RIGHTFIRE",
+            "LEFTFIRE",
+            "DOWNFIRE",
+            "UPRIGHTFIRE",
+            "UPLEFTFIRE",
+            "DOWNRIGHTFIRE",
+            "DOWNLEFTFIRE"
+        ]
+    },
+    "score_config": {
+        "checkpoint": "assets/models/krull_score_lives.pt",
+        "score_crop_info": {
+            "x": 56,
+            "y": 175,
+            "w": 46,
+            "h": 10,
+            "num_digits": 6
+        },
+        "lives_crop_info": {
+            "x": 47,
+            "y": 186,
+            "w": 24,
+            "h": 12,
+            "num_digits": 2
+        },
+        "valid_jumps": [
+            0,
+            10,
+            20,
+            30,
+            50,
+            500,
+            1000,
+            3000
+        ]
+    }
+}

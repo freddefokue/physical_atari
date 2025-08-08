@@ -1,0 +1,27 @@
+# byte-compiled / cache files
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Jupyter/IPython
+.ipynb_checkpoints/
+
+# Environment files
+.env
+.venv/
+venv/
+env/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# VS Code / PyCharm / JetBrains
+.vscode/
+.idea/
+
+# training artifacts
+.setup.cfg.json
+results/
+local/
+train_data/

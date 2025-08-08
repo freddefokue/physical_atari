@@ -1,0 +1,22 @@
+ale-py==0.10.1
+dearpygui==2.0.0
+dt_apriltags==3.1.7
+dynamixel_sdk==3.7.31
+libusb1==3.3.1
+msgpack==1.1.0
+numpy<2.0
+
+# use apt version of cv
+#opencv-python==4.11.0.86
+
+psutil==7.0.0
+# v1.8.0 has an api breaking change; refactor before updating
+pynput==1.7.8
+
+torch==2.7.0
+torchvision==0.22.0
+torchaudio==2.7.0
+
+# https://pypi.org/project/uldaq/
+uldaq==1.2.3
+Xlib==0.21

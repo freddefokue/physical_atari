@@ -1,0 +1,6 @@
+# pip install -r requirements.txt
+# assumes top level requirements has been installed
+numpy>=1.24.4,<2
+albumentations==1.3.1
+editdistance==0.8.1
+pygame==2.6.1

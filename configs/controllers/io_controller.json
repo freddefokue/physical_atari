@@ -1,0 +1,12 @@
+{
+    "model_name": "MCC USB-1024LS",
+	"vendor_id": "0x09db",
+	"product_id": "0x0076",
+	"pin_to_action_str_map": {
+        "24": "UP",
+        "25": "DOWN",
+        "26": "RIGHT",
+        "27": "LEFT",
+        "28": "FIRE"
+    }
+}
