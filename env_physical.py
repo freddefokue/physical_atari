@@ -438,6 +438,7 @@ class PhysicalEnv(BaseEnv):
         info = {
             "score": self.prev_score,
             "tags": last_detected_tags,
+            "total_lives": self.total_lives,
         }
 
         # logger.debug(f"total: {(time.time()-begin_time)*1000.0}")

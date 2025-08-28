@@ -31,8 +31,8 @@ Use a keyboard to send commands to control device.
 class Keys(Enum):
     UP = "w"
     LEFT = "a"
-    RIGHT = "d"
     DOWN = "s"
+    RIGHT = "d"
     FIRE = " "
     NOOP = "e"
 

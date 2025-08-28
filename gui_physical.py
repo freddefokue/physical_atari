@@ -516,6 +516,7 @@ class GuiRenderContent:
                 "frame": frame_num,
                 "tags": last_detected_tags,
                 "lives": lives if lives is not None else self.total_lives,
+                "total_lives": self.total_lives,
                 "score": score,
                 "action": curr_action.name,
                 "fps": fps,
@@ -975,6 +976,7 @@ class ConfigureState(Enum):
     CONFIGURE_STARTED = "configure_started"
     VALIDATION_FAILED = "validation_failed"
     TRAIN_STARTED = "train_started"
+    TRAIN_EXITED = "train_exited"
 
 
 class ValidationFailureReason(Enum):
@@ -1026,11 +1028,11 @@ class EditorBase(ABC):
 
 
 class CameraControlEditor(EditorBase):
-    def __init__(self, config_change_queue, device_idx, focus_window, draw_list, theme):
+    def __init__(self, config_change_queue, device_idx, focus_window, draw_list):
         self.config_change_queue = config_change_queue
         self.device_idx = device_idx
         self.focus_window = focus_window
-        self.theme = theme
+        self.control_tags = []
         self.enabled = True
 
     def create(self, camera_config):
@@ -1041,31 +1043,37 @@ class CameraControlEditor(EditorBase):
             if ('min' in ctrl and ctrl['min'] is not None) and ('max' in ctrl and ctrl['max'] is not None):
                 with dpg.group(label=ctrl['name']):
                     # tooltip = f" ({ctrl['description']})" if ctrl['description'] else ""
+                    tag_name = f"{ctrl['name']}_slider"
                     dpg.add_slider_int(
                         label=ctrl['name'],  # + tooltip,
                         min_value=ctrl['min'],
                         max_value=ctrl['max'],
                         default_value=ctrl['value'],
                         # step=ctrl['step'],
-                        tag=f"{ctrl['name']}_slider",
+                        tag=tag_name,
                         callback=lambda sender, app_data, user_data: self._control_callback(
                             sender, app_data, user_data
                         ),
                         user_data={**ctrl},
                     )
+                    dpg.bind_item_theme(tag_name, "slider_theme")
+                    self.control_tags.append(tag_name)
             else:
                 # Create a toggle (checkbox) for controls that only have a default value
                 with dpg.group(label=ctrl['name']):
                     # tooltip = f" ({ctrl['description']})" if ctrl['description'] else ""
+                    tag_name = f"{ctrl['name']}_checkbox"
                     dpg.add_checkbox(
                         label=ctrl['name'],  # + tooltip,
                         default_value=bool(ctrl['value']),
-                        tag=f"{ctrl['name']}_checkbox",
+                        tag=tag_name,
                         callback=lambda sender, app_data, user_data: self._control_callback(
                             sender, app_data, user_data
                         ),
                         user_data={**ctrl},
                     )
+                    dpg.bind_item_theme(tag_name, "checkbox_theme")
+                    self.control_tags.append(tag_name)
 
         dpg.add_spacer()
         dpg.add_button(
@@ -1079,17 +1087,19 @@ class CameraControlEditor(EditorBase):
             callback=lambda sender, app_data: self._save_to_config_callback(sender, app_data),
         )
 
-        dpg.bind_item_theme("cam_refresh_button", self.theme)
-        dpg.bind_item_theme("cam_save_button", self.theme)
+        dpg.bind_item_theme("cam_refresh_button", "button_theme")
+        dpg.bind_item_theme("cam_save_button", "button_theme")
+
+        self.control_tags.append("cam_refresh_button")
+        self.control_tags.append("cam_save_button")
 
     def destroy(self):
         pass
 
     def enable(self, enabled: bool):
         self.enabled = enabled
-        # REVIEW: is there a blanket way to disable all controls, or each individually?
-        dpg.configure_item("cam_refresh_button", enabled=enabled)
-        dpg.configure_item("cam_save_button", enabled=enabled)
+        for tag in self.control_tags:
+            dpg.configure_item(tag, enabled=enabled)
 
     def draw(self):
         # no custom draw required
@@ -1158,15 +1168,15 @@ class CameraControlEditor(EditorBase):
 
 
 class ScreenDetectionEditor(EditorBase):
-    def __init__(self, config_change_queue, focus_window, draw_list, theme):
+    def __init__(self, config_change_queue, focus_window, draw_list):
         self.config_change_queue = config_change_queue
         self.focus_window = focus_window
         self.input_focus = False
         self.draw_list = draw_list
-        self.theme = theme
+        self.control_tags = []
         self.enabled = True
 
-    def create(self, detection_config, camera_dims, display_dims):
+    def create(self, detection_config, game_name, camera_dims, display_dims):
         self.detection_config = detection_config
         self.camera_dims = camera_dims
         self.display_dims = display_dims
@@ -1180,16 +1190,28 @@ class ScreenDetectionEditor(EditorBase):
         detection_config_data = detection_data["detection_config"]
         self.detection_config_data = copy.deepcopy(detection_config_data)
 
+        self.silhoutte_img_fp32 = None
         self.screen_rect_fixed = None
         self.curr_tags = None
 
         if self.method_name == "fixed":
+            img_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "assets", "images", "screen", f"sil-{game_name}.png"
+            )
+            if os.path.exists(img_path):
+                self.silhoutte_img_fp32 = (
+                    cv2.cvtColor(cv2.imread(img_path), cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+                )
+
             # allow for different naming of the screen rect. ideally, standardize this.
             screen_rect_key = list(self.detection_config_data.keys())
             assert len(screen_rect_key) == 1
             screen_rect_key = screen_rect_key[0]
-            # TODO: fixed points need to include a reference dimension.
+            # TODO: fixed points need to include a reference dimension; verify points are not degenerate
             self.screen_rect_fixed = np.array(self.detection_config_data[screen_rect_key], dtype=np.float32)
+            self.screen_rect_ref = np.array([(0, 0), (160, 0), (160, 210), (0, 210)], dtype=np.float32)
+            self.warp = cv2.getPerspectiveTransform(self.screen_rect_ref, self.screen_rect_fixed)
+
             self.selected_sr_point = None
             self.last_drag_delta = (0, 0)
             self.sr_pt_requires_update = True
@@ -1218,6 +1240,7 @@ class ScreenDetectionEditor(EditorBase):
                     if isinstance(value, float):
                         dpg.add_slider_float(
                             label=key,
+                            tag=f"slider_{key}",
                             # step=0.1,
                             default_value=value,
                             min_value=min_val,
@@ -1227,9 +1250,11 @@ class ScreenDetectionEditor(EditorBase):
                             ),
                             user_data=key,
                         )
+                        dpg.bind_item_theme(f"slider_{key}", "slider_theme")
                     else:
                         dpg.add_slider_int(
                             label=key,
+                            tag=f"slider_{key}",
                             default_value=value,
                             # step=1,
                             min_value=min_val,
@@ -1239,22 +1264,26 @@ class ScreenDetectionEditor(EditorBase):
                             ),
                             user_data=key,
                         )
+                        dpg.bind_item_theme(f"slider_{key}", "slider_theme")
+                    self.control_tags.append(f"slider_{key}")
             dpg.add_button(
                 label="Save",
                 tag="sr_config_save_button",
                 callback=lambda sender, app_data: self._save_to_config_callback(sender, app_data),
             )
-            dpg.bind_item_theme("sr_config_save_button", self.theme)
+            dpg.bind_item_theme("sr_config_save_button", "button_theme")
+            self.control_tags.append("sr_config_save_button")
         elif self.method_name == 'fixed':
-            dpg.add_text("Click the Camera Window")
-            dpg.add_text("Click and drag the four points to define the content window.")
+            dpg.add_text("Click the Camera Frame Window")
+            dpg.add_text("<Shift+TAB> to select a screen point and <W,A,S,D> to position.")
             dpg.add_text("Click 'Save' when finished.")
             dpg.add_button(
                 label="Save",
                 tag="sr_pts_save_button",
                 callback=lambda sender, app_data: self._save_to_config_callback(sender, app_data),
             )
-            dpg.bind_item_theme("sr_pts_save_button", self.theme)
+            dpg.bind_item_theme("sr_pts_save_button", "button_theme")
+            self.control_tags.append("sr_pts_save_button")
         else:
             dpg.add_text("Detection method not recognized.")
 
@@ -1263,10 +1292,8 @@ class ScreenDetectionEditor(EditorBase):
 
     def enable(self, enabled: bool):
         self.enabled = enabled
-        if self.method_name == "dt_apriltags":
-            dpg.configure_item("sr_config_save_button", enabled=enabled)
-        elif self.method_name == 'fixed':
-            dpg.configure_item("sr_pts_save_button", enabled=enabled)
+        for tag in self.control_tags:
+            dpg.configure_item(tag, enabled=enabled)
 
     def _gui_to_camera(self, points, scale_x, scale_y, off_x=0, off_y=0):
         points = np.asarray(points, dtype=np.float32)
@@ -1285,6 +1312,38 @@ class ScreenDetectionEditor(EditorBase):
             return points * np.array([scale_x, scale_y]) + np.array([off_x, off_y])
         else:
             raise ValueError(f"_camera_to_gui: invalid ndim={points.ndim}.")
+
+    def compute_overlay(self, src_rgb_f32: np.ndarray, alpha: float = 0.5) -> tuple[np.ndarray, bool]:
+        if self.method_name != "fixed":
+            return src_rgb_f32, False
+
+        # True when the camera window view is selected
+        if not self.input_focus:
+            return src_rgb_f32, False
+
+        if self.silhoutte_img_fp32 is None or src_rgb_f32 is None:
+            return src_rgb_f32, False
+
+        H, W = src_rgb_f32.shape[:2]
+
+        # recompute the perspective warp transform when the screen rect points have changed this frame
+        # this assumes the source and reference points are in camera dimensions
+        if self.sr_pt_requires_update:
+            self.warp = cv2.getPerspectiveTransform(
+                np.asarray(self.screen_rect_ref), np.asarray(self.screen_rect_fixed)
+            )
+
+        warped = cv2.warpPerspective(
+            self.silhoutte_img_fp32,
+            self.warp,
+            (W, H),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(0, 0, 0),
+        )
+        out = cv2.addWeighted(warped, alpha, src_rgb_f32, 1.0, 0.0)
+
+        return out, True
 
     def draw(self):
         if self.screen_rect_fixed is not None:
@@ -1578,11 +1637,11 @@ class ScreenDetectionEditor(EditorBase):
 
 
 class ScoreDetectionEditor(EditorBase):
-    def __init__(self, config_change_queue, focus_window, draw_list, theme):
+    def __init__(self, config_change_queue, focus_window, draw_list):
         self.config_change_queue = config_change_queue
         self.focus_window = focus_window
         self.draw_list = draw_list
-        self.theme = theme
+        self.control_tags = []
         self.input_focus = False
         self.enabled = True
 
@@ -1648,16 +1707,19 @@ class ScoreDetectionEditor(EditorBase):
             tag="bb_save_button",
             callback=lambda sender, app_data: self._save_bb_callback(sender, app_data),
         )
-        dpg.bind_item_theme("bb_reset_button", self.theme)
-        dpg.bind_item_theme("bb_save_button", self.theme)
+        dpg.bind_item_theme("bb_reset_button", "button_theme")
+        dpg.bind_item_theme("bb_save_button", "button_theme")
+
+        self.control_tags.append("bb_reset_button")
+        self.control_tags.append("bb_save_button")
 
     def destroy(self):
         pass
 
     def enable(self, enabled: bool):
         self.enabled = enabled
-        dpg.configure_item("bb_reset_button", enabled=enabled)
-        dpg.configure_item("bb_save_button", enabled=enabled)
+        for tag in self.control_tags:
+            dpg.configure_item(tag, enabled=enabled)
 
     def draw(self):
         if not self.bb_requires_update:
@@ -1964,8 +2026,11 @@ class PhysicalGui:
         episode_queue,
         shared_data,
         configure_event=None,
-        results_dir=None,
+        exit_event=None,
     ):
+        from framework.Keyboard import Keys
+
+        self.exit_event = exit_event
         self.configure_event = configure_event
         self.configure_mode = configure_event is not None
         self.configure_state = ConfigureState.CONFIGURE_STARTED
@@ -1980,6 +2045,8 @@ class PhysicalGui:
         self.editors = []
         # alert on configuration changed
         self.config_change_queue = queue.Queue()
+
+        self.show_checkpoint_menu = False
 
         # create a setup config for general run details
         self.setup_config = '.setup.cfg.json'
@@ -2021,7 +2088,7 @@ class PhysicalGui:
         # REVIEW: variables set via callbacks; add mutex to guard access
         self.focused_window = None
         self.rect_frame_scale = (
-            2
+            4
             if self.obs_dims[0] <= (self.display_cam_dims[0] // 4)
             or self.obs_dims[1] <= (self.display_cam_dims[1] // 4)
             else 1
@@ -2034,6 +2101,8 @@ class PhysicalGui:
         self.load_checkpoint = (
             None if setup_data is None or 'load_model' not in setup_data else setup_data['load_model']
         )
+
+        self.keyboard_controls = ", ".join(f"{'space' if key.value == ' ' else key.value}:{key.name}" for key in Keys)
 
         self.current_game_run = 0
 
@@ -2102,12 +2171,70 @@ class PhysicalGui:
                 font = dpg.add_font(font_path, font_size)
             dpg.bind_font(font)
 
-        with dpg.theme() as theme:
+        with dpg.theme(tag="button_theme"):
             with dpg.theme_component(dpg.mvAll):
                 dpg.add_theme_color(dpg.mvThemeCol_WindowBg, (55, 55, 55, 255), category=dpg.mvThemeCat_Core)
                 dpg.add_theme_color(dpg.mvThemeCol_Border, (128, 128, 128, 255), category=dpg.mvThemeCat_Core)
                 dpg.add_theme_color(dpg.mvThemeCol_Button, (100, 100, 100, 255), category=dpg.mvThemeCat_Core)
                 dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (150, 150, 150, 255), category=dpg.mvThemeCat_Core)
+
+            with dpg.theme_component(dpg.mvButton, enabled_state=True):
+                dpg.add_theme_color(dpg.mvThemeCol_Text, (255, 255, 255, 255))
+
+            with dpg.theme_component(dpg.mvButton, enabled_state=False):
+                dpg.add_theme_color(dpg.mvThemeCol_Button, (70, 70, 70, 255))
+                dpg.add_theme_color(dpg.mvThemeCol_Text, (160, 160, 160, 255))
+                dpg.add_theme_style(dpg.mvStyleVar_Alpha, 0.6)
+
+        with dpg.theme(tag="slider_theme"):
+            # use default theme state for 'enabled_state'=True
+
+            for comp in (dpg.mvSliderInt, dpg.mvSliderFloat):
+                with dpg.theme_component(comp, enabled_state=False):
+                    dpg.add_theme_color(dpg.mvThemeCol_FrameBg, (55, 55, 55, 255))
+                    dpg.add_theme_color(dpg.mvThemeCol_FrameBgHovered, (55, 55, 55, 255))
+                    dpg.add_theme_color(dpg.mvThemeCol_FrameBgActive, (55, 55, 55, 255))
+                    dpg.add_theme_color(dpg.mvThemeCol_SliderGrab, (90, 90, 90, 255))
+                    dpg.add_theme_color(dpg.mvThemeCol_SliderGrabActive, (90, 90, 90, 255))
+                    dpg.add_theme_color(dpg.mvThemeCol_TextDisabled, (160, 160, 160, 255))
+                    dpg.add_theme_style(dpg.mvStyleVar_Alpha, 0.6)
+
+        with dpg.theme(tag="checkbox_theme"):
+            # use default theme state for 'enabled_state'=True
+
+            with dpg.theme_component(dpg.mvCheckbox, enabled_state=False):
+                dpg.add_theme_color(dpg.mvThemeCol_FrameBg, (55, 55, 55, 255))
+                dpg.add_theme_color(dpg.mvThemeCol_FrameBgHovered, (55, 55, 55, 255))
+                dpg.add_theme_color(dpg.mvThemeCol_CheckMark, (120, 120, 120, 255))
+                dpg.add_theme_color(dpg.mvThemeCol_TextDisabled, (160, 160, 160, 255))
+                dpg.add_theme_style(dpg.mvStyleVar_Alpha, 0.6)
+
+        with dpg.theme(tag="combo_theme"):
+            # use default theme state for 'enabled_state'=True
+
+            with dpg.theme_component(dpg.mvCombo, enabled_state=False):
+                dpg.add_theme_color(dpg.mvThemeCol_FrameBg, (55, 55, 55, 255))
+                dpg.add_theme_color(dpg.mvThemeCol_FrameBgHovered, (55, 55, 55, 255))
+                dpg.add_theme_color(dpg.mvThemeCol_FrameBgActive, (55, 55, 55, 255))
+                dpg.add_theme_color(dpg.mvThemeCol_Button, (70, 70, 70, 255))
+                dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (70, 70, 70, 255))
+                dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (70, 70, 70, 255))
+                dpg.add_theme_color(dpg.mvThemeCol_Text, (160, 160, 160, 255))
+                dpg.add_theme_color(dpg.mvThemeCol_TextDisabled, (160, 160, 160, 255))
+                dpg.add_theme_color(dpg.mvThemeCol_PopupBg, (35, 35, 35, 255))
+                dpg.add_theme_style(dpg.mvStyleVar_Alpha, 0.6)
+
+        with dpg.theme(tag="quit_theme"):
+            with dpg.theme_component(dpg.mvButton, enabled_state=True):
+                dpg.add_theme_color(dpg.mvThemeCol_Button, (110, 60, 170, 255))
+                dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (140, 90, 200, 255))
+                dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (90, 40, 140, 255))
+                dpg.add_theme_color(dpg.mvThemeCol_Text, (230, 210, 255, 255))
+
+            with dpg.theme_component(dpg.mvButton, enabled_state=False):
+                dpg.add_theme_color(dpg.mvThemeCol_Button, (60, 40, 90, 255))
+                dpg.add_theme_color(dpg.mvThemeCol_Text, (160, 160, 160, 255))
+                dpg.add_theme_style(dpg.mvStyleVar_Alpha, 0.6)
 
         with dpg.theme(tag="valid_text_theme"):  # as valid_text_theme:
             with dpg.theme_component(dpg.mvText):
@@ -2261,22 +2388,29 @@ class PhysicalGui:
                 color=(255, 255, 255),
                 tag="rect_frame_fps_text",
             )
+            dpg.add_spacer()
+            dpg.add_text(f"Game: {self.game_name}", color=(245, 0, 245), tag="rect_frame_game_text")
             dpg.add_text("Frame: 0", color=(255, 255, 0), tag="rect_frame_frame_text")
             dpg.add_text("Score: 0", color=(0, 255, 0), tag="rect_frame_score_text")
-            dpg.add_text("Lives: 0", color=(0, 255, 0), tag="rect_frame_lives_text")
+            dpg.add_text("Lives: 0 / 0", color=(0, 255, 0), tag="rect_frame_lives_text")
             dpg.add_text("Episodes: 0", color=(0, 255, 255), tag="rect_frame_episodes_text")
             dpg.add_text("Action: NOOP", color=(255, 128, 0), tag="rect_frame_action_text")
+            with dpg.group(horizontal=False, tag="rect_control_banner"):
+                dpg.add_text("Configure Mode:", color=(255, 100, 200), tag="rect_mode_label")
+                dpg.add_text(f"{self.keyboard_controls}", wrap=480, color=(200, 200, 200), tag="rect_mode_detail")
 
             dpg.add_spacer()
             # dpg.add_spacer()
             dpg.add_slider_int(
                 label="Frame Scale",
+                tag="frame_scale_slider",
                 default_value=self.rect_frame_scale,
                 min_value=self.min_rect_frame_scale,
                 max_value=self.max_rect_frame_scale,
                 callback=lambda sender, app_data: self.scale_rect_frame_callback(sender, app_data),
                 user_data={'class': self},
             )
+            dpg.bind_item_theme("frame_scale_slider", "slider_theme")
 
             dpg.bind_item_handler_registry(rect_window, focus_handlers)
             # if a tag name is added to the window definition, that will override what the focus handler returns and will need to be accounted for.
@@ -2294,7 +2428,7 @@ class PhysicalGui:
             with dpg.collapsing_header(label="Camera", tag="camera_header", default_open=False):
                 with dpg.child_window(label="Camera Controls", tag="camera_controls", border=False):
                     self.camera_editor = CameraControlEditor(
-                        self.config_change_queue, self.camera_device_idx, config_window, None, theme
+                        self.config_change_queue, self.camera_device_idx, config_window, None
                     )
                     self.camera_editor.create(self.camera_config)
                     self.camera_editor.draw()
@@ -2304,10 +2438,10 @@ class PhysicalGui:
                 with dpg.child_window(label="Screen Detection Controls", tag="detection_controls", border=False):
                     # takes input focus when the camera window is focused
                     self.screen_detection_editor = ScreenDetectionEditor(
-                        self.config_change_queue, camera_window, "camera_drawlist", theme
+                        self.config_change_queue, camera_window, "camera_drawlist"
                     )
                     self.screen_detection_editor.create(
-                        self.screen_detection_config, self.camera_dims, self.display_cam_dims
+                        self.screen_detection_config, self.game_name, self.camera_dims, self.display_cam_dims
                     )
                     self.screen_detection_editor.draw()
                     self.editors.append(self.screen_detection_editor)
@@ -2315,7 +2449,7 @@ class PhysicalGui:
             with dpg.collapsing_header(label="Score Detection", tag="score_detection_header", default_open=False):
                 with dpg.child_window(label="Score Detection Controls", tag="score_detection_controls", border=False):
                     self.score_detection_editor = ScoreDetectionEditor(
-                        self.config_change_queue, config_window, "rect_drawlist", theme
+                        self.config_change_queue, config_window, "rect_drawlist"
                     )
                     self.score_detection_editor.create(
                         self.game_name,
@@ -2326,6 +2460,13 @@ class PhysicalGui:
                     )
                     self.score_detection_editor.draw()
                     self.editors.append(self.score_detection_editor)
+
+            with dpg.collapsing_header(label="Controller", tag="controller_header", default_open=False):
+                with dpg.child_window(label="Controller Testing", tag="controller_testing", border=False):
+                    # This header is currently informative only. If specific controls
+                    # or other functionality is needed, create a new editor class and setup here.
+                    dpg.add_text("Click the Game Frame Window.")
+                    dpg.add_text("Manually drive the controller via keyboard commands:\n\n" f"{self.keyboard_controls}")
 
             if self.configure_mode:
                 with dpg.group(horizontal=False):
@@ -2338,30 +2479,35 @@ class PhysicalGui:
                     dpg.add_combo(
                         [str(i) for i in range(1, 11)],
                         label="Select Number of Runs",
+                        tag="run_selection",
                         default_value=str(self.num_game_runs),
                         callback=lambda sender, app_data: self.set_num_game_runs(sender, app_data),
                     )
+                    dpg.bind_item_theme("run_selection", "combo_theme")
 
-                    # save checkpoint
-                    dpg.add_spacer()
-                    dpg.add_spacer()
-                    dpg.add_checkbox(
-                        label="Save Checkpoint",
-                        tag="save_checkpoint_checkbox",
-                        default_value=self.save_checkpoint,
-                        callback=lambda sender, app_data: self.set_save_checkpoint(sender, app_data),
-                    )
-                    with dpg.group(horizontal=True):
-                        # load checkpoint
-                        dpg.add_button(
-                            label="Load Checkpoint" if self.load_checkpoint is None else "Clear Checkpoint",
-                            tag="checkpoint_toggle_button",
-                            callback=lambda sender, app_data: self.toggle_checkpoint_selection(sender, app_data),
+                    if self.show_checkpoint_menu:
+                        # save checkpoint
+                        dpg.add_spacer()
+                        dpg.add_spacer()
+                        dpg.add_checkbox(
+                            label="Save Model",
+                            tag="save_checkpoint_checkbox",
+                            default_value=self.save_checkpoint,
+                            callback=lambda sender, app_data: self.set_save_checkpoint(sender, app_data),
                         )
-                        dpg.add_text(
-                            "None" if self.load_checkpoint is None else self.load_checkpoint,
-                            tag="selected_checkpoint_path",
-                        )
+                        dpg.bind_item_theme("save_checkpoint_checkbox", "checkbox_theme")
+                        with dpg.group(horizontal=True):
+                            # load checkpoint
+                            dpg.add_button(
+                                label="Load Model" if self.load_checkpoint is None else "Clear Model",
+                                tag="checkpoint_toggle_button",
+                                callback=lambda sender, app_data: self.toggle_checkpoint_selection(sender, app_data),
+                            )
+                            dpg.add_text(
+                                "None" if self.load_checkpoint is None else self.load_checkpoint,
+                                tag="selected_checkpoint_path",
+                            )
+                            dpg.bind_item_theme("checkpoint_toggle_button", "button_theme")
 
                     # Start Train
                     dpg.add_spacer()
@@ -2374,7 +2520,20 @@ class PhysicalGui:
                         enabled=True,
                         tag="start_button",
                     )
-                    dpg.bind_item_theme("start_button", theme)
+                    dpg.bind_item_theme("start_button", "button_theme")
+
+                    # Quit the program entirely
+                    with dpg.group(horizontal=False):
+                        dpg.add_spacer(height=325)
+                        dpg.add_button(
+                            label="Quit",
+                            callback=self.quit,
+                            width=-1,  # stretch across pane
+                            height=40,
+                            enabled=True,
+                            tag="quit_button",
+                        )
+                        dpg.bind_item_theme("quit_button", "quit_theme")
 
             dpg.bind_item_handler_registry(config_window, focus_handlers)
             # if a tag name is added to the window definition, that will override what the focus handler returns and will need to be accounted for.
@@ -2549,21 +2708,18 @@ class PhysicalGui:
 
         # Enable/Disable buttons based on the current state.
         dpg.configure_item("start_button", enabled=(self.configure_state != ConfigureState.TRAIN_STARTED))
+        dpg.configure_item("run_selection", enabled=(self.configure_state != ConfigureState.TRAIN_STARTED))
+
+        if self.show_checkpoint_menu:
+            dpg.configure_item(
+                "checkpoint_toggle_button", enabled=(self.configure_state != ConfigureState.TRAIN_STARTED)
+            )
+            dpg.configure_item(
+                "save_checkpoint_checkbox", enabled=(self.configure_state != ConfigureState.TRAIN_STARTED)
+            )
 
         for editor in self.editors:
             editor.enable(self.configure_state != ConfigureState.TRAIN_STARTED)
-
-        # TODO: Review: does dearpygui provide a way to disable all elements of a container just by disabling the container?
-        # Camera Controls
-        # dpg.configure_item("camera_header", enabled=(self.configure_state != ConfigureState.TRAIN_STARTED))
-        # dpg.configure_item("camera_controls", enabled=(self.configure_state != ConfigureState.TRAIN_STARTED))
-
-        # Screen Detection Control
-        # dpg.configure_item("screen_detection_header", enabled=(self.configure_state != ConfigureState.TRAIN_STARTED))
-        # dpg.configure_item("detection_controls", enabled=(self.configure_state != ConfigureState.TRAIN_STARTED))
-
-        # dpg.configure_item("score_detection_header", enabled=(self.configure_state != ConfigureState.TRAIN_STARTED))
-        # dpg.configure_item("score_detection_controls", enabled=(self.configure_state != ConfigureState.TRAIN_STARTED))
 
         control_text = "<None>"
         control_text_theme = "valid_text_theme"
@@ -2588,6 +2744,19 @@ class PhysicalGui:
         if mode_text_size is not None:
             mode_text_pos = [(self.obs_dims[0] * self.max_rect_frame_scale) - (mode_text_size[0] * self.font_scale), 45]
             dpg.set_item_pos("rect_frame_mode_text", pos=mode_text_pos)
+
+        if self.configure_state == ConfigureState.TRAIN_STARTED:
+            dpg.set_value("rect_mode_label", "Train Mode:")
+            dpg.configure_item("rect_mode_label", color=(255, 170, 0))
+            dpg.set_value("rect_mode_detail", "Keyboard control disabled.")
+            dpg.configure_item("rect_mode_detail", color=(180, 180, 180))
+        else:
+            dpg.set_value("rect_mode_label", "Configure Mode:")
+            dpg.configure_item("rect_mode_label", color=(255, 100, 200))
+            dpg.set_value(
+                "rect_mode_detail", f"Use the following keys to test the Atari controller: {self.keyboard_controls}"
+            )
+            dpg.configure_item("rect_mode_detail", color=(200, 200, 200))
 
     def scale_rect_frame(self, new_scale):
         self.rect_frame_scale = new_scale
@@ -2619,6 +2788,9 @@ class PhysicalGui:
             ),
             dtype=np.float32,
         )
+
+        cam_frame_fp32 = np.zeros((self.display_cam_dims[1], self.display_cam_dims[0], 3), dtype=np.float32)
+        cam_frame_needs_update = False
 
         is_running = True
 
@@ -2655,8 +2827,8 @@ class PhysicalGui:
                 # logger.debug(val.shape)
                 if self.display_cam_dims[0] != cam_frame.shape[1] or self.display_cam_dims[1] != cam_frame.shape[0]:
                     cam_frame = cv2.resize(cam_frame, self.display_cam_dims, interpolation=cv2.INTER_LINEAR)
-                val_norm = np.clip(cam_frame.astype(np.float32) / 255.0, 0.0, 1.0)
-                dpg.set_value("camera_texture", val_norm)
+                cam_frame_fp32 = np.clip(cam_frame[:, :, ::-1].astype(np.float32) * (1.0 / 255.0), 0.0, 1.0)
+                cam_frame_needs_update = True
                 # logger.debug(f'cam: {(time.time()-start) * 1000.0:.2f}')
 
             if obs_frame is not None:
@@ -2693,7 +2865,9 @@ class PhysicalGui:
                     dpg.set_value('rect_frame_frame_text', f"Frame: {frame_num}")
 
                 if "lives" in data_dict:
-                    dpg.set_value("rect_frame_lives_text", f"Lives: {data_dict['lives']}")
+                    dpg.set_value(
+                        "rect_frame_lives_text", f"Lives: {data_dict['lives']} / {data_dict.get('total_lives', '--')}"
+                    )
 
                 if "score" in data_dict:
                     dpg.set_value("rect_frame_score_text", f"Score: {data_dict['score']}")
@@ -2734,6 +2908,17 @@ class PhysicalGui:
                 self.frame_graphs.reset()
                 self.episode_graphs.reset()
                 self.reset_per_run_graphs = False
+
+            cam_frame_dirty = False
+            if self.screen_detection_editor is not None:
+                cam_frame_fp32, cam_frame_dirty = self.screen_detection_editor.compute_overlay(
+                    cam_frame_fp32, alpha=0.4
+                )
+
+            if cam_frame_needs_update or cam_frame_dirty:
+                dpg.set_value("camera_texture", np.ascontiguousarray(cam_frame_fp32))
+                cam_frame_needs_update = False
+                cam_frame_dirty = False
 
             for editor in self.editors:
                 editor.draw()
@@ -2816,6 +3001,18 @@ class PhysicalGui:
             self.configure_state = ConfigureState.TRAIN_STARTED
             self.update_control_button_state()
 
+    def quit(self):
+        logger.info("Signal Exit.")
+        if self.content_thread is not None:
+            self.content_thread.shutdown()
+            self.content_thread = None
+
+        if self.configure_event and not self.configure_event.is_set():
+            self.configure_event.set()
+
+        if self.exit_event:
+            self.exit_event.set()
+
     def set_num_game_runs(self, sender, app_data):
         self.num_game_runs = app_data
 
@@ -2827,14 +3024,14 @@ class PhysicalGui:
             # save as relative path
             self.load_checkpoint = os.path.relpath(app_data, start=os.getcwd())
             dpg.set_value("selected_checkpoint_path", f"{self.load_checkpoint}")
-            dpg.configure_item("checkpoint_toggle_button", label="Clear Checkpoint")
+            dpg.configure_item("checkpoint_toggle_button", label="Clear Model")
 
     def toggle_checkpoint_selection(self, sender, app_data):
         if self.load_checkpoint is not None:
             # clear selection
             self.load_checkpoint = None
             dpg.set_value("selected_checkpoint_path", "None")
-            dpg.configure_item("checkpoint_toggle_button", label="Select Checkpoint")
+            dpg.configure_item("checkpoint_toggle_button", label="Select Model")
         else:
             # open file dialog
             dpg.show_item("checkpoint_file_dialog")
@@ -2937,7 +3134,7 @@ def create_gui_process(
     episode_queue,
     shared_data,
     configure_event=None,
-    results_dir=None,
+    exit_event=None,
 ):
     logger.info(f"Physical GUI running at pid={os.getpid()}")
     physical_gui = None
@@ -2953,7 +3150,7 @@ def create_gui_process(
             episode_queue,
             shared_data,
             configure_event=configure_event,
-            results_dir=results_dir,
+            exit_event=exit_event,
         )
         # blocks until termination event received.
         physical_gui.run()
@@ -2965,3 +3162,5 @@ def create_gui_process(
         logger.info("Physical gui closing...")
         if physical_gui is not None:
             physical_gui.shutdown()
+        logger.info("Physical gui shutdown complete")
+    sys.exit(0)

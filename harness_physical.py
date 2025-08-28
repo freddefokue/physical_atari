@@ -82,9 +82,10 @@ def main(args):
             shared_lock = multiprocessing.Lock()
             shared_data = SharedFrameData(obs_dim=obs_dims, lock=shared_lock)
 
-            # used for infrequent, unbounded episode-related stats that should not be dropped
+            # used for infrequent, episode-related stats that should not be dropped
             episode_queue = multiprocessing.Queue()
             configure_event = multiprocessing.Event() if args.use_gui == 2 else None
+            exit_event = multiprocessing.Event()
 
             gui_process = multiprocessing.Process(
                 target=process_wrapper(create_gui_process, logger),
@@ -98,7 +99,7 @@ def main(args):
                     episode_queue,
                     shared_data,
                     configure_event,
-                    data_dir,
+                    exit_event,
                 ),
             )
             gui_process.daemon = True
@@ -137,6 +138,10 @@ def main(args):
                 logger.warning(f"Could not find model checkpoint: {args.load_model}")
 
         for run_num in range(args.num_runs):
+            if args.use_gui > 0 and exit_event.is_set():
+                logger.info("Exit requested by GUI. Exiting run.")
+                break
+
             run_dir = os.path.join(data_dir, f"run_{run_num}")
             os.makedirs(run_dir, exist_ok=True)
 
@@ -234,8 +239,13 @@ def main(args):
             except Exception as e:
                 logger.critical(f"Exception in run initialization: {e}", exc_info=True)
                 continue
+
             try:
                 for u in range(total_frames):
+                    if args.use_gui > 0 and exit_event.is_set():
+                        logger.info("Exit requested by GUI. Exiting training.")
+                        break
+
                     if save_incremental_model and (u + 1) // args.save_model_increment != last_model_save:
                         last_model_save = (u + 1) // args.save_model_increment
                         filename = f'{run_dir}/{game}_{args.agent_type}.model'
@@ -358,6 +368,7 @@ def main(args):
                         frame_data = {
                             "frame": cam_frame_num,
                             "lives": env.lives(),
+                            "total_lives": info["total_lives"],
                             "score": info["score"],
                             "action": action_set[taken_action].name,
                             "fps": fps,
@@ -481,18 +492,18 @@ def get_argument_parser():
     parser.add_argument(
         '--reduce_action_set',
         type=int,
-        default=0,
+        default=2,
         choices=[0, 1, 2],
         help="0=legal, 1=minimal, 2=minimal w/ additional restrictions",
     )
     parser.add_argument(
-        '--lives_as_episode', type=int, default=0, choices=[0, 1], help="treat loss of life as an episode end"
+        '--lives_as_episode', type=int, default=1, choices=[0, 1], help="treat loss of life as an episode end"
     )
     parser.add_argument('--num_runs', type=int, default=1)
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--total_frames', type=int, default=1_000_000)
     parser.add_argument(
-        '--use_gui', type=int, default=2, choices=[0, 1, 2], help="0=no gui, 1=gui no config setp, 2=gui w/ config step"
+        '--use_gui', type=int, default=2, choices=[0, 1, 2], help="0=no gui, 1=gui no config step, 2=gui w/ config step"
     )
 
     parser.add_argument('--gpu', type=int, default=0)
