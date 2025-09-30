@@ -5,7 +5,11 @@
 
 import collections
 import copy
+import csv
 from dataclasses import dataclass
+import os
+from pathlib import Path
+import time
 from typing import Optional
 
 import numpy as np
@@ -19,6 +23,57 @@ from .base import Agent
 from .bbf_networks import BBFNetwork
 
 
+class MetricsTracker:
+    """Tracks and logs training metrics to CSV file."""
+    
+    def __init__(self, output_dir: str, log_interval: int = 1000):
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.log_interval = log_interval
+        self.metrics_file = self.output_dir / "training_metrics.csv"
+        self.episode_file = self.output_dir / "episode_metrics.csv"
+        
+        # Initialize CSV files with headers
+        with open(self.metrics_file, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                'env_steps', 'learn_steps', 'td_loss', 'spr_loss', 'total_loss',
+                'mean_q', 'max_q', 'gamma', 'n_step', 'epsilon', 'time_elapsed'
+            ])
+        
+        with open(self.episode_file, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['env_steps', 'episode_num', 'episode_return', 'episode_length'])
+        
+        self.start_time = time.time()
+        self.episode_count = 0
+        
+    def log_training_step(self, metrics: dict):
+        """Log training step metrics to CSV."""
+        with open(self.metrics_file, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                metrics.get('env_steps', 0),
+                metrics.get('learn_steps', 0),
+                f"{metrics.get('td_loss', 0):.4f}",
+                f"{metrics.get('spr_loss', 0):.4f}",
+                f"{metrics.get('total_loss', 0):.4f}",
+                f"{metrics.get('mean_q', 0):.3f}",
+                f"{metrics.get('max_q', 0):.3f}",
+                f"{metrics.get('gamma', 0):.4f}",
+                metrics.get('n_step', 0),
+                f"{metrics.get('epsilon', 0):.4f}",
+                f"{time.time() - self.start_time:.1f}"
+            ])
+    
+    def log_episode(self, env_steps: int, episode_return: float, episode_length: int):
+        """Log episode metrics to CSV."""
+        self.episode_count += 1
+        with open(self.episode_file, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([env_steps, self.episode_count, f"{episode_return:.2f}", episode_length])
+
+
 @dataclass
 class BBFConfig:
     """BBF hyperparameters matching the paper's configuration."""
@@ -29,6 +84,10 @@ class BBFConfig:
     num_atoms: int = 51  # C51 distributional RL
     v_min: float = -10.0
     v_max: float = 10.0
+    
+    # Logging
+    log_interval: int = 1000  # Log metrics every N env steps
+    verbose: bool = True  # Print to console
     
     # Learning
     learning_rate: float = 1e-4
@@ -78,6 +137,9 @@ class BBFConfig:
     eps_start: float = 0.0
     eps_end: float = 0.0
     eps_decay: int = 1
+    
+    # Output directory for metrics
+    output_dir: Optional[str] = None
 
 
 def random_crop_aug(images, pad=4):
@@ -257,6 +319,18 @@ class BBFAgent(Agent):
         )
         self.delta_z = (self.config.v_max - self.config.v_min) / (self.config.num_atoms - 1)
         
+        # Metrics tracking
+        self.metrics_tracker: Optional[MetricsTracker] = None
+        if self.config.output_dir:
+            self.metrics_tracker = MetricsTracker(self.config.output_dir, self.config.log_interval)
+        
+        # For tracking recent metrics
+        self.recent_td_loss = []
+        self.recent_spr_loss = []
+        self.recent_q_values = []
+        self.episode_length = 0
+        self.episode_return = 0.0
+        
     def begin_task(self, game_id, cycle, action_space):
         if self.num_actions is None or self.num_actions != action_space.n:
             self.num_actions = action_space.n
@@ -368,6 +442,9 @@ class BBFAgent(Agent):
         done = float(terminated or truncated)
         state = self._current_state.copy()
         
+        self.episode_length += 1
+        self.episode_return += reward
+        
         if done:
             self._needs_reset = True
             self._frame_stack.clear()
@@ -384,9 +461,22 @@ class BBFAgent(Agent):
         if self.total_steps >= self.config.learning_starts:
             for _ in range(self.config.replay_ratio):
                 self._train_step()
+        
+        # Log metrics periodically
+        if self.total_steps % self.config.log_interval == 0 and self.total_steps > 0:
+            self._log_metrics()
                 
     def end_episode(self, episode_return: float) -> None:
-        pass
+        # Log episode metrics
+        if self.metrics_tracker:
+            self.metrics_tracker.log_episode(self.total_steps, episode_return, self.episode_length)
+        
+        if self.config.verbose:
+            print(f"  Episode finished: Return={episode_return:.1f}, Length={self.episode_length}, Steps={self.total_steps}")
+        
+        # Reset episode tracking
+        self.episode_length = 0
+        self.episode_return = 0.0
         
     def _get_current_gamma(self):
         """Get current gamma based on annealing schedule."""
@@ -487,14 +577,25 @@ class BBFAgent(Agent):
         n_step = self._get_current_n_step()
         gamma = self._get_current_gamma()
         
-        # Compute losses
-        td_loss, spr_loss, priorities = self._compute_loss(
+        # Compute losses and Q-values for logging
+        td_loss, spr_loss, priorities, mean_q = self._compute_loss(
             states, actions, rewards, dones, n_step, gamma
         )
         
         # Combined loss
         loss = td_loss + self.config.spr_weight * spr_loss
         loss = (loss * weights).mean()
+        
+        # Track metrics
+        self.recent_td_loss.append(td_loss.mean().item())
+        self.recent_spr_loss.append(spr_loss.mean().item())
+        self.recent_q_values.append(mean_q)
+        
+        # Keep only recent values
+        if len(self.recent_td_loss) > 100:
+            self.recent_td_loss.pop(0)
+            self.recent_spr_loss.pop(0)
+            self.recent_q_values.pop(0)
         
         # Optimize
         self.optimizer.zero_grad()
@@ -613,7 +714,16 @@ class BBFAgent(Agent):
         # SPR loss
         spr_loss = self._compute_spr_loss(latent, states, actions)
         
-        return td_loss, spr_loss, priorities
+        # Calculate mean Q-value for logging
+        with torch.no_grad():
+            if self.config.distributional:
+                probs = F.softmax(q_logits, dim=-1)
+                q_values = (probs * self.support).sum(dim=-1)
+            else:
+                q_values = q_logits
+            mean_q = q_values.mean().item()
+        
+        return td_loss, spr_loss, priorities, mean_q
         
     def _compute_spr_loss(self, latent, states, actions):
         """Compute SPR self-supervised loss.
@@ -651,4 +761,45 @@ class BBFAgent(Agent):
         spr_loss = -similarity.mean()
         
         return spr_loss
+    
+    def _log_metrics(self):
+        """Log training metrics to console and CSV file."""
+        if not self.recent_td_loss:
+            return
+        
+        # Calculate averages
+        avg_td_loss = np.mean(self.recent_td_loss)
+        avg_spr_loss = np.mean(self.recent_spr_loss)
+        avg_total_loss = avg_td_loss + self.config.spr_weight * avg_spr_loss
+        avg_q = np.mean(self.recent_q_values)
+        max_q = np.max(self.recent_q_values)
+        
+        # Get current hyperparameters
+        current_gamma = self._get_current_gamma()
+        current_n_step = self._get_current_n_step()
+        current_epsilon = self.config.eps_start  # BBF uses eps=0
+        
+        # Console logging
+        if self.config.verbose:
+            print(f"\n[Step {self.total_steps:,}] Training Metrics:")
+            print(f"  Loss: TD={avg_td_loss:.4f}, SPR={avg_spr_loss:.4f}, Total={avg_total_loss:.4f}")
+            print(f"  Q-values: Mean={avg_q:.2f}, Max={max_q:.2f}")
+            print(f"  Hyperparams: γ={current_gamma:.4f}, n-step={current_n_step}, ε={current_epsilon:.3f}")
+            print(f"  Training: Learn steps={self.learn_steps:,}, Buffer size={len(self.replay):,}")
+        
+        # CSV logging
+        if self.metrics_tracker:
+            metrics = {
+                'env_steps': self.total_steps,
+                'learn_steps': self.learn_steps,
+                'td_loss': avg_td_loss,
+                'spr_loss': avg_spr_loss,
+                'total_loss': avg_total_loss,
+                'mean_q': avg_q,
+                'max_q': max_q,
+                'gamma': current_gamma,
+                'n_step': current_n_step,
+                'epsilon': current_epsilon,
+            }
+            self.metrics_tracker.log_training_step(metrics)
 

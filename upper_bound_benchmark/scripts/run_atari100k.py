@@ -71,6 +71,10 @@ def main():
         dueling=True,
         double_dqn=True,
         distributional=True,
+        # Logging
+        log_interval=1000,  # Log every 1000 env steps
+        verbose=True,
+        output_dir=args.output_dir,
     )
     
     agent = BBFAgent(seed=args.seed, config=bbf_config)

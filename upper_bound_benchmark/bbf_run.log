@@ -27,3 +27,110 @@ Cycle 1/1, Game: ALE/Atlantis-v5
 A.L.E: Arcade Learning Environment (version 0.8.1+53f58b7)
 [Powered by Stella]
   Target: 100000 frames, Seed: 8779
+Running BBF on Atlantis (seed=7779, RR=2)
+Config: 100K steps, no sticky actions, single cycle
+Output directory: results/atari100k/atlantis_test
+--------------------------------------------------------------------------------
+
+Cycle 1/1, Game: ALE/Atlantis-v5
+Traceback (most recent call last):
+  File "/workspace/physical_atari/upper_bound_benchmark/scripts/run_atari100k.py", line 121, in <module>
+    main()
+  File "/workspace/physical_atari/upper_bound_benchmark/scripts/run_atari100k.py", line 99, in main
+    results = runner.run(agent)
+  File "/workspace/physical_atari/upper_bound_benchmark/upper_bound_benchmark/benchmark.py", line 69, in run
+    env = self._build_env(game_id, game_seed)
+  File "/workspace/physical_atari/upper_bound_benchmark/upper_bound_benchmark/benchmark.py", line 46, in _build_env
+    env = make_atari_env(
+  File "/workspace/physical_atari/upper_bound_benchmark/upper_bound_benchmark/env.py", line 114, in make_atari_env
+    env = gym.make(
+  File "/root/miniconda3/envs/physical_atari/lib/python3.9/site-packages/gymnasium/envs/registration.py", line 689, in make
+    env_spec = _find_spec(id)
+  File "/root/miniconda3/envs/physical_atari/lib/python3.9/site-packages/gymnasium/envs/registration.py", line 533, in _find_spec
+    _check_version_exists(ns, name, version)
+  File "/root/miniconda3/envs/physical_atari/lib/python3.9/site-packages/gymnasium/envs/registration.py", line 399, in _check_version_exists
+    _check_name_exists(ns, name)
+  File "/root/miniconda3/envs/physical_atari/lib/python3.9/site-packages/gymnasium/envs/registration.py", line 362, in _check_name_exists
+    _check_namespace_exists(ns)
+  File "/root/miniconda3/envs/physical_atari/lib/python3.9/site-packages/gymnasium/envs/registration.py", line 356, in _check_namespace_exists
+    raise error.NamespaceNotFound(f"Namespace {ns} not found. {suggestion_msg}")
+gymnasium.error.NamespaceNotFound: Namespace ALE not found. Have you installed the proper package for ALE?
+Running BBF on Atlantis (seed=7779, RR=2)
+Config: 100K steps, no sticky actions, single cycle
+Output directory: results/atari100k/atlantis_test
+--------------------------------------------------------------------------------
+
+Cycle 1/1, Game: ALE/Atlantis-v5
+Traceback (most recent call last):
+  File "/workspace/physical_atari/upper_bound_benchmark/scripts/run_atari100k.py", line 121, in <module>
+    main()
+  File "/workspace/physical_atari/upper_bound_benchmark/scripts/run_atari100k.py", line 99, in main
+    results = runner.run(agent)
+  File "/workspace/physical_atari/upper_bound_benchmark/upper_bound_benchmark/benchmark.py", line 69, in run
+    env = self._build_env(game_id, game_seed)
+  File "/workspace/physical_atari/upper_bound_benchmark/upper_bound_benchmark/benchmark.py", line 46, in _build_env
+    env = make_atari_env(
+  File "/workspace/physical_atari/upper_bound_benchmark/upper_bound_benchmark/env.py", line 114, in make_atari_env
+    env = gym.make(
+  File "/root/miniconda3/envs/physical_atari/lib/python3.9/site-packages/gymnasium/envs/registration.py", line 689, in make
+    env_spec = _find_spec(id)
+  File "/root/miniconda3/envs/physical_atari/lib/python3.9/site-packages/gymnasium/envs/registration.py", line 533, in _find_spec
+    _check_version_exists(ns, name, version)
+  File "/root/miniconda3/envs/physical_atari/lib/python3.9/site-packages/gymnasium/envs/registration.py", line 399, in _check_version_exists
+    _check_name_exists(ns, name)
+  File "/root/miniconda3/envs/physical_atari/lib/python3.9/site-packages/gymnasium/envs/registration.py", line 362, in _check_name_exists
+    _check_namespace_exists(ns)
+  File "/root/miniconda3/envs/physical_atari/lib/python3.9/site-packages/gymnasium/envs/registration.py", line 356, in _check_namespace_exists
+    raise error.NamespaceNotFound(f"Namespace {ns} not found. {suggestion_msg}")
+gymnasium.error.NamespaceNotFound: Namespace ALE not found. Have you installed the proper package for ALE?
+Running BBF on Atlantis (seed=7779, RR=2)
+Config: 100K steps, no sticky actions, single cycle
+Output directory: results/atari100k/atlantis_test
+--------------------------------------------------------------------------------
+
+Cycle 1/1, Game: ALE/Atlantis-v5
+A.L.E: Arcade Learning Environment (version 0.11.2+ecc1138)
+[Powered by Stella]
+  Target: 100000 frames, Seed: 8779
+Running BBF on Atlantis (seed=7779, RR=2)
+Config: 100K steps, no sticky actions, single cycle
+Output directory: results/atari100k/atlantis_test
+--------------------------------------------------------------------------------
+
+Cycle 1/1, Game: ALE/Atlantis-v5
+A.L.E: Arcade Learning Environment (version 0.11.2+ecc1138)
+[Powered by Stella]
+  Target: 100000 frames, Seed: 8779
+  Episode finished: Return=2000.0, Length=1691, Steps=1691
+
+[Step 2,000] Training Metrics:
+  Loss: TD=3.7948, SPR=-0.2153, Total=2.7185
+  Q-values: Mean=0.01, Max=0.01
+  Hyperparams: γ=0.9700, n-step=10, ε=0.000
+  Training: Learn steps=2, Buffer size=2,000
+Traceback (most recent call last):
+  File "/workspace/physical_atari/upper_bound_benchmark/scripts/run_atari100k.py", line 16, in <module>
+    from upper_bound_benchmark.benchmark import BenchmarkRunner, BenchmarkConfig
+  File "/workspace/physical_atari/upper_bound_benchmark/upper_bound_benchmark/__init__.py", line 8, in <module>
+    from .env import (
+    ...<4 lines>...
+    )
+  File "/workspace/physical_atari/upper_bound_benchmark/upper_bound_benchmark/env.py", line 5, in <module>
+    import gymnasium as gym
+ModuleNotFoundError: No module named 'gymnasium'
+Running BBF on Atlantis (seed=7779, RR=2)
+Config: 100K steps, no sticky actions, single cycle
+Output directory: results/atari100k/atlantis_test
+--------------------------------------------------------------------------------
+
+Cycle 1/1, Game: ALE/Atlantis-v5
+A.L.E: Arcade Learning Environment (version 0.11.2+ecc1138)
+[Powered by Stella]
+  Target: 100000 frames, Seed: 8779
+  Episode finished: Return=2000.0, Length=1691, Steps=1691
+
+[Step 2,000] Training Metrics:
+  Loss: TD=3.7974, SPR=-0.1990, Total=2.8023
+  Q-values: Mean=0.02, Max=0.02
+  Hyperparams: γ=0.9700, n-step=10, ε=0.000
+  Training: Learn steps=2, Buffer size=2,000
