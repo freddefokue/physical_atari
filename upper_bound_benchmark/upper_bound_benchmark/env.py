@@ -5,6 +5,10 @@ from typing import Optional
 import gymnasium as gym
 import numpy as np
 
+# Import ale_py to register ALE environments with gymnasium
+import ale_py
+gym.register_envs(ale_py)
+
 
 class FrameCounterWrapper(gym.Wrapper):
     """Counts environment steps as frames (with frameskip=1)."""

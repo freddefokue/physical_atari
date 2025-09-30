@@ -9,3 +9,21 @@ Cycle 1/1, Game: ALE/Atlantis-v5
 A.L.E: Arcade Learning Environment (version 0.8.1+53f58b7)
 [Powered by Stella]
   Target: 100000 frames, Seed: 8779
+Running BBF on Atlantis (seed=7779, RR=2)
+Config: 100K steps, no sticky actions, single cycle
+Output directory: results/atari100k/atlantis_test
+--------------------------------------------------------------------------------
+
+Cycle 1/1, Game: ALE/Atlantis-v5
+A.L.E: Arcade Learning Environment (version 0.8.1+53f58b7)
+[Powered by Stella]
+  Target: 100000 frames, Seed: 8779
+Running BBF on Atlantis (seed=7779, RR=2)
+Config: 100K steps, no sticky actions, single cycle
+Output directory: results/atari100k/atlantis_test
+--------------------------------------------------------------------------------
+
+Cycle 1/1, Game: ALE/Atlantis-v5
+A.L.E: Arcade Learning Environment (version 0.8.1+53f58b7)
+[Powered by Stella]
+  Target: 100000 frames, Seed: 8779
