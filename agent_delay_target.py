@@ -788,6 +788,122 @@ class Agent:
 #
 # This file can be run directly to experiment in simulator, or imported by the physical harness.
 # --------------------------------
+def run_training_frames(
+    agent,
+    ale,
+    action_set,
+    *,
+    name,
+    data_dir,
+    rank,
+    delay_frames,
+    average_frames,
+    max_frames_without_reward,
+    lives_as_episodes,
+    save_incremental_models,
+    last_model_save,
+):
+    episode_scores = []
+    episode_end = []
+
+    environment_start = 0
+    running_episode_score = 0
+    environment_start_time = time.time()
+
+    episode_graph = torch.zeros(1000, device='cpu')
+    parms_graph = torch.zeros(1000, len(list(agent.training_model.parameters())))
+
+    episode_number = 0
+    frames_without_reward = 0
+    previous_lives = ale.lives()
+    delayed_actions = [0] * delay_frames
+
+    taken_action = 0
+    avg = 0
+
+    for u in range(agent.total_frames):
+        if save_incremental_models and (u + 1) // 500_000 != last_model_save:
+            last_model_save = (u + 1) // 500_000
+            filename = f'{data_dir}/{name}_{u + 1}.model'
+            print('writing ' + filename)
+            agent.save_model(filename)
+
+        if u * episode_graph.shape[0] // agent.total_frames != (u + 1) * episode_graph.shape[0] // agent.total_frames:
+            torch.cuda.synchronize()
+            i = u * episode_graph.shape[0] // agent.total_frames
+            count = 0
+            total = 0
+            for j in range(len(episode_scores) - 1, -1, -1):
+                if episode_end[j] < u - average_frames:
+                    break
+                count += 1
+                total += episode_scores[j]
+            if count == 0:
+                avg = -999
+            else:
+                avg = total / count
+                for j in range(i - 1, -1, -1):
+                    if episode_graph[j] != -999:
+                        break
+                    episode_graph[j] = avg
+            episode_graph[i] = avg
+
+            filename = data_dir + '/' + name + '.score'
+            episode_graph.cpu().numpy().tofile(filename)
+
+            for j, p in enumerate(agent.training_model.parameters()):
+                parms_graph[i, j] = torch.norm(p.flatten()).item()
+
+        delayed_actions.append(taken_action)
+
+        torch.cuda.nvtx.range_push("act")
+        cmd = delayed_actions.pop(0)
+        reward = ale.act(int(action_set[cmd]))
+        running_episode_score += reward
+        torch.cuda.nvtx.range_pop()
+        if reward != 0:
+            frames_without_reward = 0
+        else:
+            frames_without_reward += 1
+
+        end_of_episode = 0
+
+        if lives_as_episodes and ale.lives() < previous_lives:
+            previous_lives = ale.lives()
+            episode_number += 1
+            end_of_episode = 1
+        if ale.game_over() or frames_without_reward == max_frames_without_reward:
+            torch.cuda.synchronize()
+            if frames_without_reward == max_frames_without_reward:
+                print(f'terminated at {frames_without_reward} frames without reward')
+            episode_number = ((episode_number // 100) + 1) * 100
+            end_of_episode = 1
+            torch.cuda.nvtx.range_push("reset")
+            ale.reset_game()
+            previous_lives = ale.lives()
+            frames_without_reward = 0
+
+            frames = u - environment_start
+            episode_end.append(u)
+            environment_start = u
+            episode_scores.append(running_episode_score)
+            running_episode_score = 0
+
+            now = time.time()
+            frames_per_second = frames / (now - environment_start_time)
+            environment_start_time = now
+
+            print(
+                f'{rank}:{name} frame:{u:7} {frames_per_second:4.0f}/s eps {len(episode_scores) - 1:3},{frames:5}={int(episode_scores[-1]):5} err {agent.avg_error_ema:.1f} {agent.max_error_ema:.1f} loss {agent.train_loss_ema:.1f} targ {agent.target_ema:.1f} avg {avg:4.1f}'
+            )
+
+            torch.cuda.nvtx.range_pop()
+
+        taken_action = agent.frame(ale.getScreenRGB(), reward, end_of_episode)
+
+    return last_model_save, episode_scores, episode_end, episode_graph, parms_graph
+
+
 def main():
     data_dir = './results'
     os.makedirs(data_dir, exist_ok=True)
@@ -858,6 +974,7 @@ def main():
         ale.setFloat('repeat_action_probability', 0.0)
         reduce_action_set = 1
         delay_frames = 0
+        
     elif sys.argv[-1] == 'physical':
         physical_list = ['centipede', 'up_n_down', 'qbert', 'battle_zone', 'krull', 'defender', 'ms_pacman', 'atlantis']
         game = physical_list[rank % 8]
@@ -919,111 +1036,28 @@ def main():
 
     agent = Agent(data_dir, seed, num_actions, total_frames, **parms)
 
-    avg = 0
-
-    episode_scores = []
-    episode_end = []
-    environment_start = 0
-    running_episode_score = 0
-    environment_start_time = time.time()
-
-    # put the average of 100 episodes in each slot, evenly divided by the total number of learning steps
-    episode_graph = torch.zeros(1000, device='cpu')
-    parms_graph = torch.zeros(1000, len(list(agent.training_model.parameters())))
-
-    episode_number = 0
-    frames_without_reward = 0
-    previous_lives = ale.lives()
-    delayed_actions = [0] * delay_frames  # allow the commands to be delayed by this many 60 fps frames
-
-    taken_action = 0  # until a policy can be evaluated on observations
-
-    # note that atlantis can learn to play indefinitely, so there may be no completed episodes in the window
     average_frames = 100_000  # frames to average episode scores over for episode_graph
 
-    for u in range(agent.total_frames):
-        if save_incremental_models and (u + 1) // 500_000 != last_model_save:
-            last_model_save = (u + 1) // 500_000
-            filename = f'{data_dir}/{name}_{u + 1}.model'
-            print('writing ' + filename)
-            agent.save_model(filename)
-
-        # fill in our average score graph so we get exactly 1000 points on it
-        if u * episode_graph.shape[0] // agent.total_frames != (u + 1) * episode_graph.shape[0] // agent.total_frames:
-            torch.cuda.synchronize()
-            i = u * episode_graph.shape[0] // agent.total_frames
-            count = 0
-            total = 0
-            for j in range(len(episode_scores) - 1, -1, -1):
-                if episode_end[j] < u - average_frames:
-                    break
-                count += 1
-                total += episode_scores[j]
-            if count == 0:
-                avg = -999
-            else:
-                avg = total / count
-                # if no episodes were completed in the previous window, backfill with the current value
-                for j in range(i - 1, -1, -1):
-                    if episode_graph[j] != -999:
-                        break
-                    episode_graph[j] = avg
-            episode_graph[i] = avg
-
-            # write the graph out so it can be viewed incrementally
-            filename = data_dir + '/' + name + '.score'
-            episode_graph.cpu().numpy().tofile(filename)
-
-            for j, p in enumerate(agent.training_model.parameters()):
-                parms_graph[i, j] = torch.norm(p.flatten()).item()
-
-        delayed_actions.append(taken_action)
-
-        torch.cuda.nvtx.range_push("act")
-        cmd = delayed_actions.pop(0)
-        reward = ale.act(int(action_set[cmd]))
-        running_episode_score += reward
-        torch.cuda.nvtx.range_pop()
-        if reward != 0:
-            frames_without_reward = 0
-        else:
-            frames_without_reward += 1
-
-        end_of_episode = 0
-
-        if lives_as_episodes and ale.lives() < previous_lives:
-            previous_lives = ale.lives()
-            episode_number += 1
-            end_of_episode = 1
-        if ale.game_over() or frames_without_reward == max_frames_without_reward:
-            torch.cuda.synchronize()
-            if frames_without_reward == max_frames_without_reward:
-                print(f'terminated at {frames_without_reward} frames without reward')
-            episode_number = ((episode_number // 100) + 1) * 100
-            end_of_episode = 1
-            torch.cuda.nvtx.range_push("reset")
-            ale.reset_game()
-            previous_lives = ale.lives()
-            frames_without_reward = 0
-
-            frames = u - environment_start
-            episode_end.append(u)
-            environment_start = u
-            episode_scores.append(running_episode_score)
-            running_episode_score = 0
-
-            # calculate step speed
-            now = time.time()
-            frames_per_second = frames / (now - environment_start_time)
-            environment_start_time = now
-
-            print(
-                f'{rank}:{name} frame:{u:7} {frames_per_second:4.0f}/s eps {len(episode_scores) - 1:3},{frames:5}={int(episode_scores[-1]):5} err {agent.avg_error_ema:.1f} {agent.max_error_ema:.1f} loss {agent.train_loss_ema:.1f} targ {agent.target_ema:.1f} avg {avg:4.1f}'
-            )
-
-            torch.cuda.nvtx.range_pop()
-
-        taken_action = agent.frame(ale.getScreenRGB(), reward, end_of_episode)
+    (
+        last_model_save,
+        episode_scores,
+        episode_end,
+        episode_graph,
+        parms_graph,
+    ) = run_training_frames(
+        agent,
+        ale,
+        action_set,
+        name=name,
+        data_dir=data_dir,
+        rank=rank,
+        delay_frames=delay_frames,
+        average_frames=average_frames,
+        max_frames_without_reward=max_frames_without_reward,
+        lives_as_episodes=lives_as_episodes,
+        save_incremental_models=save_incremental_models,
+        last_model_save=last_model_save,
+    )
 
     filename = data_dir + '/' + name + '.policy_actions'
     print('writing ' + filename)
