@@ -16,6 +16,7 @@
 #
 # Use the last evaluations for target calculation instead of a target model evaluation
 import copy
+import json
 import math
 import os
 import sys
@@ -27,6 +28,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from ale_py import Action, ALEInterface, LoggerMode, roms
 from pynvml import *
+
+from benchmark_runner import BenchmarkConfig, BenchmarkRunner, CycleConfig, GameSpec
 
 
 def train_function(
@@ -802,11 +805,14 @@ def run_training_frames(
     lives_as_episodes,
     save_incremental_models,
     last_model_save,
+    frame_budget,
+    frame_offset=0,
+    graph_total_frames=None,
 ):
     episode_scores = []
     episode_end = []
 
-    environment_start = 0
+    environment_start = frame_offset
     running_episode_score = 0
     environment_start_time = time.time()
 
@@ -821,20 +827,33 @@ def run_training_frames(
     taken_action = 0
     avg = 0
 
-    for u in range(agent.total_frames):
-        if save_incremental_models and (u + 1) // 500_000 != last_model_save:
-            last_model_save = (u + 1) // 500_000
-            filename = f'{data_dir}/{name}_{u + 1}.model'
+    if graph_total_frames is None:
+        graph_total_frames = frame_offset + frame_budget
+    else:
+        graph_total_frames = max(graph_total_frames, frame_offset + frame_budget)
+
+    for local_frame in range(frame_budget):
+        global_frame = frame_offset + local_frame
+        global_next = global_frame + 1
+
+        if save_incremental_models and global_next // 500_000 != last_model_save:
+            last_model_save = global_next // 500_000
+            filename = f'{data_dir}/{name}_{global_next}.model'
             print('writing ' + filename)
             agent.save_model(filename)
 
-        if u * episode_graph.shape[0] // agent.total_frames != (u + 1) * episode_graph.shape[0] // agent.total_frames:
+        points = episode_graph.shape[0]
+        if (
+            global_frame * points // graph_total_frames
+            != global_next * points // graph_total_frames
+        ):
             torch.cuda.synchronize()
-            i = u * episode_graph.shape[0] // agent.total_frames
+            i = global_frame * points // graph_total_frames
+            i = min(i, points - 1)
             count = 0
             total = 0
             for j in range(len(episode_scores) - 1, -1, -1):
-                if episode_end[j] < u - average_frames:
+                if episode_end[j] < global_frame - average_frames:
                     break
                 count += 1
                 total += episode_scores[j]
@@ -883,9 +902,9 @@ def run_training_frames(
             previous_lives = ale.lives()
             frames_without_reward = 0
 
-            frames = u - environment_start
-            episode_end.append(u)
-            environment_start = u
+            frames = global_frame - environment_start
+            episode_end.append(global_frame)
+            environment_start = global_frame
             episode_scores.append(running_episode_score)
             running_episode_score = 0
 
@@ -894,7 +913,10 @@ def run_training_frames(
             environment_start_time = now
 
             print(
-                f'{rank}:{name} frame:{u:7} {frames_per_second:4.0f}/s eps {len(episode_scores) - 1:3},{frames:5}={int(episode_scores[-1]):5} err {agent.avg_error_ema:.1f} {agent.max_error_ema:.1f} loss {agent.train_loss_ema:.1f} targ {agent.target_ema:.1f} avg {avg:4.1f}'
+                f'{rank}:{name} frame:{global_frame:7} {frames_per_second:4.0f}/s '
+                f'eps {len(episode_scores) - 1:3},{frames:5}={int(episode_scores[-1]):5} '
+                f'err {agent.avg_error_ema:.1f} {agent.max_error_ema:.1f} '
+                f'loss {agent.train_loss_ema:.1f} targ {agent.target_ema:.1f} avg {avg:4.1f}'
             )
 
             torch.cuda.nvtx.range_pop()
@@ -910,36 +932,146 @@ def main():
 
     save_model = False
     save_incremental_models = False
-    last_model_save = -1
-
-    # phoenix in particular has the opportunity to hide in a corner from the boss fight and never collect any rewards, so
-    # restarting after a certain number of steps keeps learning going.
-    #
-    # "Revisiting the ALE" recommends a max episode frames (60fps) of 18_000, which is only five minutes, which would cut short many
-    # valid high performing games.
-    # "Is Deep Reinforcement Learning Really Superhuman on Atari?" https://arxiv.org/pdf/1908.04683 recommends 18k limit without a reward.
     max_frames_without_reward = 18_000
+    lives_as_episodes = 1
+
+    allowed_modes = {'atari100k', 'physical', 'continual'}
+    mode = None
+    if len(sys.argv) >= 2 and sys.argv[-1] in allowed_modes:
+        mode = sys.argv[-1]
+
+    try:
+        rank = int(sys.argv[1])
+    except (IndexError, ValueError):
+        rank = 0
+
+    parms = {'gpu': rank % 8}
+    frame_skip = 4
+    parms['frame_skip'] = frame_skip
+
+    if mode == 'continual':
+        average_frames = 100_000
+        seed = rank
+
+        game_order = [
+            'centipede',
+            'up_n_down',
+            'qbert',
+            'battle_zone',
+            'krull',
+            'defender',
+            'ms_pacman',
+            'atlantis',
+        ]
+        frame_budget = 400_000
+        cycles = []
+        for cycle_index in range(3):
+            cycle_games = []
+            for game_name in game_order:
+                cycle_games.append(
+                    GameSpec(
+                        name=game_name,
+                        frame_budget=frame_budget,
+                        sticky_prob=0.25,
+                        delay_frames=6,
+                        seed=seed + cycle_index,
+                        params={'use_canonical_full_actions': True},
+                    )
+                )
+            cycles.append(CycleConfig(cycle_index=cycle_index, games=cycle_games))
+
+        benchmark_config = BenchmarkConfig(
+            cycles=cycles,
+            description='Continual benchmark: 3 cycles x 8 games x 400k frames',
+        )
+
+        parms.update(
+            ring_buffer_size=1_500_000,
+            multisteps_max=64,
+            td_lambda=0.95,
+            online_loss_scale=2,
+            train_batch=32,
+            lr_log2=-18,
+            base_lr_log2=-16,
+        )
+
+        num_actions = len(BenchmarkRunner._canonical_action_set())
+        total_frames = benchmark_config.total_frames
+
+        agent = Agent(data_dir, seed, num_actions, total_frames, **parms)
+
+        runner = BenchmarkRunner(
+            agent,
+            benchmark_config,
+            frame_runner=run_training_frames,
+            data_dir=data_dir,
+            rank=rank,
+            default_seed=seed,
+            reduce_action_set=0,
+            use_canonical_full_actions=True,
+            average_frames=average_frames,
+            max_frames_without_reward=max_frames_without_reward,
+            lives_as_episodes=lives_as_episodes,
+            save_incremental_models=save_incremental_models,
+        )
+        results = runner.run()
+
+        summary_records = []
+        for result in results:
+            total_score = float(sum(result.episode_scores))
+            mean_score = float(np.mean(result.episode_scores)) if result.episode_scores else 0.0
+            summary_records.append(
+                {
+                    'cycle_index': result.cycle_index,
+                    'game_index': result.game_index,
+                    'game': result.spec.name,
+                    'frame_offset': result.frame_offset,
+                    'frame_budget': result.frame_budget,
+                    'episodes': len(result.episode_scores),
+                    'total_episode_score': total_score,
+                    'mean_episode_score': mean_score,
+                }
+            )
+
+        final_cycle_index = benchmark_config.cycles[-1].cycle_index if benchmark_config.cycles else -1
+        final_cycle_total = sum(
+            record['total_episode_score']
+            for record in summary_records
+            if record['cycle_index'] == final_cycle_index
+        )
+
+        summary_path = os.path.join(data_dir, 'continual_summary.json')
+        with open(summary_path, 'w', encoding='utf-8') as f:
+            json.dump(
+                {
+                    'description': benchmark_config.description,
+                    'final_cycle_index': final_cycle_index,
+                    'final_cycle_total_episode_score': final_cycle_total,
+                    'records': summary_records,
+                },
+                f,
+                indent=2,
+            )
+
+        print(f'Final cycle ({final_cycle_index}) total episode score: {final_cycle_total:.1f}')
+        print(f'Wrote summary to {summary_path}')
+
+        if save_model:
+            filename = f'{data_dir}/continual_final.model'
+            print('writing ' + filename)
+            agent.save_model(filename)
+
+        print('done')
+        return
+
+    # fallback to legacy single-game runs
+    last_model_save = -1
 
     ale = ALEInterface()
     ale.setLoggerMode(LoggerMode.Error)
     ale.setInt('random_seed', 0)
 
-    lives_as_episodes = 1
-
-    # if there is a command line parameter, take it as the cuda gpu
-    # The rank can be used to try different hyperparameters on each gpu
-    if len(sys.argv) >= 2:
-        rank = int(sys.argv[1])
-    else:
-        rank = 0
-
-    parms = {}
-    parms['gpu'] = rank % 8
-
-    frame_skip = 4  # number of times an action is repeated in the environment
-    parms['frame_skip'] = frame_skip
-
-    if sys.argv[-1] == 'atari100k':
+    if mode == 'atari100k':
         atari100k_list = [
             'assault',
             'asterix',
@@ -968,14 +1100,12 @@ def main():
         ]
         game = atari100k_list[rank % 24]
         seed = rank // 24
-        total_frames = 1_000_000  # real atari100k is only 400_000, but training longer is helpful
+        total_frames = 1_000_000
 
-        # run without sticky actions, which should give slightly better scores, because the models don't need to deal with any randomness
         ale.setFloat('repeat_action_probability', 0.0)
         reduce_action_set = 1
         delay_frames = 0
-        
-    elif sys.argv[-1] == 'physical':
+    elif mode == 'physical':
         physical_list = ['centipede', 'up_n_down', 'qbert', 'battle_zone', 'krull', 'defender', 'ms_pacman', 'atlantis']
         game = physical_list[rank % 8]
         total_frames = 20_000_000
@@ -988,30 +1118,20 @@ def main():
         parms['base_lr_log2'] = -16
         seed = (rank // 8) % 4
 
-        reduce_action_set = (
-            2  # 0 = always 18, 1 = ALE minimum action set, 2 = restricted even more for ms_pacman and qbert
-        )
-        delay_frames = 6  # 60 fps frames to delay commands to simulate real world latency
+        reduce_action_set = 2
+        delay_frames = 6
     else:
-        reduce_action_set = (
-            2  # 0 = always 18, 1 = ALE minimum action set, 2 = restricted even more for ms_pacman and qbert
-        )
+        reduce_action_set = 2
         total_frames = 2_000_000
-        parms['lr_log2'] = -17  # -18 + rank//4
-        parms['base_lr_log2'] = -15  # -18 + rank%4
+        parms['lr_log2'] = -17
+        parms['base_lr_log2'] = -15
         seed = 0
         game = 'ms_pacman'
-        #        game = 'up_n_down'
-        #        game = 'atlantis'
-        #        game = 'qbert'
-        #        game = 'centipede'
-        #        game = 'battle_zone'
 
-        delay_frames = 6  # 60 fps frames to delay commands to simulate real world latency
+        delay_frames = 6
         if game == 'breakout':
             delay_frames = 0
 
-    # use the ale_py installation path
     rom_path = roms.get_rom_path(game)
     ale.loadROM(rom_path)
     ale.reset_game()
@@ -1019,7 +1139,6 @@ def main():
     if reduce_action_set == 0:
         action_set = ale.getLegalActionSet()
     else:
-        # optionally apply more restrictions to the action set, since the ALE minimal action set isn't really minimal
         if reduce_action_set == 2 and (game == 'ms_pacman' or game == 'qbert'):
             action_set = [Action.UP, Action.DOWN, Action.LEFT, Action.RIGHT]
         else:
@@ -1036,7 +1155,7 @@ def main():
 
     agent = Agent(data_dir, seed, num_actions, total_frames, **parms)
 
-    average_frames = 100_000  # frames to average episode scores over for episode_graph
+    average_frames = 100_000
 
     (
         last_model_save,
@@ -1057,6 +1176,9 @@ def main():
         lives_as_episodes=lives_as_episodes,
         save_incremental_models=save_incremental_models,
         last_model_save=last_model_save,
+        frame_budget=agent.total_frames,
+        frame_offset=0,
+        graph_total_frames=agent.total_frames,
     )
 
     filename = data_dir + '/' + name + '.policy_actions'
