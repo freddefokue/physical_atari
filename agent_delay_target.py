@@ -457,7 +457,7 @@ class Agent:
         self.total_frames = total_frames
 
         # should be strictly a performance optimization, with no behavior change
-        self.use_cuda_graphs = True  # faster with graphs, but you can't debug them
+        self.use_cuda_graphs = False  # disable graphs by default; current ring-buffer update uses capture-unsafe ops
 
         # dynamically override configuration
         for key, value in kwargs.items():
