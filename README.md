@@ -151,6 +151,8 @@ python3 harness_physical.py \
  --total_frames=1_000_000
 ```
 
+When launching the scripted continual benchmark (`python agent_delay_target.py continual`), use `--cycle_frames` to set the total frames per cycle (default `400000`). Each of the eight games receives `cycle_frames / 8` frames unless you provide `--game_frame_budgets=<comma-separated values>`, which must sum to the chosen `--cycle_frames`.
+
 
 ---
 

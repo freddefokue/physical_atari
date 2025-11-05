@@ -15,6 +15,7 @@
 # agent_delay_target.py
 #
 # Use the last evaluations for target calculation instead of a target model evaluation
+import argparse
 import copy
 import json
 import math
@@ -927,7 +928,7 @@ def run_training_frames(
 
 
 def main():
-    data_dir = './results'
+    data_dir = './results/first_continual_run'
     os.makedirs(data_dir, exist_ok=True)
 
     save_model = False
@@ -936,14 +937,40 @@ def main():
     lives_as_episodes = 1
 
     allowed_modes = {'atari100k', 'physical', 'continual'}
-    mode = None
-    if len(sys.argv) >= 2 and sys.argv[-1] in allowed_modes:
-        mode = sys.argv[-1]
 
-    try:
-        rank = int(sys.argv[1])
-    except (IndexError, ValueError):
-        rank = 0
+    parser = argparse.ArgumentParser(
+        description='Run the Physical Atari agent in simulator or continual benchmark modes.',
+        allow_abbrev=False,
+    )
+    parser.add_argument(
+        '--cycle_frames',
+        type=int,
+        default=400_000,
+        help='Total number of frames to allocate per cycle when running the continual benchmark.',
+    )
+    parser.add_argument(
+        '--game_frame_budgets',
+        type=str,
+        help='Comma-separated per-game frame budgets for continual mode. Must sum to --cycle_frames.',
+    )
+    args, positional = parser.parse_known_args()
+
+    positional_args = list(positional)
+    mode = None
+    if positional_args and positional_args[-1] in allowed_modes:
+        mode = positional_args.pop()
+
+    rank = 0
+    if positional_args:
+        try:
+            rank = int(positional_args.pop(0))
+        except ValueError as exc:
+            raise ValueError(
+                f"Could not parse rank from arguments: {' '.join(positional)}"
+            ) from exc
+
+    if positional_args:
+        raise ValueError(f"Unrecognized positional arguments: {' '.join(positional_args)}")
 
     parms = {'gpu': rank % 8}
     frame_skip = 4
@@ -963,15 +990,45 @@ def main():
             'ms_pacman',
             'atlantis',
         ]
-        frame_budget = 400_000
+        cycle_frames = args.cycle_frames
+        if cycle_frames <= 0:
+            raise ValueError('--cycle_frames must be a positive integer')
+
+        provided_budgets: Optional[List[int]] = None
+        if args.game_frame_budgets is not None:
+            try:
+                provided_budgets = [int(value.strip()) for value in args.game_frame_budgets.split(',') if value.strip()]
+            except ValueError as exc:
+                raise ValueError('--game_frame_budgets must be a comma-separated list of integers') from exc
+
+            if len(provided_budgets) != len(game_order):
+                raise ValueError(
+                    f'--game_frame_budgets expected {len(game_order)} values, received {len(provided_budgets)}'
+                )
+            if any(budget < 0 for budget in provided_budgets):
+                raise ValueError('--game_frame_budgets values must be non-negative integers')
+            if sum(provided_budgets) != cycle_frames:
+                raise ValueError('--game_frame_budgets values must sum to --cycle_frames')
+
+        if provided_budgets is None:
+            if cycle_frames % len(game_order) != 0:
+                raise ValueError(
+                    f'--cycle_frames ({cycle_frames}) must be divisible by the number of games ({len(game_order)}) '
+                    'when --game_frame_budgets is not provided.'
+                )
+            frame_budget = cycle_frames // len(game_order)
+            game_frame_budgets = [frame_budget] * len(game_order)
+        else:
+            game_frame_budgets = provided_budgets
+
         cycles = []
         for cycle_index in range(3):
             cycle_games = []
-            for game_name in game_order:
+            for game_index, game_name in enumerate(game_order):
                 cycle_games.append(
                     GameSpec(
                         name=game_name,
-                        frame_budget=frame_budget,
+                        frame_budget=game_frame_budgets[game_index],
                         sticky_prob=0.25,
                         delay_frames=6,
                         seed=seed + cycle_index,
@@ -982,11 +1039,14 @@ def main():
 
         benchmark_config = BenchmarkConfig(
             cycles=cycles,
-            description='Continual benchmark: 3 cycles x 8 games x 400k frames',
+            description=(
+                f'Continual benchmark: 3 cycles x {len(game_order)} games '
+                f'(cycle frames={cycle_frames})'
+            ),
         )
 
         parms.update(
-            ring_buffer_size=1_500_000,
+            ring_buffer_size=100_000,
             multisteps_max=64,
             td_lambda=0.95,
             online_loss_scale=2,
