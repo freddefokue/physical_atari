@@ -945,7 +945,7 @@ def main():
     parser.add_argument(
         '--cycle_frames',
         type=int,
-        default=400_000,
+        default=150_000,
         help='Total number of frames to allocate per cycle when running the continual benchmark.',
     )
     parser.add_argument(
@@ -981,14 +981,9 @@ def main():
         seed = rank
 
         game_order = [
-            'centipede',
-            'up_n_down',
-            'qbert',
-            'battle_zone',
-            'krull',
-            'defender',
             'ms_pacman',
             'atlantis',
+            'centipede'
         ]
         cycle_frames = args.cycle_frames
         if cycle_frames <= 0:
