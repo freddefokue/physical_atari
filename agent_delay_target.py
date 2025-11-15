@@ -22,6 +22,7 @@ import math
 import os
 import sys
 import time
+from typing import List, Optional
 
 import numpy as np
 import torch
@@ -928,7 +929,7 @@ def run_training_frames(
 
 
 def main():
-    data_dir = './results/first_continual_run'
+    data_dir = './results/my_atd_continual_123'
     os.makedirs(data_dir, exist_ok=True)
 
     save_model = False
@@ -953,6 +954,11 @@ def main():
         type=str,
         help='Comma-separated per-game frame budgets for continual mode. Must sum to --cycle_frames.',
     )
+    parser.add_argument(
+        '--seed',
+        type=int,
+        help='Override the base random seed used for the agent and environment.',
+    )
     args, positional = parser.parse_known_args()
 
     positional_args = list(positional)
@@ -975,17 +981,17 @@ def main():
     parms = {'gpu': rank % 8}
     frame_skip = 4
     parms['frame_skip'] = frame_skip
+    seed_override = args.seed
 
     if mode == 'continual':
         average_frames = 100_000
-        seed = rank
+        seed = seed_override if seed_override is not None else rank
 
         game_order = [
-            'ms_pacman',
-            'atlantis',
-            'centipede'
+            'ms_pacman'
         ]
-        cycle_frames = args.cycle_frames
+        reduce_action_setting = 2
+        cycle_frames = 200_000
         if cycle_frames <= 0:
             raise ValueError('--cycle_frames must be a positive integer')
 
@@ -1017,40 +1023,57 @@ def main():
             game_frame_budgets = provided_budgets
 
         cycles = []
-        for cycle_index in range(3):
+        for cycle_index in range(1):
             cycle_games = []
             for game_index, game_name in enumerate(game_order):
                 cycle_games.append(
                     GameSpec(
                         name=game_name,
                         frame_budget=game_frame_budgets[game_index],
-                        sticky_prob=0.25,
+                        sticky_prob=0.0,
                         delay_frames=6,
                         seed=seed + cycle_index,
-                        params={'use_canonical_full_actions': True},
+                        params={'reduce_action_set': reduce_action_setting},
                     )
                 )
             cycles.append(CycleConfig(cycle_index=cycle_index, games=cycle_games))
 
+        action_set_sizes = set()
+        for cycle in cycles:
+            for spec in cycle.games:
+                preview_ale = ALEInterface()
+                preview_ale.setLoggerMode(LoggerMode.Error)
+                preview_ale.setInt('random_seed', spec.seed if spec.seed is not None else seed)
+                preview_ale.setFloat('repeat_action_probability', spec.sticky_prob)
+                rom_path = roms.get_rom_path(spec.name)
+                preview_ale.loadROM(rom_path)
+                reduce_action = spec.params.get('reduce_action_set', reduce_action_setting)
+                if reduce_action == 0:
+                    preview_actions = preview_ale.getLegalActionSet()
+                elif reduce_action == 2 and spec.name in {'ms_pacman', 'qbert'}:
+                    preview_actions = [Action.UP, Action.DOWN, Action.LEFT, Action.RIGHT]
+                else:
+                    preview_actions = preview_ale.getMinimalActionSet()
+                action_set_sizes.add(len(preview_actions))
+        if len(action_set_sizes) != 1:
+            raise ValueError(
+                f'Continual benchmark configuration requires a consistent action-set size; found {sorted(action_set_sizes)}'
+            )
+        num_actions = action_set_sizes.pop()
+
         benchmark_config = BenchmarkConfig(
             cycles=cycles,
             description=(
-                f'Continual benchmark: 3 cycles x {len(game_order)} games '
+                f'Continual benchmark: {len(cycles)} cycle(s) x {len(game_order)} game(s) '
                 f'(cycle frames={cycle_frames})'
             ),
         )
 
         parms.update(
-            ring_buffer_size=100_000,
-            multisteps_max=64,
-            td_lambda=0.95,
-            online_loss_scale=2,
-            train_batch=32,
-            lr_log2=-18,
-            base_lr_log2=-16,
+            lr_log2=-17,
+            base_lr_log2=-15,
         )
 
-        num_actions = len(BenchmarkRunner._canonical_action_set())
         total_frames = benchmark_config.total_frames
 
         agent = Agent(data_dir, seed, num_actions, total_frames, **parms)
@@ -1062,8 +1085,8 @@ def main():
             data_dir=data_dir,
             rank=rank,
             default_seed=seed,
-            reduce_action_set=0,
-            use_canonical_full_actions=True,
+            reduce_action_set=reduce_action_setting,
+            use_canonical_full_actions=False,
             average_frames=average_frames,
             max_frames_without_reward=max_frames_without_reward,
             lives_as_episodes=lives_as_episodes,
@@ -1108,6 +1131,36 @@ def main():
                 indent=2,
             )
 
+        wrote_loss = False
+        for result in results:
+            base = os.path.join(data_dir, result.name)
+
+            score_path = base + '.score'
+            result.episode_graph.cpu().numpy().tofile(score_path)
+
+            parms_path = base + '.parms'
+            result.parms_graph.cpu().numpy().tofile(parms_path)
+
+            if result.episode_scores:
+                plots = torch.zeros(len(result.episode_scores), 2)
+                for i, (frame_idx, score) in enumerate(zip(result.episode_end, result.episode_scores)):
+                    plots[i][0] = frame_idx
+                    plots[i][1] = score
+                scatter_path = base + '.scatter'
+                plots.cpu().numpy().tofile(scatter_path)
+
+            start = result.frame_offset
+            end = start + result.frame_budget
+            if hasattr(agent, 'policy_actions_buffer'):
+                policy_slice = agent.policy_actions_buffer[start:end]
+                policy_path = base + '.policy_actions'
+                policy_slice.cpu().numpy().tofile(policy_path)
+
+            if agent.train_losses and not wrote_loss:
+                loss_path = base + '.loss'
+                torch.tensor(agent.train_losses, dtype=torch.float32).cpu().numpy().tofile(loss_path)
+                wrote_loss = True
+
         print(f'Final cycle ({final_cycle_index}) total episode score: {final_cycle_total:.1f}')
         print(f'Wrote summary to {summary_path}')
 
@@ -1124,7 +1177,6 @@ def main():
 
     ale = ALEInterface()
     ale.setLoggerMode(LoggerMode.Error)
-    ale.setInt('random_seed', 0)
 
     if mode == 'atari100k':
         atari100k_list = [
@@ -1154,7 +1206,7 @@ def main():
             'up_n_down',
         ]
         game = atari100k_list[rank % 24]
-        seed = rank // 24
+        seed = seed_override if seed_override is not None else rank // 24
         total_frames = 1_000_000
 
         ale.setFloat('repeat_action_probability', 0.0)
@@ -1171,22 +1223,23 @@ def main():
         parms['train_batch'] = 32
         parms['lr_log2'] = -18
         parms['base_lr_log2'] = -16
-        seed = (rank // 8) % 4
+        seed = seed_override if seed_override is not None else (rank // 8) % 4
 
         reduce_action_set = 2
         delay_frames = 6
     else:
         reduce_action_set = 2
-        total_frames = 2_000_000
+        total_frames = 200_000
         parms['lr_log2'] = -17
         parms['base_lr_log2'] = -15
-        seed = 0
+        seed = seed_override if seed_override is not None else 0
         game = 'ms_pacman'
 
         delay_frames = 6
         if game == 'breakout':
             delay_frames = 0
 
+    ale.setInt('random_seed', seed)
     rom_path = roms.get_rom_path(game)
     ale.loadROM(rom_path)
     ale.reset_game()
