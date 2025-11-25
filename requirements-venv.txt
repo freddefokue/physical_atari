@@ -1,5 +1,5 @@
 absl-py==1.4.0
-ale-py==0.8.1
+ale-py==0.10.1
 appdirs==1.4.4
 AutoROM==0.4.2
 AutoROM.accept-rom-license==0.6.1
