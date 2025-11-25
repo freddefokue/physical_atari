@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Gym-based Atari DQN agent using CleanRL-style wrappers and replay buffer."""
+"""Gym-based Atari BBF agent with BenchmarkRunner integration."""
 
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
+
 from benchmark_runner import (
     BenchmarkConfig,
     BenchmarkRunner,
@@ -39,8 +40,8 @@ from benchmark_runner import (
     EnvironmentHandle,
     FrameRunnerContext,
     FrameRunnerResult,
-    GameSpec,
     GameResult,
+    GameSpec,
 )
 from cleanrl_utils.atari_wrappers import (
     ClipRewardEnv,
@@ -49,7 +50,6 @@ from cleanrl_utils.atari_wrappers import (
     MaxAndSkipEnv,
     NoopResetEnv,
 )
-from cleanrl_utils.buffers import ReplayBuffer
 
 FRAME_SKIP = 4
 PROGRESS_POINTS = 1000
@@ -68,8 +68,6 @@ DEFAULT_CONTINUAL_CYCLE_FRAMES = 400_000
 
 
 def make_env(env_id: str, seed: int) -> gym.Env:
-    """Create a Gym Atari environment with the same wrappers as CleanRL's DQN."""
-
     env = gym.make(env_id)
     env = gym.wrappers.RecordEpisodeStatistics(env)
     env = NoopResetEnv(env, noop_max=30)
@@ -85,24 +83,287 @@ def make_env(env_id: str, seed: int) -> gym.Env:
     return env
 
 
-class QNetwork(nn.Module):
-    def __init__(self, in_channels: int, num_actions: int):
+class ResidualBlock(nn.Module):
+    def __init__(self, channels: int):
         super().__init__()
-        self.network = nn.Sequential(
-            nn.Conv2d(in_channels, 32, 8, stride=4),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, 4, stride=2),
-            nn.ReLU(),
-            nn.Conv2d(64, 64, 3, stride=1),
-            nn.ReLU(),
+        self.conv0 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        inputs = x
+        x = F.relu(x)
+        x = self.conv0(x)
+        x = F.relu(x)
+        x = self.conv1(x)
+        return x + inputs
+
+
+class ImpalaCNN(nn.Module):
+    def __init__(self, in_channels: int, channel_scale: int = 4):
+        super().__init__()
+        widths = [32 * channel_scale, 64 * channel_scale, 64 * channel_scale]
+        layers: List[nn.Module] = []
+        for width in widths:
+            layers.append(nn.Conv2d(in_channels, width, kernel_size=3, padding=1))
+            layers.append(nn.MaxPool2d(kernel_size=3, stride=2, padding=1))
+            layers.append(ResidualBlock(width))
+            layers.append(ResidualBlock(width))
+            in_channels = width
+        self.network = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.network(x)
+
+
+class QNetwork(nn.Module):
+    def __init__(self, in_channels: int, num_actions: int, n_atoms: int, v_min: float, v_max: float):
+        super().__init__()
+        self.n_atoms = n_atoms
+        self.v_min = v_min
+        self.v_max = v_max
+        self.n_actions = num_actions
+        self.register_buffer("support", torch.linspace(v_min, v_max, n_atoms))
+        self.delta_z = (v_max - v_min) / (n_atoms - 1)
+
+        self.encoder = ImpalaCNN(in_channels, channel_scale=4)
+        with torch.no_grad():
+            dummy = torch.zeros(1, in_channels, 84, 84)
+            x = self.encoder(dummy)
+            self.out_features = x.shape[1] * x.shape[2] * x.shape[3]
+
+        self.fc_value = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(3136, 512),
+            nn.Linear(self.out_features, 2048),
             nn.ReLU(),
-            nn.Linear(512, num_actions),
+            nn.Linear(2048, n_atoms),
+        )
+        self.fc_advantage = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(self.out_features, 2048),
+            nn.ReLU(),
+            nn.Linear(2048, n_atoms * num_actions),
+        )
+
+        self.proj_dim = 512
+        self.projection = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(self.out_features, self.proj_dim),
+            nn.BatchNorm1d(self.proj_dim),
+            nn.ReLU(),
+            nn.Linear(self.proj_dim, self.proj_dim),
+            nn.BatchNorm1d(self.proj_dim),
+        )
+        self.dynamics_model = nn.Sequential(
+            nn.Linear(self.proj_dim + num_actions, self.proj_dim),
+            nn.ReLU(),
+            nn.Linear(self.proj_dim, self.proj_dim),
+        )
+        self.predictor = nn.Sequential(
+            nn.Linear(self.proj_dim, self.proj_dim),
+            nn.BatchNorm1d(self.proj_dim),
+            nn.ReLU(),
+            nn.Linear(self.proj_dim, self.proj_dim),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.network(x / 255.0)
+        x = self.encoder(x / 255.0)
+        value = self.fc_value(x).view(-1, 1, self.n_atoms)
+        advantage = self.fc_advantage(x).view(-1, self.n_actions, self.n_atoms)
+        q_atoms = value + advantage - advantage.mean(dim=1, keepdim=True)
+        return F.softmax(q_atoms, dim=2)
+
+    def get_representation(self, x: torch.Tensor) -> torch.Tensor:
+        return self.projection(self.encoder(x / 255.0))
+
+
+class SumSegmentTree:
+    def __init__(self, capacity: int):
+        self.capacity = capacity
+        self.tree_size = 2 * capacity - 1
+        self.tree = np.zeros(self.tree_size, dtype=np.float32)
+
+    def _propagate(self, idx: int):
+        parent = (idx - 1) // 2
+        while parent >= 0:
+            self.tree[parent] = self.tree[parent * 2 + 1] + self.tree[parent * 2 + 2]
+            parent = (parent - 1) // 2
+
+    def update(self, idx: int, value: float):
+        tree_idx = idx + self.capacity - 1
+        self.tree[tree_idx] = value
+        self._propagate(tree_idx)
+
+    def total(self) -> float:
+        return self.tree[0]
+
+    def retrieve(self, value: float) -> int:
+        idx = 0
+        while idx * 2 + 1 < self.tree_size:
+            left = idx * 2 + 1
+            if value <= self.tree[left]:
+                idx = left
+            else:
+                value -= self.tree[left]
+                idx = left + 1
+        return idx - (self.capacity - 1)
+
+
+class MinSegmentTree:
+    def __init__(self, capacity: int):
+        self.capacity = capacity
+        self.tree_size = 2 * capacity - 1
+        self.tree = np.full(self.tree_size, float("inf"), dtype=np.float32)
+
+    def _propagate(self, idx: int):
+        parent = (idx - 1) // 2
+        while parent >= 0:
+            self.tree[parent] = min(self.tree[parent * 2 + 1], self.tree[parent * 2 + 2])
+            parent = (parent - 1) // 2
+
+    def update(self, idx: int, value: float):
+        tree_idx = idx + self.capacity - 1
+        self.tree[tree_idx] = value
+        self._propagate(tree_idx)
+
+    def min(self) -> float:
+        return self.tree[0]
+
+
+class PrioritizedReplayBuffer:
+    def __init__(
+        self,
+        capacity: int,
+        obs_shape: Sequence[int],
+        device: torch.device,
+        alpha: float,
+        beta: float,
+        eps: float,
+    ):
+        self.capacity = capacity
+        self.device = device
+        self.alpha = alpha
+        self.beta = beta
+        self.eps = eps
+
+        self.buffer_obs = np.zeros((capacity,) + tuple(obs_shape), dtype=np.uint8)
+        self.buffer_actions = np.zeros(capacity, dtype=np.int64)
+        self.buffer_rewards = np.zeros(capacity, dtype=np.float32)
+        self.buffer_dones = np.zeros(capacity, dtype=np.bool_)
+
+        self.pos = 0
+        self.size = 0
+        self.max_priority = 1.0
+
+        self.sum_tree = SumSegmentTree(capacity)
+        self.min_tree = MinSegmentTree(capacity)
+
+    def add(self, obs, action, reward, next_obs, done):
+        idx = self.pos
+        self.buffer_obs[idx] = obs
+        self.buffer_actions[idx] = action
+        self.buffer_rewards[idx] = reward
+        self.buffer_dones[idx] = done
+
+        priority = self.max_priority**self.alpha
+        self.sum_tree.update(idx, priority)
+        self.min_tree.update(idx, priority)
+
+        self.pos = (self.pos + 1) % self.capacity
+        self.size = min(self.size + 1, self.capacity)
+
+    def sample(self, batch_size: int, seq_len: int):
+        indices: List[int] = []
+        p_total = self.sum_tree.total()
+        segment = p_total / batch_size
+
+        for i in range(batch_size):
+            while True:
+                a = segment * i
+                b = segment * (i + 1)
+                value = np.random.uniform(a, b)
+                idx = self.sum_tree.retrieve(value)
+
+                if self.size < self.capacity:
+                    if idx + seq_len > self.pos:
+                        continue
+                else:
+                    if idx + seq_len > self.capacity and (idx + seq_len) % self.capacity >= self.pos:
+                        continue
+                if idx + seq_len > self.capacity:
+                    continue
+                indices.append(idx)
+                break
+
+        b_obs = np.array([self.buffer_obs[i : i + seq_len] for i in indices])
+        b_actions = np.array([self.buffer_actions[i : i + seq_len] for i in indices])
+        b_rewards = np.array([self.buffer_rewards[i : i + seq_len] for i in indices])
+        b_dones = np.array([self.buffer_dones[i : i + seq_len] for i in indices])
+
+        samples = {
+            "observations": torch.from_numpy(b_obs).to(self.device),
+            "actions": torch.from_numpy(b_actions).to(self.device),
+            "rewards": torch.from_numpy(b_rewards).to(self.device),
+            "dones": torch.from_numpy(b_dones.astype(np.float32)).to(self.device),
+        }
+
+        probs = np.array([self.sum_tree.tree[idx + self.capacity - 1] for idx in indices], dtype=np.float32)
+        weights = (self.size * probs / p_total) ** -self.beta
+        weights = weights / weights.max()
+        samples["weights"] = torch.from_numpy(weights).to(self.device).unsqueeze(1)
+        samples["indices"] = indices
+        return samples
+
+    def update_priorities(self, indices: Sequence[int], priorities: np.ndarray):
+        priorities = np.abs(priorities) + self.eps
+        self.max_priority = max(self.max_priority, priorities.max())
+        for idx, priority in zip(indices, priorities):
+            priority = float(priority) ** self.alpha
+            self.sum_tree.update(idx, priority)
+            self.min_tree.update(idx, priority)
+
+
+def linear_schedule(start_e: float, end_e: float, duration: int, t: int) -> float:
+    if duration <= 0:
+        return end_e
+    slope = (end_e - start_e) / duration
+    return max(slope * t + start_e, end_e)
+
+
+def shrink_and_perturb(model: QNetwork, target_model: QNetwork, alpha: float = 0.5):
+    random_model = ImpalaCNN(model.encoder.network[0].weight.shape[1]).to(model.encoder.network[0].weight.device)
+    with torch.no_grad():
+        for param, rand_param in zip(model.encoder.parameters(), random_model.parameters()):
+            param.data.mul_(alpha).add_(rand_param.data * (1.0 - alpha))
+    target_model.load_state_dict(model.state_dict())
+
+
+class Augmentation(nn.Module):
+    def __init__(self, pad: int = 4):
+        super().__init__()
+        self.pad = pad
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.float()
+        is_seq = False
+        if x.ndim == 5:
+            is_seq = True
+            b, t, c, h, w = x.shape
+            x = x.view(b * t, c, h, w)
+
+        b, _, h, w = x.shape
+        x = F.pad(x, (self.pad, self.pad, self.pad, self.pad), mode="replicate")
+        eps = 1.0 / (h + 2 * self.pad)
+        x = x + torch.rand_like(x) * eps
+
+        shifted = []
+        for i in range(b):
+            y = random.randint(0, 2 * self.pad)
+            x_shift = random.randint(0, 2 * self.pad)
+            shifted.append(x[i, :, y : y + h, x_shift : x_shift + w])
+        out = torch.stack(shifted)
+        if is_seq:
+            out = out.view(b, t, out.shape[1], out.shape[2], out.shape[3])
+        return out
 
 
 @dataclass
@@ -111,16 +372,30 @@ class AgentConfig:
     total_steps: int = 1_000_000
     buffer_size: int = 1_000_000
     learning_rate: float = 1e-4
-    gamma: float = 0.99
-    tau: float = 1.0
-    target_network_frequency: int = 1_000
+    weight_decay: float = 0.1
+    gamma_initial: float = 0.97
+    gamma_final: float = 0.997
+    n_step_max: int = 10
+    n_step_min: int = 3
+    n_step_decay_steps: int = 10_000
+    reset_grad_interval: int = 40_000
+    replay_ratio: int = 8
+    spr_weight: float = 2.0
+    jumps: int = 5
+    max_grad_norm: float = 10.0
+    tau: float = 0.995
     batch_size: int = 32
-    exploration_fraction: float = 0.10
+    learning_starts: int = 2_000
+    exploration_fraction: float = 0.02
     start_e: float = 1.0
     end_e: float = 0.01
-    learning_starts: int = 80_000
+    prioritized_replay_alpha: float = 0.5
+    prioritized_replay_beta: float = 0.4
+    prioritized_replay_eps: float = 1e-6
+    n_atoms: int = 51
+    v_min: float = -10.0
+    v_max: float = 10.0
     per_game_learning_starts: int = 1_000
-    train_frequency: int = 4
     seed: int = 1
     cuda: bool = True
     track: bool = False
@@ -139,60 +414,59 @@ class AgentConfig:
 
 class Agent:
     def __init__(self, observation_space: gym.Space, action_space: gym.Space, config: AgentConfig):
-        if observation_space.shape is None or len(observation_space.shape) != 3:
-            raise ValueError("Observation space must be 3D (frames, height, width).")
-
         self.config = config
         self.device = config.device
         self.action_space = action_space
         self.global_step = 0
-        self.training_updates = 0
+        self.global_grad_step = 0
         self.last_obs: Optional[np.ndarray] = None
         self.last_action: Optional[int] = None
-        self._game_learning_start_step: int = 0
-
-        obs_shape = observation_space.shape
-        frame_stack = FRAME_SKIP
-        if obs_shape[0] == frame_stack:
-            self.channels_last = False
-            in_channels = obs_shape[0]
-        elif obs_shape[-1] == frame_stack:
-            self.channels_last = True
-            in_channels = obs_shape[-1]
-        else:
-            raise ValueError("Unable to infer stacked frame dimension from observation shape.")
-
-        self.q_network = QNetwork(in_channels, action_space.n).to(self.device)
-        self.target_network = QNetwork(in_channels, action_space.n).to(self.device)
-        self.target_network.load_state_dict(self.q_network.state_dict())
-        self.optimizer = optim.Adam(self.q_network.parameters(), lr=config.learning_rate)
-        self.frame_skip = FRAME_SKIP
+        self._game_learning_start_step = 0
         self.game_frame_counters: Dict[str, int] = {}
 
-        self.replay_buffer = ReplayBuffer(
-            buffer_size=config.buffer_size,
-            observation_space=observation_space,
-            action_space=action_space,
-            device=self.device,
-            n_envs=1,
-            optimize_memory_usage=True,
-            handle_timeout_termination=False,
+        obs_shape = observation_space.shape
+        if obs_shape[0] != FRAME_SKIP:
+            raise ValueError("Expected channel-first stacked observations.")
+
+        self.q_network = QNetwork(obs_shape[0], action_space.n, config.n_atoms, config.v_min, config.v_max).to(self.device)
+        self.target_network = QNetwork(obs_shape[0], action_space.n, config.n_atoms, config.v_min, config.v_max).to(self.device)
+        self.target_network.load_state_dict(self.q_network.state_dict())
+        self.optimizer = optim.AdamW(
+            self.q_network.parameters(),
+            lr=config.learning_rate,
+            weight_decay=config.weight_decay,
+            eps=1.5e-4,
         )
+        self.augmentation = Augmentation().to(self.device)
+
+        self.replay_buffer = PrioritizedReplayBuffer(
+            config.buffer_size,
+            obs_shape,
+            self.device,
+            config.prioritized_replay_alpha,
+            config.prioritized_replay_beta,
+            config.prioritized_replay_eps,
+        )
+
+    def start_new_game(self):
+        self._game_learning_start_step = self.global_step + max(0, self.config.per_game_learning_starts)
 
     def act(self, observation) -> int:
         obs_np = np.array(observation, copy=False)
         obs_tensor = torch.as_tensor(obs_np, dtype=torch.float32, device=self.device).unsqueeze(0)
-        if self.channels_last:
-            obs_tensor = obs_tensor.permute(0, 3, 1, 2)
-
-        epsilon = self._current_epsilon()
+        epsilon = linear_schedule(
+            self.config.start_e,
+            self.config.end_e,
+            int(self.config.exploration_fraction * max(1, self.config.total_steps)),
+            self.global_step,
+        )
         if random.random() < epsilon or self.global_step < self.config.learning_starts:
             action = self.action_space.sample()
         else:
             with torch.no_grad():
-                q_values = self.q_network(obs_tensor)
+                dist = self.q_network(obs_tensor)
+                q_values = torch.sum(dist * self.q_network.support, dim=2)
                 action = int(torch.argmax(q_values, dim=1).item())
-
         self.last_obs = obs_np
         self.last_action = action
         return action
@@ -202,22 +476,14 @@ class Agent:
             return None
 
         next_obs_np = np.array(next_observation, copy=False)
-        obs_batch = np.expand_dims(self.last_obs, axis=0)
-        next_obs_batch = np.expand_dims(next_obs_np, axis=0)
-        action_batch = np.array([[self.last_action]], dtype=np.int64)
-        reward_batch = np.array([reward], dtype=np.float32)
-        done_batch = np.array([done], dtype=np.float32)
-        info_list = [info or {}]
-
-        self.replay_buffer.add(obs_batch, next_obs_batch, action_batch, reward_batch, done_batch, info_list)
+        self.replay_buffer.add(self.last_obs, self.last_action, reward, next_obs_np, done)
         self.global_step += 1
 
         train_log = None
         learning_ready = self.global_step >= max(self.config.learning_starts, self._game_learning_start_step)
-        if learning_ready and self.global_step % self.config.train_frequency == 0:
-            train_log = self.train_function()
-        if self.global_step % self.config.target_network_frequency == 0:
-            self.update_target()
+        if learning_ready and self.replay_buffer.size >= self.config.batch_size:
+            for _ in range(self.config.replay_ratio):
+                train_log = self._train_once()
 
         if done:
             self.last_obs = None
@@ -228,50 +494,122 @@ class Agent:
 
         return train_log
 
-    def _current_epsilon(self) -> float:
-        decay_steps = max(1, int(self.config.exploration_fraction * self.config.total_steps))
-        progress = min(1.0, self.global_step / decay_steps)
-        return self.config.start_e + progress * (self.config.end_e - self.config.start_e)
+    def _train_once(self):
+        self.global_grad_step += 1
+        if self.global_grad_step % self.config.reset_grad_interval == 0:
+            shrink_and_perturb(self.q_network, self.target_network)
+            self.optimizer = optim.AdamW(
+                self.q_network.parameters(),
+                lr=self.config.learning_rate,
+                weight_decay=self.config.weight_decay,
+                eps=1.5e-4,
+            )
 
-    def _prepare_obs(self, obs: torch.Tensor) -> torch.Tensor:
-        if self.channels_last:
-            return obs.permute(0, 3, 1, 2)
-        return obs
+        steps_since_reset = self.global_grad_step % self.config.reset_grad_interval
+        frac = min(1.0, steps_since_reset / max(1, self.config.n_step_decay_steps))
+        current_n_step = max(self.config.n_step_min, int(self.config.n_step_max * (0.3**frac)))
+        current_gamma = self.config.gamma_initial * ((self.config.gamma_final / self.config.gamma_initial) ** frac)
 
-    def train_function(self):
-        samples = self.replay_buffer.sample(self.config.batch_size)
-        obs = self._prepare_obs(samples.observations)
-        next_obs = self._prepare_obs(samples.next_observations)
-        rewards = samples.rewards.flatten()
-        dones = samples.dones.flatten()
-        actions = samples.actions.long().squeeze(1)
+        seq_len = current_n_step + self.config.jumps + 1
+        batch = self.replay_buffer.sample(self.config.batch_size, seq_len)
+
+        observations = batch["observations"]
+        actions = batch["actions"].long()
+        rewards = batch["rewards"]
+        dones = batch["dones"]
+        weights = batch["weights"]
 
         with torch.no_grad():
-            target_max, _ = self.target_network(next_obs).max(dim=1)
-            td_target = rewards + self.config.gamma * target_max * (1 - dones)
+            b_rewards = rewards
+            b_dones = dones
 
-        current_q = self.q_network(obs).gather(1, actions.unsqueeze(1)).squeeze()
-        loss = F.mse_loss(td_target, current_q)
+            n_rewards = torch.zeros(self.config.batch_size, device=self.device)
+            bootstrap_mask = torch.ones(self.config.batch_size, device=self.device)
+            for i in range(current_n_step):
+                r = b_rewards[:, i]
+                d = b_dones[:, i]
+                n_rewards += r * (current_gamma**i) * bootstrap_mask
+                bootstrap_mask *= (1 - d)
+
+            bootstrap_obs = observations[:, current_n_step]
+            bootstrap_obs = bootstrap_obs.float()
+            next_dist = self.target_network(bootstrap_obs)
+            support = self.target_network.support
+            online_dist = self.q_network(bootstrap_obs)
+            next_q_online = torch.sum(online_dist * support, dim=2)
+            best_actions = torch.argmax(next_q_online, dim=1)
+            next_pmfs = next_dist[torch.arange(self.config.batch_size, device=self.device), best_actions]
+
+            gamma_n = current_gamma**current_n_step
+            next_atoms = n_rewards.unsqueeze(1) + gamma_n * support * bootstrap_mask.unsqueeze(1)
+            tz = next_atoms.clamp(self.q_network.v_min, self.q_network.v_max)
+            b = (tz - self.q_network.v_min) / self.q_network.delta_z
+            l = b.floor().clamp(0, self.config.n_atoms - 1)
+            u = b.ceil().clamp(0, self.config.n_atoms - 1)
+
+            target_pmfs = torch.zeros_like(next_pmfs)
+            for i in range(target_pmfs.size(0)):
+                target_pmfs[i].index_add_(0, l[i].long(), (u[i].float() + (l[i] == b[i]).float() - b[i]) * next_pmfs[i])
+                target_pmfs[i].index_add_(0, u[i].long(), (b[i] - l[i].float()) * next_pmfs[i])
+
+        curr_obs = observations[:, 0].float()
+        curr_obs_aug = self.augmentation(curr_obs)
+        dist = self.q_network(curr_obs_aug)
+        action_idx = actions[:, 0].unsqueeze(1).unsqueeze(2).expand(-1, 1, self.config.n_atoms)
+        pred_dist = dist.gather(1, action_idx).squeeze(1)
+        log_pred = torch.log(pred_dist.clamp(min=1e-5, max=1 - 1e-5))
+        loss_q = -(target_pmfs * log_pred).sum(dim=1)
+
+        target_obs_seq = observations[:, 1 : self.config.jumps + 1].float()
+        with torch.no_grad():
+            b, k, c, h, w = target_obs_seq.shape
+            target_flat = target_obs_seq.reshape(b * k, c, h, w)
+            target_reps = self.target_network.get_representation(target_flat).view(b, k, -1)
+
+        z0 = self.q_network.get_representation(curr_obs_aug)
+        pred_reps: List[torch.Tensor] = []
+        curr_z = z0
+        for k in range(self.config.jumps):
+            action_one_hot = F.one_hot(actions[:, k].squeeze(), num_classes=self.action_space.n).float()
+            model_input = torch.cat([curr_z, action_one_hot], dim=1)
+            next_z_hat = self.q_network.dynamics_model(model_input)
+            pred_reps.append(self.q_network.predictor(next_z_hat))
+            curr_z = next_z_hat
+        pred_stack = torch.stack(pred_reps, dim=1)
+
+        mask = torch.ones(self.config.batch_size, self.config.jumps, device=self.device)
+        for k in range(1, self.config.jumps):
+            mask[:, k] = mask[:, k - 1] * (1 - b_dones[:, k - 1])
+
+        sim = F.cosine_similarity(pred_stack, target_reps, dim=-1)
+        spr_loss = -(sim * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1.0)
+
+        total_loss = (loss_q + self.config.spr_weight * spr_loss) * weights.squeeze()
+        final_loss = total_loss.mean()
+
+        new_priorities = loss_q.detach().cpu().numpy()
+        self.replay_buffer.update_priorities(batch["indices"], new_priorities)
 
         self.optimizer.zero_grad()
-        loss.backward()
+        final_loss.backward()
+        nn.utils.clip_grad_norm_(self.q_network.parameters(), self.config.max_grad_norm)
         self.optimizer.step()
-        self.training_updates += 1
 
-        return {"loss": loss.item(), "q_value": current_q.mean().item()}
-
-    def update_target(self):
         with torch.no_grad():
-            for target_param, param in zip(self.target_network.parameters(), self.q_network.parameters()):
-                target_param.data.copy_(
-                    self.config.tau * param.data + (1.0 - self.config.tau) * target_param.data
-                )
+            for param, target_param in zip(self.q_network.parameters(), self.target_network.parameters()):
+                target_param.data.mul_(self.config.tau).add_(param.data * (1.0 - self.config.tau))
+
+        q_values = torch.sum(pred_dist * self.q_network.support, dim=1)
+        return {
+            "loss": loss_q.mean().item(),
+            "spr_loss": spr_loss.mean().item(),
+            "q_value": q_values.mean().item(),
+            "n_step": current_n_step,
+            "gamma": current_gamma,
+        }
 
     def save_model(self, path: str):
         torch.save(self.q_network.state_dict(), path)
-
-    def start_new_game(self):
-        self._game_learning_start_step = self.global_step + max(0, self.config.per_game_learning_starts)
 
 
 def _moving_average(scores: Sequence[float], end_frames: Sequence[int], window: int, current_frame: int) -> float:
@@ -319,15 +657,15 @@ def _update_progress_graphs(
                 parms_graph[bucket, idx] = torch.norm(param.detach()).item()
 
 
-def agent_dqn_frame_runner(
+def agent_bbf_frame_runner(
     agent: Agent,
     handle: EnvironmentHandle,
     *,
     context: FrameRunnerContext,
     writer: Optional[SummaryWriter] = None,
 ) -> FrameRunnerResult:
-    if handle.backend != 'gym' or handle.gym is None:
-        raise TypeError("agent_dqn_frame_runner requires a Gym environment handle.")
+    if handle.backend != "gym" or handle.gym is None:
+        raise TypeError("agent_bbf_frame_runner requires a Gym environment handle.")
 
     env = handle.gym
     config = agent.config
@@ -402,12 +740,15 @@ def agent_dqn_frame_runner(
             sps = int(agent.global_step / max(1e-9, time.time() - start_time))
             log(
                 f"step={agent.global_step} loss={train_log['loss']:.4f} "
-                f"q={train_log['q_value']:.2f}"
+                f"spr={train_log.get('spr_loss', 0):.4f} q={train_log['q_value']:.2f}"
             )
             log(f"SPS: {sps}")
             if writer:
                 writer.add_scalar("losses/td_loss", train_log["loss"], agent.global_step)
-                writer.add_scalar("losses/q_values", train_log["q_value"], agent.global_step)
+                writer.add_scalar("losses/spr_loss", train_log.get("spr_loss", 0.0), agent.global_step)
+                writer.add_scalar("charts/n_step", train_log.get("n_step", 0), agent.global_step)
+                writer.add_scalar("charts/gamma", train_log.get("gamma", 0.0), agent.global_step)
+                writer.add_scalar("charts/q_values", train_log["q_value"], agent.global_step)
                 writer.add_scalar("charts/SPS", sps, agent.global_step)
 
         recorded_episode = False
@@ -420,18 +761,18 @@ def agent_dqn_frame_runner(
             if writer:
                 writer.add_scalar("charts/episodic_return", episode["r"], agent.global_step)
                 writer.add_scalar(f"charts/episodic_return/{game_name}", episode["r"], agent.global_step)
-                
-                # Track cumulative frames for this specific game to allow overlaying cycles
                 current_game_frames = agent.game_frame_counters.get(game_name, 0)
-                writer.add_scalar(f"charts/frames_per_game/{game_name}", current_game_frames, agent.global_step)
-                
-                # Log cycle index if implicit in context or runner
-                # We don't have explicit cycle index in context, but we can log it if available or just rely on game/time
-                
+                writer.add_scalar(
+                    f"charts/frames_per_game/{game_name}",
+                    current_game_frames,
+                    agent.global_step,
+                )
                 length = episode.get("l")
                 if length is not None:
                     writer.add_scalar(
-                        "charts/episodic_length_frames", length * FRAME_SKIP, agent.global_step
+                        "charts/episodic_length_frames",
+                        length * FRAME_SKIP,
+                        agent.global_step,
                     )
 
         if timed_out and not recorded_episode:
@@ -523,15 +864,15 @@ def _build_continual_benchmark_config(
                     name=env_id,
                     frame_budget=frame_budget_per_game,
                     seed=config.seed + cycle_index,
-                    backend='gym',
+                    backend="gym",
                     env_id=env_id,
-                    sticky_prob=0.0,
+                    sticky_prob=0.25,
                     params={
-                        'noop_max': 30,
-                        'frame_skip': FRAME_SKIP,
-                        'frame_stack': FRAME_SKIP,
-                        'resize_shape': (84, 84),
-                        'grayscale': True,
+                        "noop_max": 30,
+                        "frame_skip": FRAME_SKIP,
+                        "frame_stack": FRAME_SKIP,
+                        "resize_shape": (84, 84),
+                        "grayscale": True,
                     },
                 )
             )
@@ -587,11 +928,11 @@ def _run_single_environment(config: AgentConfig, writer: SummaryWriter, run_name
             name=config.env_id,
             frame_budget=frame_budget_frames,
             seed=config.seed,
-            backend='gym',
+            backend="gym",
             env_id=config.env_id,
         )
         handle = EnvironmentHandle(
-            backend='gym',
+            backend="gym",
             spec=game_spec,
             frames_per_step=frames_per_step,
             gym=env,
@@ -610,7 +951,7 @@ def _run_single_environment(config: AgentConfig, writer: SummaryWriter, run_name
             graph_total_frames=frame_budget_frames,
             delay_frames=0,
         )
-        agent_dqn_frame_runner(agent, handle, context=context, writer=writer)
+        agent_bbf_frame_runner(agent, handle, context=context, writer=writer)
     finally:
         if env is not None:
             env.close()
@@ -649,7 +990,7 @@ def _run_continual_mode(config: AgentConfig, writer: SummaryWriter, run_dir: str
     benchmark_config = _build_continual_benchmark_config(game_ids, frame_budget_per_game, config)
 
     def frame_runner_with_writer(agent_instance, handle, *, context):
-        return agent_dqn_frame_runner(agent_instance, handle, context=context, writer=writer)
+        return agent_bbf_frame_runner(agent_instance, handle, context=context, writer=writer)
 
     runner = BenchmarkRunner(
         agent,
@@ -669,20 +1010,35 @@ def _run_continual_mode(config: AgentConfig, writer: SummaryWriter, run_dir: str
 
 
 def parse_args() -> AgentConfig:
-    parser = argparse.ArgumentParser(description="Gym Atari DQN agent with CleanRL wrappers.")
+    parser = argparse.ArgumentParser(description="BBF Atari agent with CleanRL components.")
     parser.add_argument("--env-id", type=str, default="BreakoutNoFrameskip-v4")
     parser.add_argument("--total-steps", type=int, default=1_000_000)
     parser.add_argument("--buffer-size", type=int, default=1_000_000)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
-    parser.add_argument("--gamma", type=float, default=0.99)
-    parser.add_argument("--tau", type=float, default=1.0)
-    parser.add_argument("--target-network-frequency", type=int, default=1_000)
+    parser.add_argument("--weight-decay", type=float, default=0.1)
+    parser.add_argument("--gamma-initial", type=float, default=0.97)
+    parser.add_argument("--gamma-final", type=float, default=0.997)
+    parser.add_argument("--n-step-max", type=int, default=10)
+    parser.add_argument("--n-step-min", type=int, default=3)
+    parser.add_argument("--n-step-decay-steps", type=int, default=10_000)
+    parser.add_argument("--reset-grad-interval", type=int, default=40_000)
+    parser.add_argument("--replay-ratio", type=int, default=8)
+    parser.add_argument("--spr-weight", type=float, default=2.0)
+    parser.add_argument("--jumps", type=int, default=5)
+    parser.add_argument("--max-grad-norm", type=float, default=10.0)
+    parser.add_argument("--tau", type=float, default=0.995)
     parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--exploration-fraction", type=float, default=0.10)
+    parser.add_argument("--learning-starts", type=int, default=2_000)
+    parser.add_argument("--exploration-fraction", type=float, default=0.02)
     parser.add_argument("--start-e", type=float, default=1.0)
     parser.add_argument("--end-e", type=float, default=0.01)
-    parser.add_argument("--learning-starts", type=int, default=80_000)
-    parser.add_argument("--train-frequency", type=int, default=4)
+    parser.add_argument("--prioritized-alpha", type=float, default=0.5)
+    parser.add_argument("--prioritized-beta", type=float, default=0.4)
+    parser.add_argument("--prioritized-eps", type=float, default=1e-6)
+    parser.add_argument("--n-atoms", type=int, default=51)
+    parser.add_argument("--v-min", type=float, default=-10.0)
+    parser.add_argument("--v-max", type=float, default=10.0)
+    parser.add_argument("--per-game-learning-starts", type=int, default=1_000)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument(
         "--cuda",
@@ -700,25 +1056,25 @@ def parse_args() -> AgentConfig:
         "--wandb-project-name",
         type=str,
         default="physical-atari",
-        help="The wandb's project name.",
+        help="The wandb project name.",
     )
     parser.add_argument(
         "--wandb-entity",
         type=str,
         default=None,
-        help="The entity (team) of wandb's project.",
+        help="The wandb entity/team.",
     )
     parser.add_argument(
         "--continual",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Run the continual benchmark (8 games x 3 cycles, 400k frames per cycle).",
+        help="Run the continual benchmark.",
     )
     parser.add_argument(
         "--continual-games",
         type=str,
         default="",
-        help="Comma-separated Gym env ids to use in continual mode (defaults to a preset list).",
+        help="Comma-separated Gym env ids to use in continual mode.",
     )
     parser.add_argument(
         "--continual-cycles",
@@ -732,46 +1088,55 @@ def parse_args() -> AgentConfig:
         default=DEFAULT_CONTINUAL_CYCLE_FRAMES,
         help="Frame budget per game per cycle in continual mode.",
     )
-    parser.add_argument(
-        "--per-game-learning-starts",
-        type=int,
-        default=1_000,
-        help="Steps of experience to collect at the start of each game before training.",
-    )
     args = parser.parse_args()
     return AgentConfig(
         env_id=args.env_id,
         total_steps=args.total_steps,
         buffer_size=args.buffer_size,
         learning_rate=args.learning_rate,
-        gamma=args.gamma,
+        weight_decay=args.weight_decay,
+        gamma_initial=args.gamma_initial,
+        gamma_final=args.gamma_final,
+        n_step_max=args.n_step_max,
+        n_step_min=args.n_step_min,
+        n_step_decay_steps=args.n_step_decay_steps,
+        reset_grad_interval=args.reset_grad_interval,
+        replay_ratio=args.replay_ratio,
+        spr_weight=args.spr_weight,
+        jumps=args.jumps,
+        max_grad_norm=args.max_grad_norm,
         tau=args.tau,
-        target_network_frequency=args.target_network_frequency,
         batch_size=args.batch_size,
+        learning_starts=args.learning_starts,
         exploration_fraction=args.exploration_fraction,
         start_e=args.start_e,
         end_e=args.end_e,
-        learning_starts=args.learning_starts,
-        train_frequency=args.train_frequency,
+        prioritized_replay_alpha=args.prioritized_alpha,
+        prioritized_replay_beta=args.prioritized_beta,
+        prioritized_replay_eps=args.prioritized_eps,
+        n_atoms=args.n_atoms,
+        v_min=args.v_min,
+        v_max=args.v_max,
+        per_game_learning_starts=args.per_game_learning_starts,
         seed=args.seed,
         cuda=args.cuda,
+        track=args.track,
+        wandb_project_name=args.wandb_project_name,
+        wandb_entity=args.wandb_entity,
+        log_file="",
         continual=args.continual,
         continual_games=args.continual_games,
         continual_cycles=args.continual_cycles,
         continual_cycle_frames=args.continual_cycle_frames,
-        per_game_learning_starts=args.per_game_learning_starts,
-        track=args.track,
-        wandb_project_name=args.wandb_project_name,
-        wandb_entity=args.wandb_entity,
     )
 
 
 def main():
     config = parse_args()
-    log_root = './results_final_dqn/smokey_continual'
+    log_root = "./results_final_bbf/smokey"
     os.makedirs(log_root, exist_ok=True)
-    run_name = f"{config.env_id}__agent_final_dqn__{config.seed}__{int(time.time())}"
-    
+    run_name = f"{config.env_id}__agent_bbf__{config.seed}__{int(time.time())}"
+
     if config.track:
         import wandb
 
@@ -787,11 +1152,11 @@ def main():
 
     run_dir = os.path.join(log_root, run_name)
     os.makedirs(run_dir, exist_ok=True)
-    config.log_file = os.path.join(run_dir, 'agent.log')
-    config_path = os.path.join(run_dir, 'hyperparameters.json')
-    with open(config_path, 'w', encoding='utf-8') as cfg:
+    config.log_file = os.path.join(run_dir, "agent.log")
+    config_path = os.path.join(run_dir, "hyperparameters.json")
+    with open(config_path, "w", encoding="utf-8") as cfg:
         json.dump(vars(config), cfg, indent=2)
-    print(f'Logging run to {run_dir}')
+    print(f"Logging run to {run_dir}")
 
     random.seed(config.seed)
     np.random.seed(config.seed)

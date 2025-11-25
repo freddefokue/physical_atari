@@ -1,9 +1,78 @@
+# Copyright 2025 Keen Technologies, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+import gymnasium as gym
 from ale_py import Action, ALEInterface, LoggerMode, roms
+from cleanrl_utils.atari_wrappers import (
+    ClipRewardEnv,
+    EpisodicLifeEnv,
+    FireResetEnv,
+    MaxAndSkipEnv,
+    NoopResetEnv,
+)
+
+
+class StickyActionEnv(gym.Wrapper):
+    """
+    Implements sticky actions as described in Machado et al. (2018).
+    With probability `sticky_prob`, the previous action is repeated instead of the new action.
+    """
+    def __init__(self, env: gym.Env, sticky_prob: float = 0.25):
+        super().__init__(env)
+        self.sticky_prob = sticky_prob
+        self.last_action = 0
+
+    def reset(self, **kwargs):
+        self.last_action = 0
+        return self.env.reset(**kwargs)
+
+    def step(self, action):
+        if self.env.unwrapped.np_random.random() < self.sticky_prob:
+            action = self.last_action
+        self.last_action = action
+        return self.env.step(action)
+
+
+def rom_name_to_attr(rom_name: str) -> str:
+    parts = [part for part in rom_name.strip().replace("-", "_").split("_") if part]
+    if not parts:
+        raise ValueError(f"Cannot derive ROM attribute from '{rom_name}'")
+    return "".join(part.capitalize() for part in parts)
+
+
+def resolve_rom_path(rom_name: str):
+    attr = rom_name_to_attr(rom_name)
+    if not hasattr(roms, attr):
+        available = ", ".join(sorted(roms.__dir__()))
+        raise AttributeError(f"No ROM named '{attr}'. Supported ROMs: {available}")
+    return getattr(roms, attr)
+
+
+def rom_name_to_env_id(rom_name: str) -> str:
+    sanitized = rom_name.strip().lower().replace("-", "_")
+    parts = [part for part in sanitized.split("_") if part]
+    if not parts:
+        raise ValueError(f"Cannot derive Gym env id from ROM name '{rom_name}'")
+    camel = "".join(part.capitalize() for part in parts)
+    return f"{camel}NoFrameskip-v4"
+
+
 
 
 @dataclass
@@ -16,6 +85,8 @@ class GameSpec:
     delay_frames: int = 0
     seed: Optional[int] = None
     params: Dict[str, Any] = field(default_factory=dict)
+    backend: str = "ale"
+    env_id: Optional[str] = None
 
 
 @dataclass
@@ -48,6 +119,47 @@ class GameResult:
     name: str
     frame_offset: int
     frame_budget: int
+    episode_scores: List[float]
+    episode_end: List[int]
+    episode_graph: Any
+    parms_graph: Any
+
+
+@dataclass
+class EnvironmentHandle:
+    """Encapsulate the environment reference passed to a frame runner."""
+
+    backend: str
+    spec: GameSpec
+    frames_per_step: int = 1
+    ale: Optional[ALEInterface] = None
+    gym: Optional[gym.Env] = None
+    action_set: Optional[List[int]] = None
+
+
+@dataclass
+class FrameRunnerContext:
+    """Run-specific metadata shared with the frame runner."""
+
+    name: str
+    data_dir: str
+    rank: int
+    average_frames: int
+    max_frames_without_reward: int
+    lives_as_episodes: int
+    save_incremental_models: bool
+    last_model_save: int
+    frame_budget: int
+    frame_offset: int
+    graph_total_frames: int
+    delay_frames: int
+
+
+@dataclass
+class FrameRunnerResult:
+    """Structured result returned by a frame runner."""
+
+    last_model_save: int
     episode_scores: List[float]
     episode_end: List[int]
     episode_graph: Any
@@ -99,35 +211,59 @@ class BenchmarkRunner:
         return self.results
 
     def _run_single_game(self, cycle_index: int, game_index: int, spec: GameSpec) -> GameResult:
-        ale = self._create_environment(spec)
-        action_set = self._select_action_set(ale, spec)
+        handle = self._create_environment(spec)
+        if handle.backend == 'ale':
+            if handle.ale is None:
+                raise ValueError('ALE backend selected but no ALEInterface available.')
+            action_set = self._select_action_set(handle.ale, spec)
+            handle.action_set = action_set
+            expected_actions = getattr(self.agent, 'num_actions', None)
+            if expected_actions is None:
+                raise ValueError('Agent must define num_actions when using ALE backend.')
+            if len(action_set) != expected_actions:
+                raise ValueError(
+                    f'Action set size {len(action_set)} for game {spec.name} does not match agent.num_actions {expected_actions}'
+                )
         run_name = self._make_run_name(cycle_index, game_index, spec)
 
-        (
-            self.last_model_save,
-            episode_scores,
-            episode_end,
-            episode_graph,
-            parms_graph,
-        ) = self._frame_runner(
-            self.agent,
-            ale,
-            action_set,
+        context = FrameRunnerContext(
             name=run_name,
             data_dir=self.data_dir,
             rank=self.rank,
-            delay_frames=spec.delay_frames,
             average_frames=self.average_frames,
-            max_frames_without_reward=spec.params.get(
-                'max_frames_without_reward', self.max_frames_without_reward
-            ),
+            max_frames_without_reward=spec.params.get('max_frames_without_reward', self.max_frames_without_reward),
             lives_as_episodes=spec.params.get('lives_as_episodes', self.lives_as_episodes),
             save_incremental_models=self.save_incremental_models,
             last_model_save=self.last_model_save,
             frame_budget=spec.frame_budget,
             frame_offset=self.frame_offset,
             graph_total_frames=self.config.total_frames,
+            delay_frames=spec.delay_frames,
         )
+
+        try:
+            runner_result = self._frame_runner(self.agent, handle, context=context)
+        finally:
+            if handle.backend == 'gym' and handle.gym is not None:
+                handle.gym.close()
+
+        if isinstance(runner_result, FrameRunnerResult):
+            result_payload = runner_result
+        else:
+            (
+                last_model_save,
+                episode_scores,
+                episode_end,
+                episode_graph,
+                parms_graph,
+            ) = runner_result
+            result_payload = FrameRunnerResult(last_model_save, episode_scores, episode_end, episode_graph, parms_graph)
+
+        self.last_model_save = result_payload.last_model_save
+        episode_scores = result_payload.episode_scores
+        episode_end = result_payload.episode_end
+        episode_graph = result_payload.episode_graph
+        parms_graph = result_payload.parms_graph
 
         result = GameResult(
             cycle_index=cycle_index,
@@ -144,7 +280,25 @@ class BenchmarkRunner:
 
         return result
 
-    def _create_environment(self, spec: GameSpec) -> ALEInterface:
+    def _create_environment(self, spec: GameSpec) -> EnvironmentHandle:
+        backend = spec.params.get('env_backend', spec.backend).lower()
+
+        if backend == 'gym':
+            env_seed = spec.seed if spec.seed is not None else self.default_seed
+            env_id = spec.env_id or spec.params.get('env_id') or rom_name_to_env_id(spec.name)
+            env = self._make_gym_env(env_id, env_seed, spec)
+            frame_skip = int(spec.params.get('frame_skip', 4))
+            frames_per_step = max(1, frame_skip)
+            return EnvironmentHandle(
+                backend='gym',
+                spec=spec,
+                frames_per_step=frames_per_step,
+                gym=env,
+            )
+
+        if backend != 'ale':
+            raise ValueError(f"Unsupported environment backend '{backend}' for game {spec.name}")
+
         ale = ALEInterface()
         ale.setLoggerMode(LoggerMode.Error)
         ale.setInt('random_seed', spec.seed if spec.seed is not None else self.default_seed)
@@ -155,10 +309,11 @@ class BenchmarkRunner:
         for key, value in spec.params.get('ale_floats', {}).items():
             ale.setFloat(key, float(value))
 
-        rom_path = roms.get_rom_path(spec.name)
+        rom_path = resolve_rom_path(spec.name)
         ale.loadROM(rom_path)
         ale.reset_game()
-        return ale
+        frames_per_step = max(1, int(spec.params.get('frame_skip', 1)))
+        return EnvironmentHandle(backend='ale', spec=spec, frames_per_step=frames_per_step, ale=ale)
 
     def _select_action_set(self, ale: ALEInterface, spec: GameSpec) -> List[int]:
         if self.use_canonical_full_actions or spec.params.get('use_canonical_full_actions'):
@@ -172,12 +327,37 @@ class BenchmarkRunner:
         else:
             action_set = self._select_reduced_action_set(ale, spec)
 
-        if len(action_set) != self.agent.num_actions:
-            raise ValueError(
-                f'Action set size {len(action_set)} for game {spec.name} does not match agent.num_actions {self.agent.num_actions}'
-            )
-
         return action_set
+
+    def _make_gym_env(self, env_id: str, seed: int, spec: GameSpec) -> gym.Env:
+        env = gym.make(env_id)
+        
+        # Add sticky actions wrapper if requested
+        if spec.sticky_prob > 0.0:
+            env = StickyActionEnv(env, sticky_prob=spec.sticky_prob)
+
+        env = gym.wrappers.RecordEpisodeStatistics(env)
+
+        noop_max = int(spec.params.get('noop_max', 30))
+        frame_skip = int(spec.params.get('frame_skip', 4))
+        frame_stack = int(spec.params.get('frame_stack', 4))
+        resize_shape = tuple(spec.params.get('resize_shape', (84, 84)))
+        grayscale = bool(spec.params.get('grayscale', True))
+
+        env = NoopResetEnv(env, noop_max=noop_max)
+        env = MaxAndSkipEnv(env, skip=frame_skip)
+        env = EpisodicLifeEnv(env)
+        if 'FIRE' in env.unwrapped.get_action_meanings():
+            env = FireResetEnv(env)
+        env = ClipRewardEnv(env)
+        env = gym.wrappers.ResizeObservation(env, resize_shape)
+        if grayscale:
+            env = gym.wrappers.GrayScaleObservation(env)
+        env = gym.wrappers.FrameStack(env, frame_stack)
+
+        env.action_space.seed(seed)
+        env.reset(seed=seed)
+        return env
 
     def _select_reduced_action_set(self, ale: ALEInterface, spec: GameSpec) -> List[int]:
         reduce_action_set = spec.params.get('reduce_action_set', self.reduce_action_set)
@@ -215,5 +395,3 @@ class BenchmarkRunner:
             Action.DOWNRIGHTFIRE,
             Action.DOWNLEFTFIRE,
         ]
-
-

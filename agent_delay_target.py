@@ -31,7 +31,15 @@ import torch.nn.functional as F
 from ale_py import Action, ALEInterface, LoggerMode, roms
 from pynvml import *
 
-from benchmark_runner import BenchmarkConfig, BenchmarkRunner, CycleConfig, GameSpec
+from benchmark_runner import (
+    BenchmarkConfig,
+    BenchmarkRunner,
+    CycleConfig,
+    EnvironmentHandle,
+    FrameRunnerContext,
+    FrameRunnerResult,
+    GameSpec,
+)
 
 
 def train_function(
@@ -795,22 +803,28 @@ class Agent:
 # --------------------------------
 def run_training_frames(
     agent,
-    ale,
-    action_set,
+    handle: EnvironmentHandle,
     *,
-    name,
-    data_dir,
-    rank,
-    delay_frames,
-    average_frames,
-    max_frames_without_reward,
-    lives_as_episodes,
-    save_incremental_models,
-    last_model_save,
-    frame_budget,
-    frame_offset=0,
-    graph_total_frames=None,
-):
+    context: FrameRunnerContext,
+) -> FrameRunnerResult:
+    if handle.ale is None or handle.action_set is None:
+        raise ValueError("ALE handle with populated action_set is required for this frame runner.")
+
+    ale = handle.ale
+    action_set = handle.action_set
+    name = context.name
+    data_dir = context.data_dir
+    rank = context.rank
+    delay_frames = context.delay_frames
+    average_frames = context.average_frames
+    max_frames_without_reward = context.max_frames_without_reward
+    lives_as_episodes = context.lives_as_episodes
+    save_incremental_models = context.save_incremental_models
+    last_model_save = context.last_model_save
+    frame_budget = context.frame_budget
+    frame_offset = context.frame_offset
+    graph_total_frames = context.graph_total_frames
+
     episode_scores = []
     episode_end = []
 
@@ -925,7 +939,13 @@ def run_training_frames(
 
         taken_action = agent.frame(ale.getScreenRGB(), reward, end_of_episode)
 
-    return last_model_save, episode_scores, episode_end, episode_graph, parms_graph
+    return FrameRunnerResult(
+        last_model_save,
+        episode_scores,
+        episode_end,
+        episode_graph,
+        parms_graph,
+    )
 
 
 def main():
@@ -947,7 +967,7 @@ def main():
         '--cycle_frames',
         type=int,
         default=150_000,
-        help='Total number of frames to allocate per cycle when running the continual benchmark.',
+        help='Number of frames to allocate per game per cycle when running the continual benchmark.',
     )
     parser.add_argument(
         '--game_frame_budgets',
@@ -1008,16 +1028,12 @@ def main():
                 )
             if any(budget < 0 for budget in provided_budgets):
                 raise ValueError('--game_frame_budgets values must be non-negative integers')
-            if sum(provided_budgets) != cycle_frames:
-                raise ValueError('--game_frame_budgets values must sum to --cycle_frames')
+            
+            # Check if budgets are generally consistent with cycle_frames, but don't enforce sum equality
+            # if cycle_frames is interpreted as a default per-game value.
 
         if provided_budgets is None:
-            if cycle_frames % len(game_order) != 0:
-                raise ValueError(
-                    f'--cycle_frames ({cycle_frames}) must be divisible by the number of games ({len(game_order)}) '
-                    'when --game_frame_budgets is not provided.'
-                )
-            frame_budget = cycle_frames // len(game_order)
+            frame_budget = cycle_frames
             game_frame_budgets = [frame_budget] * len(game_order)
         else:
             game_frame_budgets = provided_budgets
@@ -1065,7 +1081,7 @@ def main():
             cycles=cycles,
             description=(
                 f'Continual benchmark: {len(cycles)} cycle(s) x {len(game_order)} game(s) '
-                f'(cycle frames={cycle_frames})'
+                f'(frames per game per cycle={cycle_frames})'
             ),
         )
 
