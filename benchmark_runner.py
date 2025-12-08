@@ -49,6 +49,52 @@ class StickyActionEnv(gym.Wrapper):
         return self.env.step(action)
 
 
+class CanonicalActionWrapper(gym.ActionWrapper):
+    """
+    Forces the environment to accept the full 18-action canonical set.
+    Maps canonical actions to the environment's legal actions.
+    If a canonical action is not supported by the game, it maps to NOOP (0).
+    
+    This allows an agent with a fixed 18-output head to play games with 
+    smaller action spaces (e.g. Breakout) without crashing.
+    """
+    def __init__(self, env: gym.Env):
+        super().__init__(env)
+        # 1. Define the Canonical 18 actions (Must match BenchmarkRunner._canonical_action_set)
+        self.canonical_actions = [
+            Action.NOOP, Action.FIRE, Action.UP, Action.RIGHT, Action.LEFT, Action.DOWN,
+            Action.UPRIGHT, Action.UPLEFT, Action.DOWNRIGHT, Action.DOWNLEFT,
+            Action.UPFIRE, Action.RIGHTFIRE, Action.LEFTFIRE, Action.DOWNFIRE,
+            Action.UPRIGHTFIRE, Action.UPLEFTFIRE, Action.DOWNRIGHTFIRE, Action.DOWNLEFTFIRE
+        ]
+        
+        # 2. Map Canonical Index (0-17) -> Native Env Index (0-N)
+        self.action_map = {}
+        
+        # get_action_meanings() returns uppercase strings like ['NOOP', 'FIRE', 'RIGHT', ...]
+        native_meanings = env.unwrapped.get_action_meanings()
+        
+        for c_idx, c_enum in enumerate(self.canonical_actions):
+            # c_enum.name gives "UP", "FIRE", etc.
+            c_name = c_enum.name 
+            
+            try:
+                # Find the index of this action name in the specific game's list
+                native_idx = native_meanings.index(c_name)
+                self.action_map[c_idx] = native_idx
+            except ValueError:
+                # The game does not support this action (e.g. UPFIRE in Breakout)
+                # Map to NOOP (usually index 0)
+                self.action_map[c_idx] = 0 
+
+        # 3. Expose the full 18-action space to the agent
+        self.action_space = gym.spaces.Discrete(18)
+
+    def action(self, action):
+        # Remap the agent's selection (0-17) to the game's supported selection (0-N)
+        return self.action_map.get(int(action), 0)
+
+
 def rom_name_to_attr(rom_name: str) -> str:
     parts = [part for part in rom_name.strip().replace("-", "_").split("_") if part]
     if not parts:
@@ -71,8 +117,6 @@ def rom_name_to_env_id(rom_name: str) -> str:
         raise ValueError(f"Cannot derive Gym env id from ROM name '{rom_name}'")
     camel = "".join(part.capitalize() for part in parts)
     return f"{camel}NoFrameskip-v4"
-
-
 
 
 @dataclass
@@ -332,6 +376,12 @@ class BenchmarkRunner:
     def _make_gym_env(self, env_id: str, seed: int, spec: GameSpec) -> gym.Env:
         env = gym.make(env_id)
         
+        # --- FIX START: Apply Canonical Action Wrapper ---
+        # Forces the environment to accept 18 actions if the agent is configured that way
+        if self.use_canonical_full_actions or spec.params.get('use_canonical_full_actions'):
+            env = CanonicalActionWrapper(env)
+        # --- FIX END ---
+
         # Add sticky actions wrapper if requested
         if spec.sticky_prob > 0.0:
             env = StickyActionEnv(env, sticky_prob=spec.sticky_prob)
@@ -352,8 +402,8 @@ class BenchmarkRunner:
         env = ClipRewardEnv(env)
         env = gym.wrappers.ResizeObservation(env, resize_shape)
         if grayscale:
-            env = gym.wrappers.GrayScaleObservation(env)
-        env = gym.wrappers.FrameStack(env, frame_stack)
+            env = gym.wrappers.GrayscaleObservation(env)
+        env = gym.wrappers.FrameStackObservation(env, frame_stack)
 
         env.action_space.seed(seed)
         env.reset(seed=seed)

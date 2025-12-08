@@ -79,6 +79,8 @@ def train_function(
     train_loss_ema,
     avg_error_ema,
     max_error_ema,
+    # game boundary tracking for continual learning
+    game_start_u,
     # updated models
     optimizer,
     linear_optimizer,
@@ -184,6 +186,14 @@ def train_function(
         distribution_factors = distribution_factor_buffer[buffer_indexes]
         # the online samples aren't trained
         distribution_factors[:online_batch].zero_()
+        
+        # --- FIX: Cross-game sampling protection ---
+        # Zero out any samples that come from before the current game started.
+        # This prevents training on "ghost" observations from previous games
+        # that haven't been overwritten in the ring buffer yet.
+        old_game_mask = (buffer_indexes < game_start_u).unsqueeze(1).expand_as(distribution_factors)
+        distribution_factors = distribution_factors * (~old_game_mask).float()
+        # ---------------------------------------------
 
         # assert(distribution_factors.min() >= 0.0)
         # all QV will use the same target, so let it broadcast
@@ -432,7 +442,13 @@ class Agent:
         # The model
         self.load_file = None
         self.seed = seed
-        self.num_actions = num_actions  # many games can use a reduced action set for faster learning
+        
+        # --- FIX: Force 18 Actions for Continual Learning ---
+        # This ensures compatibility with the CanonicalActionWrapper
+        # regardless of what the game ROM supports naturally.
+        self.num_actions = 18
+        # ----------------------------------------------------
+        
         self.use_model = 3
         self.kernel_size = 3
         self.base_width = 80
@@ -536,6 +552,11 @@ class Agent:
         # start at 3 so the previous four steps can be referenced without going negative
         self.u = self.frame_skip - 1
         self.tensor_u = torch.tensor(3, dtype=torch.int64)
+        
+        # --- FIX: Track game boundaries for continual learning ---
+        # This marks the frame index where the current game started.
+        # Used to mask out samples from previous games during training.
+        self.game_start_u = torch.tensor(0, dtype=torch.int64)
 
         # buffer frame_skip frames for train
         self.frame_count = 0
@@ -720,6 +741,8 @@ class Agent:
                 self.train_loss_ema,
                 self.avg_error_ema,
                 self.max_error_ema,
+                # game boundary tracking for continual learning
+                self.game_start_u,
                 # updated models
                 self.optimizer,
                 self.linear_optimizer,
@@ -727,6 +750,41 @@ class Agent:
                 self.anchor_model,
             ],
         )
+
+    # --------------------------------
+    # Start New Game (Added for Continual Learning)
+    # --------------------------------
+    def start_new_game(self):
+        """
+        Prepares the agent for the next game in the cycle.
+        1. Updates the Anchor Model to current weights (Elastic Weight Transfer).
+        2. Marks the game boundary to prevent cross-game sampling.
+        3. Clears reward/episode buffers.
+        """
+        print(f"[Agent] Performing new game setup at frame {self.u}: Updating anchor model and marking game boundary.")
+        
+        # 1. Update Anchor Model
+        # Instead of anchoring to random init (which weight decay does), we anchor to 
+        # the weights learned at the end of the previous game.
+        with torch.no_grad():
+            for anchor_param, train_param in zip(self.anchor_model.parameters(), self.training_model.parameters()):
+                anchor_param.data.copy_(train_param.data)
+        
+        # 2. Mark the game boundary
+        # This tells train_function to ignore any samples from before this point.
+        # This is more efficient than zeroing the entire observation_ring (which is ~10GB).
+        self.game_start_u.fill_(self.u)
+        
+        # 3. Clear reward/episode buffers to be safe
+        # These are small, so zeroing is fine.
+        self.reward_buffer.fill_(-999.0)
+        self.episode_buffer.fill_(-999)
+        self.loss_buffer.fill_(-999.0)
+        
+        # Note: We do NOT reset self.u or self.tensor_u because train_indexes are global 
+        # and pre-calculated for the entire benchmark duration. We assume the benchmark 
+        # runner continues increasing the frame count linearly.
+        # Note: We no longer zero observation_ring - the game_start_u mask handles this more efficiently.
 
     # --------------------------------
     # Returns the selected action index
@@ -807,6 +865,12 @@ def run_training_frames(
     *,
     context: FrameRunnerContext,
 ) -> FrameRunnerResult:
+    
+    # --- Continual Learning Hook ---
+    # Trigger cleanup/anchoring before the game loop starts
+    agent.start_new_game()
+    # -------------------------------
+
     if handle.ale is None or handle.action_set is None:
         raise ValueError("ALE handle with populated action_set is required for this frame runner.")
 
@@ -1054,28 +1118,10 @@ def main():
                 )
             cycles.append(CycleConfig(cycle_index=cycle_index, games=cycle_games))
 
-        action_set_sizes = set()
-        for cycle in cycles:
-            for spec in cycle.games:
-                preview_ale = ALEInterface()
-                preview_ale.setLoggerMode(LoggerMode.Error)
-                preview_ale.setInt('random_seed', spec.seed if spec.seed is not None else seed)
-                preview_ale.setFloat('repeat_action_probability', spec.sticky_prob)
-                rom_path = roms.get_rom_path(spec.name)
-                preview_ale.loadROM(rom_path)
-                reduce_action = spec.params.get('reduce_action_set', reduce_action_setting)
-                if reduce_action == 0:
-                    preview_actions = preview_ale.getLegalActionSet()
-                elif reduce_action == 2 and spec.name in {'ms_pacman', 'qbert'}:
-                    preview_actions = [Action.UP, Action.DOWN, Action.LEFT, Action.RIGHT]
-                else:
-                    preview_actions = preview_ale.getMinimalActionSet()
-                action_set_sizes.add(len(preview_actions))
-        if len(action_set_sizes) != 1:
-            raise ValueError(
-                f'Continual benchmark configuration requires a consistent action-set size; found {sorted(action_set_sizes)}'
-            )
-        num_actions = action_set_sizes.pop()
+        # --- FIX: Hardcode 18 actions for Continual Learning ---
+        # The agent expects 18 outputs to map to the canonical action wrapper.
+        num_actions = 18
+        # -------------------------------------------------------
 
         benchmark_config = BenchmarkConfig(
             cycles=cycles,
@@ -1102,7 +1148,9 @@ def main():
             rank=rank,
             default_seed=seed,
             reduce_action_set=reduce_action_setting,
-            use_canonical_full_actions=False,
+            # --- FIX: Enable Canonical Action Wrapper ---
+            use_canonical_full_actions=True,
+            # ------------------------------------------
             average_frames=average_frames,
             max_frames_without_reward=max_frames_without_reward,
             lives_as_episodes=lives_as_episodes,

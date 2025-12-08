@@ -1,0 +1,219 @@
+Starting game 'SeaquestNoFrameskip-v4' with target 400000 frames (cycle budget 400000).
+step=1101000 loss=0.0093 q=0.89
+SPS: 326712
+step=1102000 loss=0.0056 q=0.87
+SPS: 115379
+step=1103000 loss=0.0040 q=0.83
+SPS: 70109
+global_step=1103188, episodic_return=0.0
+step=1104000 loss=0.0030 q=0.83
+SPS: 50528
+global_step=1104510, episodic_return=20.0
+step=1105000 loss=0.0022 q=0.79
+SPS: 39433
+step=1106000 loss=0.0016 q=0.80
+SPS: 32347
+global_step=1106148, episodic_return=0.0
+step=1107000 loss=0.0016 q=0.80
+SPS: 27453
+step=1108000 loss=0.0010 q=0.81
+SPS: 23844
+step=1109000 loss=0.0011 q=0.80
+SPS: 21062
+global_step=1109609, episodic_return=40.0
+step=1110000 loss=0.0034 q=0.79
+SPS: 18863
+step=1111000 loss=0.0006 q=0.77
+SPS: 17090
+global_step=1111668, episodic_return=40.0
+step=1112000 loss=0.0006 q=0.78
+SPS: 15612
+global_step=1112535, episodic_return=100.0
+step=1113000 loss=0.0006 q=0.79
+SPS: 14376
+global_step=1113691, episodic_return=20.0
+step=1114000 loss=0.0004 q=0.77
+SPS: 13313
+global_step=1114877, episodic_return=20.0
+step=1115000 loss=0.0064 q=0.73
+SPS: 12418
+global_step=1115265, episodic_return=60.0
+step=1116000 loss=0.0014 q=0.73
+SPS: 11632
+step=1117000 loss=0.0005 q=0.73
+SPS: 10934
+global_step=1117806, episodic_return=20.0
+step=1118000 loss=0.0006 q=0.69
+SPS: 10323
+global_step=1118159, episodic_return=40.0
+global_step=1118642, episodic_return=60.0
+step=1119000 loss=0.0011 q=0.71
+SPS: 9778
+global_step=1119324, episodic_return=0.0
+global_step=1119878, episodic_return=80.0
+step=1120000 loss=0.0006 q=0.70
+SPS: 9283
+global_step=1120302, episodic_return=20.0
+global_step=1120809, episodic_return=20.0
+step=1121000 loss=0.0014 q=0.69
+SPS: 8838
+global_step=1121515, episodic_return=180.0
+global_step=1121990, episodic_return=100.0
+step=1122000 loss=0.0235 q=0.67
+SPS: 8433
+global_step=1122703, episodic_return=40.0
+step=1123000 loss=0.0012 q=0.70
+SPS: 8068
+global_step=1123343, episodic_return=40.0
+global_step=1123785, episodic_return=60.0
+step=1124000 loss=0.0006 q=0.70
+SPS: 7733
+global_step=1124126, episodic_return=20.0
+global_step=1124922, episodic_return=60.0
+step=1125000 loss=0.0009 q=0.69
+SPS: 7425
+global_step=1125249, episodic_return=40.0
+global_step=1125655, episodic_return=60.0
+step=1126000 loss=0.0012 q=0.69
+SPS: 7140
+global_step=1126112, episodic_return=40.0
+global_step=1126595, episodic_return=20.0
+step=1127000 loss=0.0025 q=0.68
+SPS: 6877
+global_step=1127165, episodic_return=80.0
+global_step=1127798, episodic_return=100.0
+step=1128000 loss=0.0004 q=0.67
+SPS: 6631
+step=1129000 loss=0.0032 q=0.66
+SPS: 6403
+global_step=1129658, episodic_return=80.0
+step=1130000 loss=0.0040 q=0.58
+SPS: 6193
+global_step=1130164, episodic_return=60.0
+global_step=1130506, episodic_return=20.0
+global_step=1130872, episodic_return=20.0
+step=1131000 loss=0.0012 q=0.66
+SPS: 5993
+global_step=1131694, episodic_return=20.0
+step=1132000 loss=0.0168 q=0.69
+SPS: 5808
+global_step=1132155, episodic_return=40.0
+global_step=1132462, episodic_return=0.0
+step=1133000 loss=0.0029 q=0.68
+SPS: 5633
+global_step=1133313, episodic_return=120.0
+global_step=1133650, episodic_return=40.0
+step=1134000 loss=0.0010 q=0.69
+SPS: 5471
+global_step=1134147, episodic_return=160.0
+global_step=1134516, episodic_return=20.0
+global_step=1134895, episodic_return=100.0
+step=1135000 loss=0.0042 q=0.67
+SPS: 5318
+global_step=1135220, episodic_return=0.0
+global_step=1135606, episodic_return=40.0
+step=1136000 loss=0.0014 q=0.66
+SPS: 5172
+global_step=1136008, episodic_return=60.0
+global_step=1136512, episodic_return=60.0
+global_step=1136869, episodic_return=20.0
+step=1137000 loss=0.0016 q=0.68
+SPS: 5035
+global_step=1137291, episodic_return=20.0
+global_step=1137728, episodic_return=80.0
+step=1138000 loss=0.0019 q=0.71
+SPS: 4905
+global_step=1138082, episodic_return=20.0
+global_step=1138362, episodic_return=0.0
+step=1139000 loss=0.0032 q=0.65
+SPS: 4783
+global_step=1139488, episodic_return=180.0
+step=1140000 loss=0.0154 q=0.68
+SPS: 4667
+global_step=1140122, episodic_return=180.0
+global_step=1140744, episodic_return=120.0
+step=1141000 loss=0.0009 q=0.72
+SPS: 4556
+global_step=1141180, episodic_return=60.0
+global_step=1141667, episodic_return=80.0
+step=1142000 loss=0.0015 q=0.66
+SPS: 4450
+global_step=1142219, episodic_return=120.0
+global_step=1142628, episodic_return=20.0
+step=1143000 loss=0.0033 q=0.71
+SPS: 4350
+global_step=1143066, episodic_return=60.0
+global_step=1143601, episodic_return=120.0
+step=1144000 loss=0.0011 q=0.69
+SPS: 4253
+global_step=1144499, episodic_return=200.0
+step=1145000 loss=0.0022 q=0.71
+SPS: 4161
+global_step=1145071, episodic_return=80.0
+global_step=1145566, episodic_return=80.0
+step=1146000 loss=0.0358 q=0.81
+SPS: 4073
+global_step=1146418, episodic_return=240.0
+step=1147000 loss=0.0013 q=0.77
+SPS: 3990
+global_step=1147223, episodic_return=180.0
+global_step=1147773, episodic_return=120.0
+step=1148000 loss=0.0015 q=0.82
+SPS: 3910
+global_step=1148163, episodic_return=40.0
+global_step=1148629, episodic_return=100.0
+step=1149000 loss=0.0059 q=0.72
+SPS: 3832
+global_step=1149238, episodic_return=160.0
+global_step=1149884, episodic_return=120.0
+step=1150000 loss=0.0015 q=0.81
+SPS: 3757
+global_step=1150435, episodic_return=140.0
+step=1151000 loss=0.0013 q=0.80
+SPS: 3685
+global_step=1151215, episodic_return=180.0
+step=1152000 loss=0.0011 q=0.72
+SPS: 3616
+global_step=1152001, episodic_return=220.0
+global_step=1152695, episodic_return=200.0
+step=1153000 loss=0.0425 q=0.79
+SPS: 3550
+global_step=1153310, episodic_return=140.0
+global_step=1153943, episodic_return=120.0
+step=1154000 loss=0.0030 q=0.83
+SPS: 3486
+global_step=1154466, episodic_return=100.0
+step=1155000 loss=0.0271 q=0.82
+SPS: 3424
+global_step=1155365, episodic_return=260.0
+step=1156000 loss=0.0034 q=0.77
+SPS: 3365
+global_step=1156103, episodic_return=200.0
+global_step=1156757, episodic_return=140.0
+step=1157000 loss=0.0047 q=0.92
+SPS: 3308
+global_step=1157446, episodic_return=160.0
+step=1158000 loss=0.0105 q=0.96
+SPS: 3252
+global_step=1158314, episodic_return=200.0
+step=1159000 loss=0.0029 q=0.80
+SPS: 3199
+global_step=1159177, episodic_return=140.0
+global_step=1159659, episodic_return=100.0
+step=1160000 loss=0.0085 q=0.81
+SPS: 3148
+global_step=1160302, episodic_return=240.0
+global_step=1160740, episodic_return=120.0
+step=1161000 loss=0.0015 q=0.88
+SPS: 3099
+global_step=1161344, episodic_return=160.0
+step=1162000 loss=0.0133 q=0.94
+SPS: 3051
+global_step=1162053, episodic_return=240.0
+global_step=1162693, episodic_return=120.0
+step=1163000 loss=0.0045 q=0.83
+SPS: 3005
+global_step=1163239, episodic_return=160.0
+step=1164000 loss=0.0060 q=0.95
+SPS: 2960
+global_step=1164009, episodic_return=100.0

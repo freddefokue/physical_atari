@@ -44,28 +44,20 @@ from benchmark_runner import (
     GameSpec,
     GameResult,
 )
-from cleanrl_utils.atari_wrappers import (
-    ClipRewardEnv,
-    EpisodicLifeEnv,
-    FireResetEnv,
-    MaxAndSkipEnv,
-    NoopResetEnv,
-)
 
-FRAME_SKIP = 4
-PROGRESS_POINTS = 1000
-DEFAULT_CONTINUAL_GAMES = (
-    "BreakoutNoFrameskip-v4",
-    "PongNoFrameskip-v4",
-    "SpaceInvadersNoFrameskip-v4",
-    "SeaquestNoFrameskip-v4",
-    "QbertNoFrameskip-v4",
-    "BeamRiderNoFrameskip-v4",
-    "RiverraidNoFrameskip-v4",
-    "MsPacmanNoFrameskip-v4",
+# Import shared utilities from common module
+from common import (
+    FRAME_SKIP,
+    ATARI_CANONICAL_ACTIONS,
+    PROGRESS_POINTS,
+    DEFAULT_CONTINUAL_GAMES,
+    DEFAULT_CONTINUAL_CYCLES,
+    DEFAULT_CONTINUAL_CYCLE_FRAMES,
+    make_atari_env,
+    update_progress_graphs,
+    write_continual_summary,
+    create_logger,
 )
-DEFAULT_CONTINUAL_CYCLES = 3
-DEFAULT_CONTINUAL_CYCLE_FRAMES = 400_000
 
 
 class NoisyLinear(nn.Module):
@@ -240,20 +232,44 @@ class PrioritizedReplayBuffer:
         self.n_step = n_step
         self.gamma = gamma
 
-        obs_shape = observation_space.shape
-        self.buffer_obs = np.zeros((capacity,) + obs_shape, dtype=np.uint8)
-        self.buffer_next_obs = np.zeros((capacity,) + obs_shape, dtype=np.uint8)
-        self.buffer_actions = np.zeros(capacity, dtype=np.int64)
-        self.buffer_rewards = np.zeros(capacity, dtype=np.float32)
-        self.buffer_dones = np.zeros(capacity, dtype=np.bool_)
+        # This logic is extracted so we can reset it later
+        self.observation_space = observation_space
+        self.init_buffers()
 
-        self.sum_tree = SumSegmentTree(capacity)
-        self.min_tree = MinSegmentTree(capacity)
+    def init_buffers(self):
+        """Full initialization - allocates new arrays. Used at construction time."""
+        obs_shape = self.observation_space.shape
+        self.buffer_obs = np.zeros((self.capacity,) + obs_shape, dtype=np.uint8)
+        self.buffer_next_obs = np.zeros((self.capacity,) + obs_shape, dtype=np.uint8)
+        self.buffer_actions = np.zeros(self.capacity, dtype=np.int64)
+        self.buffer_rewards = np.zeros(self.capacity, dtype=np.float32)
+        self.buffer_dones = np.zeros(self.capacity, dtype=np.bool_)
+
+        self.sum_tree = SumSegmentTree(self.capacity)
+        self.min_tree = MinSegmentTree(self.capacity)
         self.max_priority = 1.0
 
         self.pos = 0
         self.size = 0
-        self.n_step_buffer: deque = deque(maxlen=n_step)
+        self.n_step_buffer: deque = deque(maxlen=self.n_step)
+
+    def reset_counters(self):
+        """
+        Lightweight reset - just resets logical state without memory reallocation.
+        Used when switching games in continual learning to avoid training on old data.
+        The old data in arrays will be overwritten as new experiences come in.
+        """
+        # Reset segment trees (these are small, O(capacity) ints/floats)
+        self.sum_tree.tree.fill(0.0)
+        self.min_tree.tree.fill(float("inf"))
+        self.max_priority = 1.0
+        
+        # Reset counters
+        self.pos = 0
+        self.size = 0
+        
+        # Clear n-step buffer
+        self.n_step_buffer.clear()
 
     def __len__(self) -> int:
         return self.size
@@ -331,22 +347,6 @@ class PrioritizedReplayBuffer:
             self.min_tree.update(idx, priority)
 
 
-def make_env(env_id: str, seed: int) -> gym.Env:
-    """Create a Gym Atari environment with the same wrappers as CleanRL's DQN."""
-
-    env = gym.make(env_id)
-    env = gym.wrappers.RecordEpisodeStatistics(env)
-    env = NoopResetEnv(env, noop_max=30)
-    env = MaxAndSkipEnv(env, skip=FRAME_SKIP)
-    env = EpisodicLifeEnv(env)
-    if "FIRE" in env.unwrapped.get_action_meanings():
-        env = FireResetEnv(env)
-    env = ClipRewardEnv(env)
-    env = gym.wrappers.ResizeObservation(env, (84, 84))
-    env = gym.wrappers.GrayScaleObservation(env)
-    env = gym.wrappers.FrameStack(env, FRAME_SKIP)
-    env.action_space.seed(seed)
-    return env
 
 
 @dataclass
@@ -415,20 +415,31 @@ class Agent:
         else:
             raise ValueError("Unable to infer stacked frame dimension from observation shape.")
 
+        # --- FIX: Action Space Mismatch ---
+        # If continual, we force the network to handle the full Atari action set
+        # to prevent shape mismatches when switching between games.
+        if config.continual:
+            self.num_actions = ATARI_CANONICAL_ACTIONS
+        else:
+            self.num_actions = action_space.n
+        # ----------------------------------
+
+        # Use self.num_actions instead of action_space.n
         self.q_network = NoisyDuelingDistributionalNetwork(
             in_channels,
-            action_space.n,
+            self.num_actions,
             config.n_atoms,
             config.v_min,
             config.v_max,
         ).to(self.device)
         self.target_network = NoisyDuelingDistributionalNetwork(
             in_channels,
-            action_space.n,
+            self.num_actions,
             config.n_atoms,
             config.v_min,
             config.v_max,
         ).to(self.device)
+        
         self.target_network.load_state_dict(self.q_network.state_dict())
         self.optimizer = optim.Adam(self.q_network.parameters(), lr=config.learning_rate, eps=1.5e-4)
 
@@ -501,6 +512,7 @@ class Agent:
 
     def train_function(self):
         self._update_per_beta()
+        # Note: We reset noise every training step in Rainbow
         self.q_network.reset_noise()
         self.target_network.reset_noise()
 
@@ -567,51 +579,16 @@ class Agent:
 
     def start_new_game(self):
         self._game_learning_start_step = self.global_step + max(0, self.config.per_game_learning_starts)
-
-
-def _moving_average(scores: Sequence[float], end_frames: Sequence[int], window: int, current_frame: int) -> float:
-    if not scores:
-        return -999.0
-    cutoff = current_frame - window
-    total = 0.0
-    count = 0
-    for score, frame_idx in zip(reversed(scores), reversed(end_frames)):
-        if frame_idx < cutoff:
-            break
-        total += score
-        count += 1
-    if count == 0:
-        return -999.0
-    return total / count
-
-
-def _update_progress_graphs(
-    episode_graph: torch.Tensor,
-    parms_graph: torch.Tensor,
-    params: Sequence[torch.nn.Parameter],
-    frame_offset: int,
-    frames_consumed: int,
-    frame_budget: int,
-    average_frames: int,
-    episode_scores: Sequence[float],
-    episode_end: Sequence[int],
-    graph_total_frames: Optional[int],
-):
-    total_frames = graph_total_frames or (frame_offset + frame_budget)
-    total_frames = max(total_frames, frame_offset + frame_budget)
-    current_frame = frame_offset + frames_consumed
-    previous_frame = max(frame_offset, current_frame - FRAME_SKIP)
-    points = episode_graph.shape[0]
-    prev_bucket = min((previous_frame * points) // total_frames, points - 1)
-    curr_bucket = min((current_frame * points) // total_frames, points - 1)
-    if curr_bucket == prev_bucket:
-        return
-    avg_score = _moving_average(episode_scores, episode_end, average_frames, current_frame)
-    for bucket in range(prev_bucket + 1, curr_bucket + 1):
-        episode_graph[bucket] = avg_score
-        with torch.no_grad():
-            for idx, param in enumerate(params):
-                parms_graph[bucket, idx] = torch.norm(param.detach()).item()
+        
+        # --- FIX: Buffer Pollution (Performance Optimized) ---
+        # Reset buffer counters and trees instead of reallocating arrays.
+        # This avoids deallocating/reallocating potentially gigabytes of memory.
+        if self.config.continual:
+            print(f"  [Agent] Resetting Prioritized Replay Buffer counters for new game...")
+            # Use lightweight reset that clears logical state without memory reallocation.
+            # Also clears n-step buffer to prevent cross-game transition leaks.
+            self.replay_buffer.reset_counters()
+        # -----------------------------
 
 
 def agent_rainbow_frame_runner(
@@ -628,13 +605,9 @@ def agent_rainbow_frame_runner(
     config = agent.config
     frames_per_step = max(1, handle.frames_per_step)
 
-    log_file = getattr(config, "log_file", "")
-
-    def log(message: str):
-        print(message)
-        if log_file:
-            with open(log_file, "a", encoding="utf-8") as log_f:
-                log_f.write(message + "\n")
+    # Use consistent logging from common module
+    logger = create_logger(log_file=getattr(config, "log_file", None))
+    log = logger.log
 
     max_step_budget = max(1, context.frame_budget // frames_per_step)
     if config.total_steps > 0:
@@ -750,7 +723,7 @@ def agent_rainbow_frame_runner(
         else:
             obs = next_obs
 
-        _update_progress_graphs(
+        update_progress_graphs(
             episode_graph,
             parms_graph,
             params,
@@ -770,12 +743,20 @@ def agent_rainbow_frame_runner(
 
 
 def _parse_continual_game_ids(config: AgentConfig) -> List[str]:
+    """
+    Parse the list of games for continual learning.
+    
+    Allows any number of games >= 2 for flexibility in ablations and debugging.
+    Default is 8 games if not specified.
+    """
     if config.continual_games.strip():
         game_ids = [game.strip() for game in config.continual_games.split(",") if game.strip()]
     else:
         game_ids = list(DEFAULT_CONTINUAL_GAMES)
-    if len(game_ids) != 8:
-        raise ValueError(f"Continual mode requires exactly 8 games, received {len(game_ids)}.")
+    
+    if len(game_ids) < 2:
+        raise ValueError(f"Continual mode requires at least 2 games for meaningful evaluation, received {len(game_ids)}.")
+    
     return game_ids
 
 
@@ -786,7 +767,7 @@ def _validate_continual_envs(
     min_actions: int,
 ):
     for env_id in game_ids[1:]:
-        preview_env = make_env(env_id, config.seed)
+        preview_env = make_atari_env(env_id, config.seed)
         try:
             obs_shape = preview_env.observation_space.shape
             if obs_shape != base_shape:
@@ -838,43 +819,12 @@ def _build_continual_benchmark_config(
     return BenchmarkConfig(cycles=cycles, description=description)
 
 
-def _write_continual_summary(results: Sequence[GameResult], path: str):
-    summary_records = []
-    for result in results:
-        total_score = float(sum(result.episode_scores))
-        mean_score = float(np.mean(result.episode_scores)) if result.episode_scores else 0.0
-        summary_records.append(
-            {
-                "cycle_index": result.cycle_index,
-                "game_index": result.game_index,
-                "game": result.spec.name,
-                "frame_offset": result.frame_offset,
-                "frame_budget": result.frame_budget,
-                "episodes": len(result.episode_scores),
-                "total_episode_score": total_score,
-                "mean_episode_score": mean_score,
-            }
-        )
-    final_cycle_index = results[-1].cycle_index if results else -1
-    final_cycle_total = sum(
-        float(sum(result.episode_scores))
-        for result in results
-        if result.cycle_index == final_cycle_index
-    )
-    payload = {
-        "final_cycle_index": final_cycle_index,
-        "final_cycle_total_episode_score": final_cycle_total,
-        "records": summary_records,
-    }
-    with open(path, "w", encoding="utf-8") as summary_file:
-        json.dump(payload, summary_file, indent=2)
-    print(f"Wrote continual summary to {path}")
 
 
 def _run_single_environment(config: AgentConfig, writer: SummaryWriter, run_name: str, run_dir: str):
     env: Optional[gym.Env] = None
     try:
-        env = make_env(config.env_id, config.seed)
+        env = make_atari_env(config.env_id, config.seed)
         agent = Agent(env.observation_space, env.action_space, config)
         frames_per_step = FRAME_SKIP
         frame_budget_frames = max(config.total_steps, 1) * frames_per_step
@@ -932,7 +882,7 @@ def _run_continual_mode(config: AgentConfig, writer: SummaryWriter, run_dir: str
         )
         config.total_steps = required_steps
 
-    base_env = make_env(game_ids[0], config.seed)
+    base_env = make_atari_env(game_ids[0], config.seed)
     try:
         agent = Agent(base_env.observation_space, base_env.action_space, config)
         base_shape = base_env.observation_space.shape
@@ -953,6 +903,9 @@ def _run_continual_mode(config: AgentConfig, writer: SummaryWriter, run_dir: str
         data_dir=run_dir,
         rank=0,
         default_seed=config.seed,
+        # --- FIX: Ensure Runner forces full action set for safety ---
+        use_canonical_full_actions=True, 
+        # ------------------------------------------------------------
         average_frames=100_000,
         max_frames_without_reward=0,
         lives_as_episodes=1,
@@ -960,7 +913,7 @@ def _run_continual_mode(config: AgentConfig, writer: SummaryWriter, run_dir: str
     )
     results = runner.run()
     summary_path = os.path.join(run_dir, "continual_summary.json")
-    _write_continual_summary(results, summary_path)
+    write_continual_summary(results, summary_path)
 
 
 def parse_args() -> AgentConfig:

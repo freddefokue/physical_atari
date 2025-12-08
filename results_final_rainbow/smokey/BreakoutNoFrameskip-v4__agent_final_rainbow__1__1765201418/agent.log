@@ -1,0 +1,4 @@
+Starting game 'PongNoFrameskip-v4' with target 10000 frames (cycle budget 10000).
+global_step=3258, episodic_return=-21.0
+global_step=4015, episodic_return=-21.0
+global_step=4770, episodic_return=-21.0

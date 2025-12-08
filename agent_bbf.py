@@ -12,7 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Gym-based Atari BBF agent with BenchmarkRunner integration."""
+"""
+BBF (Bigger, Better, Faster) Agent wrapped for the Continual Learning Benchmark.
+Original Paper: https://arxiv.org/abs/2305.19452
+
+This implementation wraps the correct CleanRL BBF logic to fit the benchmark runner interface.
+"""
 
 from __future__ import annotations
 
@@ -33,6 +38,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 
+# Import Benchmark interfaces
 from benchmark_runner import (
     BenchmarkConfig,
     BenchmarkRunner,
@@ -40,433 +46,501 @@ from benchmark_runner import (
     EnvironmentHandle,
     FrameRunnerContext,
     FrameRunnerResult,
-    GameResult,
     GameSpec,
-)
-from cleanrl_utils.atari_wrappers import (
-    ClipRewardEnv,
-    EpisodicLifeEnv,
-    FireResetEnv,
-    MaxAndSkipEnv,
-    NoopResetEnv,
+    GameResult,
 )
 
-FRAME_SKIP = 4
-PROGRESS_POINTS = 1000
-DEFAULT_CONTINUAL_GAMES = (
-    "BreakoutNoFrameskip-v4",
-    "PongNoFrameskip-v4",
-    "SpaceInvadersNoFrameskip-v4",
-    "SeaquestNoFrameskip-v4",
-    "QbertNoFrameskip-v4",
-    "BeamRiderNoFrameskip-v4",
-    "RiverraidNoFrameskip-v4",
-    "MsPacmanNoFrameskip-v4",
+# Import shared utilities from common module
+from common import (
+    FRAME_SKIP,
+    ATARI_CANONICAL_ACTIONS,
+    PROGRESS_POINTS,
+    DEFAULT_CONTINUAL_GAMES,
+    DEFAULT_CONTINUAL_CYCLES,
+    DEFAULT_CONTINUAL_CYCLE_FRAMES,
+    make_atari_env,
+    update_progress_graphs,
+    write_continual_summary,
+    create_logger,
 )
-DEFAULT_CONTINUAL_CYCLES = 3
-DEFAULT_CONTINUAL_CYCLE_FRAMES = 400_000
 
 
-def make_env(env_id: str, seed: int) -> gym.Env:
-    env = gym.make(env_id)
-    env = gym.wrappers.RecordEpisodeStatistics(env)
-    env = NoopResetEnv(env, noop_max=30)
-    env = MaxAndSkipEnv(env, skip=FRAME_SKIP)
-    env = EpisodicLifeEnv(env)
-    if "FIRE" in env.unwrapped.get_action_meanings():
-        env = FireResetEnv(env)
-    env = ClipRewardEnv(env)
-    env = gym.wrappers.ResizeObservation(env, (84, 84))
-    env = gym.wrappers.GrayScaleObservation(env)
-    env = gym.wrappers.FrameStack(env, FRAME_SKIP)
-    env.action_space.seed(seed)
-    return env
+# =============================================================================
+# NETWORK ARCHITECTURE (from CleanRL BBF)
+# =============================================================================
+
+class RandomShift(nn.Module):
+    """Data augmentation: random spatial shift + intensity noise."""
+    def __init__(self, pad=4, intensity_scale=0.05):
+        super().__init__()
+        self.pad = pad
+        self.intensity_scale = intensity_scale
+
+    def forward(self, x):
+        b, c, h, w = x.shape 
+        x = F.pad(x.float(), (self.pad, self.pad, self.pad, self.pad), mode="replicate")
+        top = torch.randint(0, 2 * self.pad + 1, (b,), device=x.device)
+        left = torch.randint(0, 2 * self.pad + 1, (b,), device=x.device)
+        out = torch.empty((b, c, h, w), device=x.device, dtype=x.dtype)
+        for i in range(b):
+            out[i] = x[i, :, top[i]:top[i] + h, left[i]:left[i] + w]
+        
+        if self.training:
+            noise = torch.randn(b, 1, 1, 1, device=x.device).clamp(-2.0, 2.0)
+            out = out * (1.0 + self.intensity_scale * noise)
+        
+        return out
 
 
 class ResidualBlock(nn.Module):
-    def __init__(self, channels: int):
+    """Pre-activation residual block (official BBF style)."""
+    def __init__(self, channels):
         super().__init__()
-        self.conv0 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
-        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        self.conv1 = nn.Conv2d(channels, channels, 3, padding=1)
+        self.conv2 = nn.Conv2d(channels, channels, 3, padding=1)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        inputs = x
-        x = F.relu(x)
-        x = self.conv0(x)
-        x = F.relu(x)
-        x = self.conv1(x)
-        return x + inputs
+    def forward(self, x):
+        out = F.relu(x)
+        out = self.conv1(out)
+        out = F.relu(out)
+        out = self.conv2(out)
+        return out + x
 
 
-class ImpalaCNN(nn.Module):
-    def __init__(self, in_channels: int, channel_scale: int = 4):
+class ImpalaBlock(nn.Module):
+    def __init__(self, in_c, out_c):
         super().__init__()
-        widths = [32 * channel_scale, 64 * channel_scale, 64 * channel_scale]
-        layers: List[nn.Module] = []
-        for width in widths:
-            layers.append(nn.Conv2d(in_channels, width, kernel_size=3, padding=1))
-            layers.append(nn.MaxPool2d(kernel_size=3, stride=2, padding=1))
-            layers.append(ResidualBlock(width))
-            layers.append(ResidualBlock(width))
-            in_channels = width
-        self.network = nn.Sequential(*layers)
+        self.conv = nn.Conv2d(in_c, out_c, 3, stride=1, padding=1)
+        self.pool = nn.MaxPool2d(3, stride=2, padding=1)
+        self.res1 = ResidualBlock(out_c)
+        self.res2 = ResidualBlock(out_c)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.network(x)
+    def forward(self, x):
+        x = self.conv(x)
+        x = self.pool(x)
+        x = self.res1(x)
+        x = self.res2(x)
+        return x
 
 
-class QNetwork(nn.Module):
-    def __init__(self, in_channels: int, num_actions: int, n_atoms: int, v_min: float, v_max: float):
+class BBFNetwork(nn.Module):
+    def __init__(self, in_channels: int, num_actions: int, args):
         super().__init__()
-        self.n_atoms = n_atoms
-        self.v_min = v_min
-        self.v_max = v_max
+        self.n_atoms = args.n_atoms
+        self.v_min = args.v_min
+        self.v_max = args.v_max
+        self.delta_z = (args.v_max - args.v_min) / (args.n_atoms - 1)
         self.n_actions = num_actions
-        self.register_buffer("support", torch.linspace(v_min, v_max, n_atoms))
-        self.delta_z = (v_max - v_min) / (n_atoms - 1)
-
-        self.encoder = ImpalaCNN(in_channels, channel_scale=4)
-        with torch.no_grad():
-            dummy = torch.zeros(1, in_channels, 84, 84)
-            x = self.encoder(dummy)
-            self.out_features = x.shape[1] * x.shape[2] * x.shape[3]
-
-        self.fc_value = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(self.out_features, 2048),
-            nn.ReLU(),
-            nn.Linear(2048, n_atoms),
+        self.register_buffer("support", torch.linspace(args.v_min, args.v_max, args.n_atoms))
+        
+        w = args.impala_width
+        self.encoder = nn.Sequential(
+            ImpalaBlock(in_channels, 16 * w),
+            ImpalaBlock(16 * w, 32 * w),
+            ImpalaBlock(32 * w, 32 * w),
+            nn.ReLU()
         )
-        self.fc_advantage = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(self.out_features, 2048),
-            nn.ReLU(),
-            nn.Linear(2048, n_atoms * num_actions),
+        self.enc_out_dim = 32 * w * 11 * 11
+        
+        self.latent_dim = 512
+        self.rep_head = nn.Linear(self.enc_out_dim, self.latent_dim)
+        
+        self.value_head = nn.Sequential(
+            nn.Linear(self.latent_dim, 512), nn.ReLU(), nn.Linear(512, self.n_atoms)
         )
-
-        self.proj_dim = 512
+        self.advantage_head = nn.Sequential(
+            nn.Linear(self.latent_dim, 512), nn.ReLU(), nn.Linear(512, self.n_atoms * self.n_actions)
+        )
+        
+        self.proj_dim = 256
         self.projection = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(self.out_features, self.proj_dim),
-            nn.BatchNorm1d(self.proj_dim),
+            nn.Linear(self.latent_dim, self.proj_dim),
+            nn.LayerNorm(self.proj_dim),
             nn.ReLU(),
-            nn.Linear(self.proj_dim, self.proj_dim),
-            nn.BatchNorm1d(self.proj_dim),
-        )
-        self.dynamics_model = nn.Sequential(
-            nn.Linear(self.proj_dim + num_actions, self.proj_dim),
-            nn.ReLU(),
-            nn.Linear(self.proj_dim, self.proj_dim),
+            nn.Linear(self.proj_dim, self.proj_dim)
         )
         self.predictor = nn.Sequential(
             nn.Linear(self.proj_dim, self.proj_dim),
-            nn.BatchNorm1d(self.proj_dim),
+            nn.LayerNorm(self.proj_dim),
             nn.ReLU(),
-            nn.Linear(self.proj_dim, self.proj_dim),
+            nn.Linear(self.proj_dim, self.proj_dim)
         )
+        self.action_emb = nn.Embedding(self.n_actions, self.latent_dim)
+        self.trans_fc = nn.Linear(self.latent_dim * 2, self.latent_dim)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.encoder(x / 255.0)
-        value = self.fc_value(x).view(-1, 1, self.n_atoms)
-        advantage = self.fc_advantage(x).view(-1, self.n_actions, self.n_atoms)
+    def encode(self, x):
+        x = x / 255.0
+        h = self.encoder(x)
+        h = self._renormalize(h)
+        h = h.view(h.size(0), -1)
+        return self.rep_head(h)
+    
+    def _renormalize(self, x):
+        """Min-max normalize spatial latent to [0, 1] (official BBF)."""
+        shape = x.shape
+        x = x.view(x.size(0), -1)
+        x_min = x.min(dim=-1, keepdim=True)[0]
+        x_max = x.max(dim=-1, keepdim=True)[0]
+        x = (x - x_min) / (x_max - x_min + 1e-5)
+        return x.view(shape)
+
+    def forward(self, x):
+        z = self.encode(x)
+        return self.get_dist(z)
+
+    def get_dist(self, z):
+        value = self.value_head(z).view(-1, 1, self.n_atoms)
+        advantage = self.advantage_head(z).view(-1, self.n_actions, self.n_atoms)
         q_atoms = value + advantage - advantage.mean(dim=1, keepdim=True)
-        return F.softmax(q_atoms, dim=2)
+        q_dist = F.softmax(q_atoms, dim=2)
+        return q_dist
 
-    def get_representation(self, x: torch.Tensor) -> torch.Tensor:
-        return self.projection(self.encoder(x / 255.0))
+    def transition(self, z, action):
+        a_emb = self.action_emb(action)
+        x = torch.cat([z, a_emb], dim=1)
+        return z + F.relu(self.trans_fc(x))
+
+    def rollout_latents(self, z0, actions_seq):
+        zs = [z0]
+        curr_z = z0
+        for i in range(actions_seq.size(1)):
+            curr_z = self.transition(curr_z, actions_seq[:, i])
+            zs.append(curr_z)
+        return torch.stack(zs, dim=1)
 
 
-class SumSegmentTree:
-    def __init__(self, capacity: int):
+# =============================================================================
+# REPLAY BUFFERS (from CleanRL BBF)
+# =============================================================================
+
+class SumTree:
+    """Binary tree for O(log n) prioritized sampling."""
+    def __init__(self, capacity):
         self.capacity = capacity
-        self.tree_size = 2 * capacity - 1
-        self.tree = np.zeros(self.tree_size, dtype=np.float32)
-
-    def _propagate(self, idx: int):
+        self.tree = np.zeros(2 * capacity - 1, dtype=np.float64)
+        self.max_priority = 1.0
+    
+    def _propagate(self, idx, change):
         parent = (idx - 1) // 2
-        while parent >= 0:
-            self.tree[parent] = self.tree[parent * 2 + 1] + self.tree[parent * 2 + 2]
-            parent = (parent - 1) // 2
-
-    def update(self, idx: int, value: float):
+        self.tree[parent] += change
+        if parent != 0:
+            self._propagate(parent, change)
+    
+    def update(self, idx, priority):
         tree_idx = idx + self.capacity - 1
-        self.tree[tree_idx] = value
-        self._propagate(tree_idx)
-
-    def total(self) -> float:
-        return self.tree[0]
-
-    def retrieve(self, value: float) -> int:
+        change = priority - self.tree[tree_idx]
+        self.tree[tree_idx] = priority
+        self._propagate(tree_idx, change)
+        self.max_priority = max(self.max_priority, priority)
+    
+    def get(self, s):
         idx = 0
-        while idx * 2 + 1 < self.tree_size:
-            left = idx * 2 + 1
-            if value <= self.tree[left]:
+        while idx < self.capacity - 1:
+            left = 2 * idx + 1
+            right = left + 1
+            if s <= self.tree[left]:
                 idx = left
             else:
-                value -= self.tree[left]
-                idx = left + 1
+                s -= self.tree[left]
+                idx = right
         return idx - (self.capacity - 1)
-
-
-class MinSegmentTree:
-    def __init__(self, capacity: int):
-        self.capacity = capacity
-        self.tree_size = 2 * capacity - 1
-        self.tree = np.full(self.tree_size, float("inf"), dtype=np.float32)
-
-    def _propagate(self, idx: int):
-        parent = (idx - 1) // 2
-        while parent >= 0:
-            self.tree[parent] = min(self.tree[parent * 2 + 1], self.tree[parent * 2 + 2])
-            parent = (parent - 1) // 2
-
-    def update(self, idx: int, value: float):
-        tree_idx = idx + self.capacity - 1
-        self.tree[tree_idx] = value
-        self._propagate(tree_idx)
-
-    def min(self) -> float:
+    
+    @property
+    def total(self):
         return self.tree[0]
-
-
-class PrioritizedReplayBuffer:
-    def __init__(
-        self,
-        capacity: int,
-        obs_shape: Sequence[int],
-        device: torch.device,
-        alpha: float,
-        beta: float,
-        eps: float,
-    ):
-        self.capacity = capacity
-        self.device = device
-        self.alpha = alpha
-        self.beta = beta
-        self.eps = eps
-
-        self.buffer_obs = np.zeros((capacity,) + tuple(obs_shape), dtype=np.uint8)
-        self.buffer_actions = np.zeros(capacity, dtype=np.int64)
-        self.buffer_rewards = np.zeros(capacity, dtype=np.float32)
-        self.buffer_dones = np.zeros(capacity, dtype=np.bool_)
-
-        self.pos = 0
-        self.size = 0
+    
+    def __getitem__(self, idx):
+        return self.tree[idx + self.capacity - 1]
+    
+    def reset(self):
+        """Reset tree for new game in continual learning."""
+        self.tree.fill(0.0)
         self.max_priority = 1.0
 
-        self.sum_tree = SumSegmentTree(capacity)
-        self.min_tree = MinSegmentTree(capacity)
 
-    def add(self, obs, action, reward, next_obs, done):
-        idx = self.pos
-        self.buffer_obs[idx] = obs
-        self.buffer_actions[idx] = action
-        self.buffer_rewards[idx] = reward
-        self.buffer_dones[idx] = done
+class PrioritizedSequenceReplayBuffer:
+    """Prioritized Experience Replay buffer with sequence support."""
+    def __init__(self, capacity, obs_shape, device, max_seq_len, eps=1e-6):
+        self.capacity = capacity
+        self.device = device
+        self.max_seq_len = max_seq_len
+        self.eps = eps
+        self.obs_shape = obs_shape
+        
+        self.obs = np.zeros((capacity, *obs_shape), dtype=np.uint8)
+        self.actions = np.zeros((capacity), dtype=np.int64)
+        self.rewards = np.zeros((capacity), dtype=np.float32)
+        self.dones = np.zeros((capacity), dtype=np.bool_)
+        self.tree = SumTree(capacity)
+        self.pos = 0
+        self.size = 0
 
-        priority = self.max_priority**self.alpha
-        self.sum_tree.update(idx, priority)
-        self.min_tree.update(idx, priority)
-
+    def add(self, obs, action, reward, done, priority=None):
+        self.obs[self.pos] = obs
+        self.actions[self.pos] = action
+        self.rewards[self.pos] = reward
+        self.dones[self.pos] = done
+        
+        if priority is None:
+            priority = self.tree.max_priority
+        self.tree.update(self.pos, priority)
+        
         self.pos = (self.pos + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
 
-    def sample(self, batch_size: int, seq_len: int):
-        indices: List[int] = []
-        p_total = self.sum_tree.total()
-        segment = p_total / batch_size
-
+    def sample(self, batch_size, seq_len):
+        if self.size < seq_len:
+            raise ValueError(f"Not enough data: size={self.size}, seq_len={seq_len}")
+        
+        indices = np.zeros(batch_size, dtype=np.int64)
+        priorities = np.zeros(batch_size, dtype=np.float64)
+        
+        segment = self.tree.total / batch_size
         for i in range(batch_size):
-            while True:
-                a = segment * i
-                b = segment * (i + 1)
-                value = np.random.uniform(a, b)
-                idx = self.sum_tree.retrieve(value)
-
-                if self.size < self.capacity:
-                    if idx + seq_len > self.pos:
-                        continue
+            low = segment * i
+            high = segment * (i + 1)
+            s = np.random.uniform(low, high)
+            idx = self.tree.get(s)
+            
+            cursor = self.pos if self.size == self.capacity else 0
+            max_valid = self.size - seq_len
+            
+            attempts = 0
+            while attempts < 10:
+                if self.size == self.capacity:
+                    logical_idx = (idx - cursor) % self.capacity
+                    if logical_idx <= max_valid:
+                        break
                 else:
-                    if idx + seq_len > self.capacity and (idx + seq_len) % self.capacity >= self.pos:
-                        continue
-                if idx + seq_len > self.capacity:
-                    continue
-                indices.append(idx)
-                break
-
-        b_obs = np.array([self.buffer_obs[i : i + seq_len] for i in indices])
-        b_actions = np.array([self.buffer_actions[i : i + seq_len] for i in indices])
-        b_rewards = np.array([self.buffer_rewards[i : i + seq_len] for i in indices])
-        b_dones = np.array([self.buffer_dones[i : i + seq_len] for i in indices])
-
-        samples = {
-            "observations": torch.from_numpy(b_obs).to(self.device),
-            "actions": torch.from_numpy(b_actions).to(self.device),
-            "rewards": torch.from_numpy(b_rewards).to(self.device),
-            "dones": torch.from_numpy(b_dones.astype(np.float32)).to(self.device),
-        }
-
-        probs = np.array([self.sum_tree.tree[idx + self.capacity - 1] for idx in indices], dtype=np.float32)
-        weights = (self.size * probs / p_total) ** -self.beta
-        weights = weights / weights.max()
-        samples["weights"] = torch.from_numpy(weights).to(self.device).unsqueeze(1)
-        samples["indices"] = indices
-        return samples
-
-    def update_priorities(self, indices: Sequence[int], priorities: np.ndarray):
-        priorities = np.abs(priorities) + self.eps
-        self.max_priority = max(self.max_priority, priorities.max())
+                    if idx <= max_valid:
+                        break
+                s = np.random.uniform(low, high)
+                idx = self.tree.get(s)
+                attempts += 1
+            
+            indices[i] = idx
+            priorities[i] = self.tree[idx]
+        
+        seq_indices = (indices[:, None] + np.arange(seq_len)) % self.capacity
+        
+        probs = priorities / (self.tree.total + 1e-10)
+        weights = 1.0 / np.sqrt(probs + 1e-10)
+        weights = weights / (weights.max() + 1e-10)
+        
+        return (
+            torch.as_tensor(self.obs[seq_indices], device=self.device),
+            torch.as_tensor(self.actions[seq_indices], device=self.device),
+            torch.as_tensor(self.rewards[seq_indices], device=self.device),
+            torch.as_tensor(self.dones[seq_indices], device=self.device),
+            indices,
+            torch.as_tensor(weights, device=self.device, dtype=torch.float32),
+        )
+    
+    def update_priorities(self, indices, losses):
+        priorities = np.sqrt(losses + self.eps)
         for idx, priority in zip(indices, priorities):
-            priority = float(priority) ** self.alpha
-            self.sum_tree.update(idx, priority)
-            self.min_tree.update(idx, priority)
+            self.tree.update(idx, priority)
+    
+    def reset_counters(self):
+        """Reset buffer for new game in continual learning (no memory reallocation)."""
+        self.pos = 0
+        self.size = 0
+        self.tree.reset()
 
 
-def linear_schedule(start_e: float, end_e: float, duration: int, t: int) -> float:
-    if duration <= 0:
-        return end_e
-    slope = (end_e - start_e) / duration
-    return max(slope * t + start_e, end_e)
-
-
-def shrink_and_perturb(model: QNetwork, target_model: QNetwork, alpha: float = 0.5):
-    random_model = ImpalaCNN(model.encoder.network[0].weight.shape[1]).to(model.encoder.network[0].weight.device)
-    with torch.no_grad():
-        for param, rand_param in zip(model.encoder.parameters(), random_model.parameters()):
-            param.data.mul_(alpha).add_(rand_param.data * (1.0 - alpha))
-    target_model.load_state_dict(model.state_dict())
-
-
-class Augmentation(nn.Module):
-    def __init__(self, pad: int = 4):
-        super().__init__()
-        self.pad = pad
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x.float()
-        is_seq = False
-        if x.ndim == 5:
-            is_seq = True
-            b, t, c, h, w = x.shape
-            x = x.view(b * t, c, h, w)
-
-        b, _, h, w = x.shape
-        x = F.pad(x, (self.pad, self.pad, self.pad, self.pad), mode="replicate")
-        eps = 1.0 / (h + 2 * self.pad)
-        x = x + torch.rand_like(x) * eps
-
-        shifted = []
-        for i in range(b):
-            y = random.randint(0, 2 * self.pad)
-            x_shift = random.randint(0, 2 * self.pad)
-            shifted.append(x[i, :, y : y + h, x_shift : x_shift + w])
-        out = torch.stack(shifted)
-        if is_seq:
-            out = out.view(b, t, out.shape[1], out.shape[2], out.shape[3])
-        return out
-
+# =============================================================================
+# AGENT CONFIG
+# =============================================================================
 
 @dataclass
 class AgentConfig:
     env_id: str = "BreakoutNoFrameskip-v4"
-    total_steps: int = 1_000_000
-    buffer_size: int = 1_000_000
-    learning_rate: float = 1e-4
+    total_steps: int = 100_000
+    buffer_size: int = 120_000
+    
+    learning_rate: float = 0.0001
     weight_decay: float = 0.1
-    gamma_initial: float = 0.97
-    gamma_final: float = 0.997
-    n_step_max: int = 10
-    n_step_min: int = 3
-    n_step_decay_steps: int = 10_000
-    reset_grad_interval: int = 40_000
+    impala_width: int = 4
+    
     replay_ratio: int = 8
+    batch_size: int = 32
+    
+    initial_gamma: float = 0.97
+    final_gamma: float = 0.997
+    initial_n_step: int = 10
+    final_n_step: int = 3
+    anneal_duration: int = 10_000
+    
+    reset_interval: int = 40_000
+    shrink_factor: float = 0.5
+    
     spr_weight: float = 2.0
     jumps: int = 5
-    max_grad_norm: float = 10.0
-    tau: float = 0.995
-    batch_size: int = 32
-    learning_starts: int = 2_000
-    exploration_fraction: float = 0.02
+    
+    n_atoms: int = 51
+    v_min: float = -100.0
+    v_max: float = 100.0
+    tau: float = 0.005
+
     start_e: float = 1.0
     end_e: float = 0.01
-    prioritized_replay_alpha: float = 0.5
-    prioritized_replay_beta: float = 0.4
-    prioritized_replay_eps: float = 1e-6
-    n_atoms: int = 51
-    v_min: float = -10.0
-    v_max: float = 10.0
-    per_game_learning_starts: int = 1_000
+    exploration_fraction: float = 0.10
+    learning_starts: int = 2000
+    
     seed: int = 1
     cuda: bool = True
     track: bool = False
     wandb_project_name: str = "physical-atari"
     wandb_entity: Optional[str] = None
     log_file: str = ""
+    
     continual: bool = False
     continual_games: str = ""
     continual_cycles: int = DEFAULT_CONTINUAL_CYCLES
     continual_cycle_frames: int = DEFAULT_CONTINUAL_CYCLE_FRAMES
+    per_game_learning_starts: int = 2000
 
     @property
     def device(self) -> torch.device:
         return torch.device("cuda" if torch.cuda.is_available() and self.cuda else "cpu")
 
 
+# =============================================================================
+# AGENT CLASS
+# =============================================================================
+
 class Agent:
     def __init__(self, observation_space: gym.Space, action_space: gym.Space, config: AgentConfig):
         self.config = config
         self.device = config.device
         self.action_space = action_space
+        
         self.global_step = 0
-        self.global_grad_step = 0
+        self.grad_step = 0
+        self.steps_since_reset = 0
+        
         self.last_obs: Optional[np.ndarray] = None
         self.last_action: Optional[int] = None
-        self._game_learning_start_step = 0
+        self.learning_ready_step = config.learning_starts
+
+        # Fix action space for continual learning
+        if config.continual:
+            self.num_actions = ATARI_CANONICAL_ACTIONS
+        else:
+            self.num_actions = action_space.n
+
+        # Infer input channels
+        obs_shape = observation_space.shape
+        if obs_shape[0] == FRAME_SKIP:
+            self.channels_last = False
+            in_channels = obs_shape[0]
+        elif obs_shape[-1] == FRAME_SKIP:
+            self.channels_last = True
+            in_channels = obs_shape[-1]
+        else:
+            raise ValueError("Unable to infer stacked frame dimension.")
+
+        # Networks
+        self.q_network = BBFNetwork(in_channels, self.num_actions, config).to(self.device)
+        self.target_network = BBFNetwork(in_channels, self.num_actions, config).to(self.device)
+        self.target_network.load_state_dict(self.q_network.state_dict())
+        
+        # Optimizer with weight decay excluding biases
+        decay_params = []
+        no_decay_params = []
+        for name, param in self.q_network.named_parameters():
+            if param.ndim <= 1 or name.endswith(".bias"):
+                no_decay_params.append(param)
+            else:
+                decay_params.append(param)
+        self.optimizer = optim.AdamW([
+            {'params': decay_params, 'weight_decay': config.weight_decay},
+            {'params': no_decay_params, 'weight_decay': 0.0}
+        ], lr=config.learning_rate, eps=1.5e-4)
+        
+        self.aug = RandomShift(pad=4).to(self.device)
+        
+        # Replay Buffer
+        self.seq_req = config.jumps + 1 + config.initial_n_step
+        self.replay_buffer = PrioritizedSequenceReplayBuffer(
+            config.buffer_size, 
+            observation_space.shape, 
+            self.device, 
+            self.seq_req
+        )
+        
         self.game_frame_counters: Dict[str, int] = {}
 
-        obs_shape = observation_space.shape
-        if obs_shape[0] != FRAME_SKIP:
-            raise ValueError("Expected channel-first stacked observations.")
+    def _get_epsilon(self):
+        duration = self.config.exploration_fraction * self.config.total_steps
+        if self.global_step >= duration:
+            return self.config.end_e
+        return self.config.start_e + (self.config.end_e - self.config.start_e) * (self.global_step / duration)
 
-        self.q_network = QNetwork(obs_shape[0], action_space.n, config.n_atoms, config.v_min, config.v_max).to(self.device)
-        self.target_network = QNetwork(obs_shape[0], action_space.n, config.n_atoms, config.v_min, config.v_max).to(self.device)
-        self.target_network.load_state_dict(self.q_network.state_dict())
-        self.optimizer = optim.AdamW(
-            self.q_network.parameters(),
-            lr=config.learning_rate,
-            weight_decay=config.weight_decay,
-            eps=1.5e-4,
-        )
-        self.augmentation = Augmentation().to(self.device)
+    def _get_exponential_schedule(self, start, end, t, duration):
+        if t >= duration:
+            return end
+        return start * (end / start) ** (t / duration)
 
-        self.replay_buffer = PrioritizedReplayBuffer(
-            config.buffer_size,
-            obs_shape,
-            self.device,
-            config.prioritized_replay_alpha,
-            config.prioritized_replay_beta,
-            config.prioritized_replay_eps,
-        )
+    def _hard_reset(self):
+        """BBF Shrink & Perturb reset."""
+        print(f"  [Agent] Hard Reset (shrink={self.config.shrink_factor})...")
+        with torch.no_grad():
+            fresh = BBFNetwork(
+                FRAME_SKIP if not self.channels_last else self.config.n_atoms,  # Dummy, we use in_channels from init
+                self.num_actions, 
+                self.config
+            ).to(self.device)
+            # Re-init fresh network with correct in_channels
+            fresh = BBFNetwork(4, self.num_actions, self.config).to(self.device)
+            
+            alpha = self.config.shrink_factor
+            
+            for (name, p), (_, p_new) in zip(self.q_network.named_parameters(), fresh.named_parameters()):
+                if "encoder" in name or "trans_fc" in name or "action_emb" in name:
+                    p.data.copy_(alpha * p.data + (1.0 - alpha) * p_new.data)
+                else:
+                    p.data.copy_(p_new.data)
+                
+                if p in self.optimizer.state:
+                    del self.optimizer.state[p]
+            
+            self.target_network.load_state_dict(self.q_network.state_dict())
 
     def start_new_game(self):
-        self._game_learning_start_step = self.global_step + max(0, self.config.per_game_learning_starts)
+        """Called by BenchmarkRunner when a new game starts."""
+        print("[Agent] New Game - Resetting buffer and performing hard reset.")
+        
+        # Reset buffer
+        self.replay_buffer.reset_counters()
+        
+        # Reset annealing
+        self.steps_since_reset = 0
+        
+        # Shrink & Perturb
+        self._hard_reset()
+        
+        # Set learning threshold
+        self.learning_ready_step = self.global_step + self.config.per_game_learning_starts
 
     def act(self, observation) -> int:
+        # Early epsilon check to avoid unnecessary GPU work
+        epsilon = self._get_epsilon()
+        if random.random() < epsilon:
+            self.last_obs = np.array(observation, copy=False)
+            self.last_action = random.randint(0, self.num_actions - 1)
+            return self.last_action
+        
         obs_np = np.array(observation, copy=False)
         obs_tensor = torch.as_tensor(obs_np, dtype=torch.float32, device=self.device).unsqueeze(0)
-        epsilon = linear_schedule(
-            self.config.start_e,
-            self.config.end_e,
-            int(self.config.exploration_fraction * max(1, self.config.total_steps)),
-            self.global_step,
-        )
-        if random.random() < epsilon or self.global_step < self.config.learning_starts:
-            action = self.action_space.sample()
-        else:
-            with torch.no_grad():
-                dist = self.q_network(obs_tensor)
-                q_values = torch.sum(dist * self.q_network.support, dim=2)
-                action = int(torch.argmax(q_values, dim=1).item())
+        if self.channels_last:
+            obs_tensor = obs_tensor.permute(0, 3, 1, 2)
+            
+        with torch.no_grad():
+            q_dist = self.target_network(obs_tensor)
+            q_values = torch.sum(q_dist * self.target_network.support, dim=2)
+            action = int(torch.argmax(q_values, dim=1).item())
+            
         self.last_obs = obs_np
         self.last_action = action
         return action
@@ -475,187 +549,146 @@ class Agent:
         if self.last_obs is None or self.last_action is None:
             return None
 
-        next_obs_np = np.array(next_observation, copy=False)
-        self.replay_buffer.add(self.last_obs, self.last_action, reward, next_obs_np, done)
+        # Add to buffer
+        self.replay_buffer.add(self.last_obs, self.last_action, reward, done)
         self.global_step += 1
-
-        train_log = None
-        learning_ready = self.global_step >= max(self.config.learning_starts, self._game_learning_start_step)
-        if learning_ready and self.replay_buffer.size >= self.config.batch_size:
-            for _ in range(self.config.replay_ratio):
-                train_log = self._train_once()
-
+        
+        self.last_obs = np.array(next_observation, copy=False)
+        
         if done:
             self.last_obs = None
             self.last_action = None
-        else:
-            self.last_obs = next_obs_np
-            self.last_action = None
+        
+        # Training
+        train_stats = None
+        min_samples = self.seq_req + 1
+        
+        if self.replay_buffer.size > min_samples and self.global_step >= self.learning_ready_step:
+            # Check for reset interval (BBF periodic resets)
+            if self.grad_step > 0 and self.grad_step % self.config.reset_interval == 0:
+                self._hard_reset()
+                self.steps_since_reset = 0
+            
+            # Replay ratio loop
+            for _ in range(self.config.replay_ratio):
+                self.grad_step += 1
+                self.steps_since_reset += 1
+                
+                curr_gamma = self._get_exponential_schedule(
+                    self.config.initial_gamma, self.config.final_gamma, 
+                    self.steps_since_reset, self.config.anneal_duration
+                )
+                curr_n = int(round(self._get_exponential_schedule(
+                    self.config.initial_n_step, self.config.final_n_step, 
+                    self.steps_since_reset, self.config.anneal_duration
+                )))
+                
+                train_stats = self._train_batch(curr_gamma, curr_n)
+                
+        return train_stats
 
-        return train_log
+    def _train_batch(self, curr_gamma, curr_n):
+        args = self.config
+        fetch_len = args.jumps + 1 + curr_n
+        
+        data_obs, data_act, data_rew, data_done, indices, weights = self.replay_buffer.sample(args.batch_size, fetch_len)
+        
+        if self.channels_last:
+            data_obs = data_obs.permute(0, 1, 4, 2, 3)
 
-    def _train_once(self):
-        self.global_grad_step += 1
-        if self.global_grad_step % self.config.reset_grad_interval == 0:
-            shrink_and_perturb(self.q_network, self.target_network)
-            self.optimizer = optim.AdamW(
-                self.q_network.parameters(),
-                lr=self.config.learning_rate,
-                weight_decay=self.config.weight_decay,
-                eps=1.5e-4,
-            )
-
-        steps_since_reset = self.global_grad_step % self.config.reset_grad_interval
-        frac = min(1.0, steps_since_reset / max(1, self.config.n_step_decay_steps))
-        current_n_step = max(self.config.n_step_min, int(self.config.n_step_max * (0.3**frac)))
-        current_gamma = self.config.gamma_initial * ((self.config.gamma_final / self.config.gamma_initial) ** frac)
-
-        seq_len = current_n_step + self.config.jumps + 1
-        batch = self.replay_buffer.sample(self.config.batch_size, seq_len)
-
-        observations = batch["observations"]
-        actions = batch["actions"].long()
-        rewards = batch["rewards"]
-        dones = batch["dones"]
-        weights = batch["weights"]
-
+        # --- SPR LOSS ---
+        obs_0 = self.aug(data_obs[:, 0])
+        z0 = self.q_network.encode(obs_0)
+        rollout_acts = data_act[:, :args.jumps]
+        z_seq = self.q_network.rollout_latents(z0, rollout_acts)
+        
+        target_latents = []
         with torch.no_grad():
-            b_rewards = rewards
-            b_dones = dones
+            for j in range(1, args.jumps + 1):
+                obs_j = self.aug(data_obs[:, j])
+                t_z = self.target_network.encode(obs_j)
+                t_p = self.target_network.projection(t_z)
+                target_latents.append(F.normalize(t_p, dim=1))
+        target_latents = torch.stack(target_latents, dim=1)
+        
+        spr_loss = 0
+        spr_done_mask = 1.0 - data_done[:, :args.jumps].float()
+        cumulative_mask = torch.cumprod(spr_done_mask, dim=1)
+        
+        for j in range(1, args.jumps + 1):
+            z_j = z_seq[:, j]
+            p_j = self.q_network.projection(z_j)
+            pred_j = self.q_network.predictor(p_j)
+            pred_norm = F.normalize(pred_j, dim=1)
+            loss = F.mse_loss(pred_norm, target_latents[:, j-1], reduction='none').sum(dim=1)
+            mask = cumulative_mask[:, j-1]
+            spr_loss += (loss * mask).mean()
 
-            n_rewards = torch.zeros(self.config.batch_size, device=self.device)
-            bootstrap_mask = torch.ones(self.config.batch_size, device=self.device)
-            for i in range(current_n_step):
-                r = b_rewards[:, i]
-                d = b_dones[:, i]
-                n_rewards += r * (current_gamma**i) * bootstrap_mask
-                bootstrap_mask *= (1 - d)
-
-            bootstrap_obs = observations[:, current_n_step]
-            bootstrap_obs = bootstrap_obs.float()
-            next_dist = self.target_network(bootstrap_obs)
-            support = self.target_network.support
-            online_dist = self.q_network(bootstrap_obs)
-            next_q_online = torch.sum(online_dist * support, dim=2)
-            best_actions = torch.argmax(next_q_online, dim=1)
-            next_pmfs = next_dist[torch.arange(self.config.batch_size, device=self.device), best_actions]
-
-            gamma_n = current_gamma**current_n_step
-            next_atoms = n_rewards.unsqueeze(1) + gamma_n * support * bootstrap_mask.unsqueeze(1)
-            tz = next_atoms.clamp(self.q_network.v_min, self.q_network.v_max)
-            b = (tz - self.q_network.v_min) / self.q_network.delta_z
-            l = b.floor().clamp(0, self.config.n_atoms - 1)
-            u = b.ceil().clamp(0, self.config.n_atoms - 1)
-
-            target_pmfs = torch.zeros_like(next_pmfs)
-            for i in range(target_pmfs.size(0)):
-                target_pmfs[i].index_add_(0, l[i].long(), (u[i].float() + (l[i] == b[i]).float() - b[i]) * next_pmfs[i])
-                target_pmfs[i].index_add_(0, u[i].long(), (b[i] - l[i].float()) * next_pmfs[i])
-
-        curr_obs = observations[:, 0].float()
-        curr_obs_aug = self.augmentation(curr_obs)
-        dist = self.q_network(curr_obs_aug)
-        action_idx = actions[:, 0].unsqueeze(1).unsqueeze(2).expand(-1, 1, self.config.n_atoms)
-        pred_dist = dist.gather(1, action_idx).squeeze(1)
-        log_pred = torch.log(pred_dist.clamp(min=1e-5, max=1 - 1e-5))
-        loss_q = -(target_pmfs * log_pred).sum(dim=1)
-
-        target_obs_seq = observations[:, 1 : self.config.jumps + 1].float()
+        # --- C51 LOSS ---
         with torch.no_grad():
-            b, k, c, h, w = target_obs_seq.shape
-            target_flat = target_obs_seq.reshape(b * k, c, h, w)
-            target_reps = self.target_network.get_representation(target_flat).view(b, k, -1)
-
-        z0 = self.q_network.get_representation(curr_obs_aug)
-        pred_reps: List[torch.Tensor] = []
-        curr_z = z0
-        for k in range(self.config.jumps):
-            action_one_hot = F.one_hot(actions[:, k].squeeze(), num_classes=self.action_space.n).float()
-            model_input = torch.cat([curr_z, action_one_hot], dim=1)
-            next_z_hat = self.q_network.dynamics_model(model_input)
-            pred_reps.append(self.q_network.predictor(next_z_hat))
-            curr_z = next_z_hat
-        pred_stack = torch.stack(pred_reps, dim=1)
-
-        mask = torch.ones(self.config.batch_size, self.config.jumps, device=self.device)
-        for k in range(1, self.config.jumps):
-            mask[:, k] = mask[:, k - 1] * (1 - b_dones[:, k - 1])
-
-        sim = F.cosine_similarity(pred_stack, target_reps, dim=-1)
-        spr_loss = -(sim * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1.0)
-
-        total_loss = (loss_q + self.config.spr_weight * spr_loss) * weights.squeeze()
-        final_loss = total_loss.mean()
-
-        new_priorities = loss_q.detach().cpu().numpy()
-        self.replay_buffer.update_priorities(batch["indices"], new_priorities)
-
+            gammas = torch.pow(curr_gamma, torch.arange(curr_n, device=self.device))
+            not_done = 1.0 - data_done.float()
+            mask_seq = torch.cat([torch.ones((args.batch_size, 1), device=self.device), not_done[:, :-1]], dim=1)
+            reward_mask = torch.cumprod(mask_seq, dim=1)[:, :curr_n]
+            n_step_rew = torch.sum(data_rew[:, :curr_n] * gammas * reward_mask, dim=1)
+            
+            obs_n = data_obs[:, curr_n]
+            bootstrap_mask = torch.prod(not_done[:, :curr_n], dim=1)
+            
+            next_dist = self.target_network(obs_n)
+            next_sup = self.target_network.support
+            
+            online_n_dist = self.q_network(obs_n)
+            best_act = (online_n_dist * next_sup).sum(2).argmax(1)
+            next_pmf = next_dist[torch.arange(args.batch_size), best_act]
+            
+            gamma_n = curr_gamma ** curr_n
+            Tz = n_step_rew.unsqueeze(1) + bootstrap_mask.unsqueeze(1) * gamma_n * next_sup.unsqueeze(0)
+            Tz = Tz.clamp(min=args.v_min, max=args.v_max)
+            b = (Tz - args.v_min) / self.q_network.delta_z
+            l = b.floor().clamp(0, args.n_atoms - 1).long()
+            u = b.ceil().clamp(0, args.n_atoms - 1).long()
+            
+            target_pmf = torch.zeros_like(next_pmf)
+            offset = torch.linspace(0, (args.batch_size - 1) * args.n_atoms, args.batch_size, device=self.device).long().unsqueeze(1)
+            target_pmf.view(-1).index_add_(0, (l + offset).view(-1), (next_pmf * (u.float() - b)).view(-1))
+            target_pmf.view(-1).index_add_(0, (u + offset).view(-1), (next_pmf * (b - l.float())).view(-1))
+        
+        curr_dist = self.q_network.get_dist(z0)
+        log_p = torch.log(curr_dist[torch.arange(args.batch_size), data_act[:, 0]] + 1e-8)
+        
+        c51_loss_per_sample = -torch.sum(target_pmf * log_p, dim=1)
+        weighted_c51_loss = (c51_loss_per_sample * weights).mean()
+        
+        total_loss = weighted_c51_loss + args.spr_weight * spr_loss
+        
         self.optimizer.zero_grad()
-        final_loss.backward()
-        nn.utils.clip_grad_norm_(self.q_network.parameters(), self.config.max_grad_norm)
+        total_loss.backward()
+        nn.utils.clip_grad_norm_(self.q_network.parameters(), 10.0)
         self.optimizer.step()
-
-        with torch.no_grad():
-            for param, target_param in zip(self.q_network.parameters(), self.target_network.parameters()):
-                target_param.data.mul_(self.config.tau).add_(param.data * (1.0 - self.config.tau))
-
-        q_values = torch.sum(pred_dist * self.q_network.support, dim=1)
+        
+        # Soft update target
+        for param, target_param in zip(self.q_network.parameters(), self.target_network.parameters()):
+            target_param.data.copy_(args.tau * param.data + (1.0 - args.tau) * target_param.data)
+        
+        # Update priorities
+        losses = c51_loss_per_sample.detach().cpu().numpy()
+        self.replay_buffer.update_priorities(indices, losses)
+            
         return {
-            "loss": loss_q.mean().item(),
-            "spr_loss": spr_loss.mean().item(),
-            "q_value": q_values.mean().item(),
-            "n_step": current_n_step,
-            "gamma": current_gamma,
+            "loss": total_loss.item(),
+            "spr_loss": spr_loss.item() if isinstance(spr_loss, torch.Tensor) else spr_loss,
+            "gamma": curr_gamma,
+            "n_step": curr_n
         }
 
     def save_model(self, path: str):
         torch.save(self.q_network.state_dict(), path)
 
 
-def _moving_average(scores: Sequence[float], end_frames: Sequence[int], window: int, current_frame: int) -> float:
-    if not scores:
-        return -999.0
-    cutoff = current_frame - window
-    total = 0.0
-    count = 0
-    for score, frame_idx in zip(reversed(scores), reversed(end_frames)):
-        if frame_idx < cutoff:
-            break
-        total += score
-        count += 1
-    if count == 0:
-        return -999.0
-    return total / count
-
-
-def _update_progress_graphs(
-    episode_graph: torch.Tensor,
-    parms_graph: torch.Tensor,
-    params: Sequence[torch.nn.Parameter],
-    frame_offset: int,
-    frames_consumed: int,
-    frame_budget: int,
-    average_frames: int,
-    episode_scores: Sequence[float],
-    episode_end: Sequence[int],
-    graph_total_frames: Optional[int],
-):
-    total_frames = graph_total_frames or (frame_offset + frame_budget)
-    total_frames = max(total_frames, frame_offset + frame_budget)
-    current_frame = frame_offset + frames_consumed
-    previous_frame = max(frame_offset, current_frame - FRAME_SKIP)
-    points = episode_graph.shape[0]
-    prev_bucket = min((previous_frame * points) // total_frames, points - 1)
-    curr_bucket = min((current_frame * points) // total_frames, points - 1)
-    if curr_bucket == prev_bucket:
-        return
-    avg_score = _moving_average(episode_scores, episode_end, average_frames, current_frame)
-    for bucket in range(prev_bucket + 1, curr_bucket + 1):
-        episode_graph[bucket] = avg_score
-        with torch.no_grad():
-            for idx, param in enumerate(params):
-                parms_graph[bucket, idx] = torch.norm(param.detach()).item()
-
+# =============================================================================
+# FRAME RUNNER FOR BENCHMARK
+# =============================================================================
 
 def agent_bbf_frame_runner(
     agent: Agent,
@@ -664,130 +697,76 @@ def agent_bbf_frame_runner(
     context: FrameRunnerContext,
     writer: Optional[SummaryWriter] = None,
 ) -> FrameRunnerResult:
-    if handle.backend != "gym" or handle.gym is None:
+    
+    if handle.backend != 'gym' or handle.gym is None:
         raise TypeError("agent_bbf_frame_runner requires a Gym environment handle.")
 
     env = handle.gym
     config = agent.config
     frames_per_step = max(1, handle.frames_per_step)
+    
+    # Signal new game
+    agent.start_new_game()
 
-    log_file = getattr(config, "log_file", "")
-
-    def log(message: str):
-        print(message)
-        if log_file:
-            with open(log_file, "a", encoding="utf-8") as log_f:
-                log_f.write(message + "\n")
-
-    max_step_budget = max(1, context.frame_budget // frames_per_step)
-    if config.total_steps > 0:
-        remaining_steps = max(0, config.total_steps - agent.global_step)
-        steps_to_run = min(max_step_budget, remaining_steps)
-    else:
-        steps_to_run = max_step_budget
+    logger = create_logger(log_file=getattr(config, "log_file", None))
+    log = logger.log
 
     game_name = getattr(handle.spec, "name", context.name)
-    scheduled_frames = steps_to_run * frames_per_step
-
-    if steps_to_run <= 0:
-        log(f"Skipping game '{game_name}' because no steps remain.")
-        params = list(agent.q_network.parameters())
-        episode_graph = torch.full((PROGRESS_POINTS,), -999.0, dtype=torch.float32)
-        parms_graph = torch.zeros((PROGRESS_POINTS, len(params)), dtype=torch.float32)
-        return FrameRunnerResult(context.last_model_save, [], [], episode_graph, parms_graph)
-
-    log(
-        f"Starting game '{game_name}' with target {scheduled_frames} frames "
-        f"(cycle budget {context.frame_budget})."
-    )
+    max_step_budget = context.frame_budget // frames_per_step
+    
+    log(f"Starting BBF on '{game_name}' for {max_step_budget} steps.")
 
     reset_seed = handle.spec.seed if handle.spec.seed is not None else config.seed
     obs, info = env.reset(seed=reset_seed)
-    agent.start_new_game()
-
+    
     episode_scores: List[float] = []
     episode_end: List[int] = []
+    
     params = list(agent.q_network.parameters())
     episode_graph = torch.full((PROGRESS_POINTS,), -999.0, dtype=torch.float32)
     parms_graph = torch.zeros((PROGRESS_POINTS, len(params)), dtype=torch.float32)
+
     frames_consumed = 0
     frames_since_reward = 0
     running_episode_score = 0.0
     start_time = time.time()
-
     last_model_save = context.last_model_save
 
-    for _ in range(steps_to_run):
+    for _ in range(max_step_budget):
         action = agent.act(obs)
         next_obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
+        
         running_episode_score += reward
-        if reward != 0:
+        if reward != 0: 
             frames_since_reward = 0
-        else:
+        else: 
             frames_since_reward += frames_per_step
-
-        timed_out = (
-            context.max_frames_without_reward > 0 and frames_since_reward >= context.max_frames_without_reward
-        )
+        
+        timed_out = (context.max_frames_without_reward > 0 and frames_since_reward >= context.max_frames_without_reward)
         done_for_agent = done or timed_out
 
         train_log = agent.step(next_obs, reward, done_for_agent, info)
+        
         frames_consumed += frames_per_step
         agent.game_frame_counters[game_name] = agent.game_frame_counters.get(game_name, 0) + frames_per_step
 
         if train_log and agent.global_step % 1000 == 0:
             sps = int(agent.global_step / max(1e-9, time.time() - start_time))
-            log(
-                f"step={agent.global_step} loss={train_log['loss']:.4f} "
-                f"spr={train_log.get('spr_loss', 0):.4f} q={train_log['q_value']:.2f}"
-            )
-            log(f"SPS: {sps}")
+            log(f"step={agent.global_step} loss={train_log['loss']:.4f} spr={train_log['spr_loss']:.4f} gamma={train_log['gamma']:.4f}")
             if writer:
-                writer.add_scalar("losses/td_loss", train_log["loss"], agent.global_step)
-                writer.add_scalar("losses/spr_loss", train_log.get("spr_loss", 0.0), agent.global_step)
-                writer.add_scalar("charts/n_step", train_log.get("n_step", 0), agent.global_step)
-                writer.add_scalar("charts/gamma", train_log.get("gamma", 0.0), agent.global_step)
-                writer.add_scalar("charts/q_values", train_log["q_value"], agent.global_step)
-                writer.add_scalar("charts/SPS", sps, agent.global_step)
+                writer.add_scalar("losses/total", train_log['loss'], agent.global_step)
+                writer.add_scalar("charts/gamma", train_log['gamma'], agent.global_step)
+                writer.add_scalar("charts/n_step", train_log['n_step'], agent.global_step)
 
-        recorded_episode = False
         if info and "episode" in info:
             episode = info["episode"]
             episode_scores.append(float(episode["r"]))
             episode_end.append(context.frame_offset + frames_consumed)
             log(f"global_step={agent.global_step}, episodic_return={episode['r']}")
-            recorded_episode = True
             if writer:
                 writer.add_scalar("charts/episodic_return", episode["r"], agent.global_step)
                 writer.add_scalar(f"charts/episodic_return/{game_name}", episode["r"], agent.global_step)
-                current_game_frames = agent.game_frame_counters.get(game_name, 0)
-                writer.add_scalar(
-                    f"charts/frames_per_game/{game_name}",
-                    current_game_frames,
-                    agent.global_step,
-                )
-                length = episode.get("l")
-                if length is not None:
-                    writer.add_scalar(
-                        "charts/episodic_length_frames",
-                        length * FRAME_SKIP,
-                        agent.global_step,
-                    )
-
-        if timed_out and not recorded_episode:
-            log(f"Resetting due to {frames_since_reward} frames without reward.")
-            episode_scores.append(running_episode_score)
-            episode_end.append(context.frame_offset + frames_consumed)
-
-        if context.save_incremental_models:
-            global_frame = context.frame_offset + frames_consumed
-            checkpoint_slot = global_frame // 500_000
-            if checkpoint_slot > last_model_save and checkpoint_slot > 0:
-                model_path = os.path.join(context.data_dir, f"{context.name}_{global_frame}.model")
-                agent.save_model(model_path)
-                log(f"Saved incremental model to {model_path}")
-                last_model_save = checkpoint_slot
 
         if done_for_agent:
             obs, info = env.reset()
@@ -795,18 +774,11 @@ def agent_bbf_frame_runner(
             frames_since_reward = 0
         else:
             obs = next_obs
-
-        _update_progress_graphs(
-            episode_graph,
-            parms_graph,
-            params,
-            context.frame_offset,
-            frames_consumed,
-            context.frame_budget,
-            context.average_frames,
-            episode_scores,
-            episode_end,
-            context.graph_total_frames,
+            
+        update_progress_graphs(
+            episode_graph, parms_graph, params, 
+            context.frame_offset, frames_consumed, context.frame_budget, 
+            context.average_frames, episode_scores, episode_end, context.graph_total_frames
         )
 
         if frames_consumed >= context.frame_budget:
@@ -815,126 +787,149 @@ def agent_bbf_frame_runner(
     return FrameRunnerResult(last_model_save, episode_scores, episode_end, episode_graph, parms_graph)
 
 
+# =============================================================================
+# MAIN & CLI
+# =============================================================================
+
 def _parse_continual_game_ids(config: AgentConfig) -> List[str]:
     if config.continual_games.strip():
         game_ids = [game.strip() for game in config.continual_games.split(",") if game.strip()]
     else:
         game_ids = list(DEFAULT_CONTINUAL_GAMES)
-    if len(game_ids) != 8:
-        raise ValueError(f"Continual mode requires exactly 8 games, received {len(game_ids)}.")
+    
+    if len(game_ids) < 2:
+        raise ValueError(f"Continual mode requires at least 2 games, received {len(game_ids)}.")
+    
     return game_ids
 
 
-def _validate_continual_envs(
-    game_ids: Sequence[str],
-    config: AgentConfig,
-    base_shape: Sequence[int],
-    min_actions: int,
-):
-    for env_id in game_ids[1:]:
-        preview_env = make_env(env_id, config.seed)
-        try:
-            obs_shape = preview_env.observation_space.shape
-            if obs_shape != base_shape:
-                raise ValueError(
-                    f"Observation shape mismatch for {env_id}: expected {base_shape}, observed {obs_shape}."
-                )
-            action_space = getattr(preview_env.action_space, "n", None)
-            if action_space is None:
-                raise ValueError(f"{env_id} does not expose a discrete action space.")
-            if action_space < min_actions:
-                raise ValueError(
-                    f"{env_id} exposes only {action_space} actions, but the agent was initialized with {min_actions}."
-                )
-        finally:
-            preview_env.close()
-
-
-def _build_continual_benchmark_config(
-    game_ids: Sequence[str],
-    frame_budget_per_game: int,
-    config: AgentConfig,
-) -> BenchmarkConfig:
-    cycles: List[CycleConfig] = []
+def _build_continual_benchmark_config(game_ids: Sequence[str], frame_budget: int, config: AgentConfig) -> BenchmarkConfig:
+    cycles = []
     for cycle_index in range(config.continual_cycles):
-        cycle_games: List[GameSpec] = []
+        cycle_games = []
         for env_id in game_ids:
             cycle_games.append(
                 GameSpec(
                     name=env_id,
-                    frame_budget=frame_budget_per_game,
+                    frame_budget=frame_budget,
                     seed=config.seed + cycle_index,
-                    backend="gym",
+                    backend='gym',
                     env_id=env_id,
-                    sticky_prob=0.25,
                     params={
-                        "noop_max": 30,
-                        "frame_skip": FRAME_SKIP,
-                        "frame_stack": FRAME_SKIP,
-                        "resize_shape": (84, 84),
-                        "grayscale": True,
+                        'noop_max': 30, 'frame_skip': FRAME_SKIP, 'resize_shape': (84, 84), 'grayscale': True
                     },
                 )
             )
         cycles.append(CycleConfig(cycle_index=cycle_index, games=cycle_games))
-    description = (
-        f"Continual benchmark: {config.continual_cycles} cycle(s) x {len(game_ids)} game(s) "
-        f"(frames per game per cycle={config.continual_cycle_frames})"
+    return BenchmarkConfig(cycles=cycles, description="BBF Continual")
+
+
+def parse_args() -> AgentConfig:
+    parser = argparse.ArgumentParser(description="BBF Agent for Continual Learning Benchmark")
+    parser.add_argument("--env-id", type=str, default="BreakoutNoFrameskip-v4")
+    parser.add_argument("--total-steps", type=int, default=100_000)
+    parser.add_argument("--buffer-size", type=int, default=120_000)
+    parser.add_argument("--learning-rate", type=float, default=0.0001)
+    parser.add_argument("--continual", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--continual-games", type=str, default="")
+    parser.add_argument("--continual-cycles", type=int, default=DEFAULT_CONTINUAL_CYCLES)
+    parser.add_argument("--continual-cycle-frames", type=int, default=DEFAULT_CONTINUAL_CYCLE_FRAMES)
+    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--track", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--wandb-project-name", type=str, default="physical-atari")
+    parser.add_argument("--cuda", action=argparse.BooleanOptionalAction, default=True)
+    
+    args = parser.parse_args()
+    return AgentConfig(
+        env_id=args.env_id,
+        total_steps=args.total_steps,
+        buffer_size=args.buffer_size,
+        learning_rate=args.learning_rate,
+        continual=args.continual,
+        continual_games=args.continual_games,
+        continual_cycles=args.continual_cycles,
+        continual_cycle_frames=args.continual_cycle_frames,
+        seed=args.seed,
+        track=args.track,
+        wandb_project_name=args.wandb_project_name,
+        cuda=args.cuda,
     )
-    return BenchmarkConfig(cycles=cycles, description=description)
 
 
-def _write_continual_summary(results: Sequence[GameResult], path: str):
-    summary_records = []
-    for result in results:
-        total_score = float(sum(result.episode_scores))
-        mean_score = float(np.mean(result.episode_scores)) if result.episode_scores else 0.0
-        summary_records.append(
-            {
-                "cycle_index": result.cycle_index,
-                "game_index": result.game_index,
-                "game": result.spec.name,
-                "frame_offset": result.frame_offset,
-                "frame_budget": result.frame_budget,
-                "episodes": len(result.episode_scores),
-                "total_episode_score": total_score,
-                "mean_episode_score": mean_score,
-            }
+def main():
+    config = parse_args()
+    log_root = './results_final_bbf'
+    os.makedirs(log_root, exist_ok=True)
+    run_name = f"{config.env_id}__agent_bbf__{config.seed}__{int(time.time())}"
+    
+    if config.track:
+        import wandb
+        wandb.init(project=config.wandb_project_name, config=vars(config), name=run_name, monitor_gym=True, save_code=True)
+
+    run_dir = os.path.join(log_root, run_name)
+    os.makedirs(run_dir, exist_ok=True)
+    config.log_file = os.path.join(run_dir, 'agent.log')
+    
+    config_path = os.path.join(run_dir, 'hyperparameters.json')
+    with open(config_path, 'w', encoding='utf-8') as cfg:
+        json.dump(vars(config), cfg, indent=2)
+    print(f'Logging run to {run_dir}')
+    
+    random.seed(config.seed)
+    np.random.seed(config.seed)
+    torch.manual_seed(config.seed)
+
+    writer = SummaryWriter(log_dir=os.path.join(run_dir, "tb"))
+
+    # Create dummy env to get observation/action space
+    dummy_env = make_atari_env(config.env_id, config.seed)
+    agent = Agent(dummy_env.observation_space, dummy_env.action_space, config)
+    dummy_env.close()
+
+    if config.continual:
+        game_ids = _parse_continual_game_ids(config)
+        
+        # Adjust total_steps to match benchmark
+        frames_needed = config.continual_cycle_frames * len(game_ids) * config.continual_cycles
+        required_steps = math.ceil(frames_needed / FRAME_SKIP)
+        if config.total_steps != required_steps:
+            print(f"Adjusting total_steps from {config.total_steps} to {required_steps}")
+            config.total_steps = required_steps
+        
+        bench_config = _build_continual_benchmark_config(game_ids, config.continual_cycle_frames, config)
+        
+        def runner_wrapper(agent_inst, handle, *, context):
+            return agent_bbf_frame_runner(agent_inst, handle, context=context, writer=writer)
+
+        runner = BenchmarkRunner(
+            agent,
+            bench_config,
+            frame_runner=runner_wrapper,
+            data_dir=run_dir,
+            rank=0,
+            default_seed=config.seed,
+            use_canonical_full_actions=True,
+            average_frames=100_000
         )
-    final_cycle_index = results[-1].cycle_index if results else -1
-    final_cycle_total = sum(
-        float(sum(result.episode_scores))
-        for result in results
-        if result.cycle_index == final_cycle_index
-    )
-    payload = {
-        "final_cycle_index": final_cycle_index,
-        "final_cycle_total_episode_score": final_cycle_total,
-        "records": summary_records,
-    }
-    with open(path, "w", encoding="utf-8") as summary_file:
-        json.dump(payload, summary_file, indent=2)
-    print(f"Wrote continual summary to {path}")
-
-
-def _run_single_environment(config: AgentConfig, writer: SummaryWriter, run_name: str, run_dir: str):
-    env: Optional[gym.Env] = None
-    try:
-        env = make_env(config.env_id, config.seed)
-        agent = Agent(env.observation_space, env.action_space, config)
-        frames_per_step = FRAME_SKIP
-        frame_budget_frames = max(config.total_steps, 1) * frames_per_step
+        results = runner.run()
+        
+        # Write continual summary
+        summary_path = os.path.join(run_dir, "continual_summary.json")
+        write_continual_summary(results, summary_path)
+    else:
+        # Single game mode
+        env = make_atari_env(config.env_id, config.seed)
         game_spec = GameSpec(
             name=config.env_id,
-            frame_budget=frame_budget_frames,
+            frame_budget=config.total_steps * FRAME_SKIP,
             seed=config.seed,
-            backend="gym",
+            backend='gym',
             env_id=config.env_id,
         )
         handle = EnvironmentHandle(
-            backend="gym",
+            backend='gym',
             spec=game_spec,
-            frames_per_step=frames_per_step,
+            frames_per_step=FRAME_SKIP,
             gym=env,
         )
         context = FrameRunnerContext(
@@ -946,239 +941,16 @@ def _run_single_environment(config: AgentConfig, writer: SummaryWriter, run_name
             lives_as_episodes=1,
             save_incremental_models=False,
             last_model_save=-1,
-            frame_budget=frame_budget_frames,
+            frame_budget=config.total_steps * FRAME_SKIP,
             frame_offset=0,
-            graph_total_frames=frame_budget_frames,
+            graph_total_frames=config.total_steps * FRAME_SKIP,
             delay_frames=0,
         )
         agent_bbf_frame_runner(agent, handle, context=context, writer=writer)
-    finally:
-        if env is not None:
-            env.close()
+        env.close()
 
-
-def _run_continual_mode(config: AgentConfig, writer: SummaryWriter, run_dir: str):
-    game_ids = _parse_continual_game_ids(config)
-    if config.continual_cycle_frames <= 0:
-        raise ValueError("--continual-cycle-frames must be a positive integer.")
-    if config.continual_cycles <= 0:
-        raise ValueError("--continual-cycles must be a positive integer.")
-
-    print(
-        f"Starting continual mode: {config.continual_cycles} cycles x {len(game_ids)} games "
-        f"({config.continual_cycle_frames} frames per game per cycle)."
-    )
-    frame_budget_per_game = config.continual_cycle_frames
-    frames_needed = config.continual_cycle_frames * len(game_ids) * config.continual_cycles
-    required_steps = math.ceil(frames_needed / max(1, FRAME_SKIP))
-    if config.total_steps != required_steps:
-        print(
-            f"Adjusting total_steps from {config.total_steps} to {required_steps} "
-            "so the continual benchmark exactly matches the requested frame budget."
-        )
-        config.total_steps = required_steps
-
-    base_env = make_env(game_ids[0], config.seed)
-    try:
-        agent = Agent(base_env.observation_space, base_env.action_space, config)
-        base_shape = base_env.observation_space.shape
-        min_actions = base_env.action_space.n
-    finally:
-        base_env.close()
-
-    _validate_continual_envs(game_ids, config, base_shape, min_actions)
-    benchmark_config = _build_continual_benchmark_config(game_ids, frame_budget_per_game, config)
-
-    def frame_runner_with_writer(agent_instance, handle, *, context):
-        return agent_bbf_frame_runner(agent_instance, handle, context=context, writer=writer)
-
-    runner = BenchmarkRunner(
-        agent,
-        benchmark_config,
-        frame_runner=frame_runner_with_writer,
-        data_dir=run_dir,
-        rank=0,
-        default_seed=config.seed,
-        average_frames=100_000,
-        max_frames_without_reward=0,
-        lives_as_episodes=1,
-        save_incremental_models=False,
-    )
-    results = runner.run()
-    summary_path = os.path.join(run_dir, "continual_summary.json")
-    _write_continual_summary(results, summary_path)
-
-
-def parse_args() -> AgentConfig:
-    parser = argparse.ArgumentParser(description="BBF Atari agent with CleanRL components.")
-    parser.add_argument("--env-id", type=str, default="BreakoutNoFrameskip-v4")
-    parser.add_argument("--total-steps", type=int, default=1_000_000)
-    parser.add_argument("--buffer-size", type=int, default=1_000_000)
-    parser.add_argument("--learning-rate", type=float, default=1e-4)
-    parser.add_argument("--weight-decay", type=float, default=0.1)
-    parser.add_argument("--gamma-initial", type=float, default=0.97)
-    parser.add_argument("--gamma-final", type=float, default=0.997)
-    parser.add_argument("--n-step-max", type=int, default=10)
-    parser.add_argument("--n-step-min", type=int, default=3)
-    parser.add_argument("--n-step-decay-steps", type=int, default=10_000)
-    parser.add_argument("--reset-grad-interval", type=int, default=40_000)
-    parser.add_argument("--replay-ratio", type=int, default=8)
-    parser.add_argument("--spr-weight", type=float, default=2.0)
-    parser.add_argument("--jumps", type=int, default=5)
-    parser.add_argument("--max-grad-norm", type=float, default=10.0)
-    parser.add_argument("--tau", type=float, default=0.995)
-    parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--learning-starts", type=int, default=2_000)
-    parser.add_argument("--exploration-fraction", type=float, default=0.02)
-    parser.add_argument("--start-e", type=float, default=1.0)
-    parser.add_argument("--end-e", type=float, default=0.01)
-    parser.add_argument("--prioritized-alpha", type=float, default=0.5)
-    parser.add_argument("--prioritized-beta", type=float, default=0.4)
-    parser.add_argument("--prioritized-eps", type=float, default=1e-6)
-    parser.add_argument("--n-atoms", type=int, default=51)
-    parser.add_argument("--v-min", type=float, default=-10.0)
-    parser.add_argument("--v-max", type=float, default=10.0)
-    parser.add_argument("--per-game-learning-starts", type=int, default=1_000)
-    parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument(
-        "--cuda",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Enable/disable CUDA (default: enabled).",
-    )
-    parser.add_argument(
-        "--track",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Track with Weights & Biases.",
-    )
-    parser.add_argument(
-        "--wandb-project-name",
-        type=str,
-        default="physical-atari",
-        help="The wandb project name.",
-    )
-    parser.add_argument(
-        "--wandb-entity",
-        type=str,
-        default=None,
-        help="The wandb entity/team.",
-    )
-    parser.add_argument(
-        "--continual",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Run the continual benchmark.",
-    )
-    parser.add_argument(
-        "--continual-games",
-        type=str,
-        default="",
-        help="Comma-separated Gym env ids to use in continual mode.",
-    )
-    parser.add_argument(
-        "--continual-cycles",
-        type=int,
-        default=DEFAULT_CONTINUAL_CYCLES,
-        help="Number of cycles to run in continual mode.",
-    )
-    parser.add_argument(
-        "--continual-cycle-frames",
-        type=int,
-        default=DEFAULT_CONTINUAL_CYCLE_FRAMES,
-        help="Frame budget per game per cycle in continual mode.",
-    )
-    args = parser.parse_args()
-    return AgentConfig(
-        env_id=args.env_id,
-        total_steps=args.total_steps,
-        buffer_size=args.buffer_size,
-        learning_rate=args.learning_rate,
-        weight_decay=args.weight_decay,
-        gamma_initial=args.gamma_initial,
-        gamma_final=args.gamma_final,
-        n_step_max=args.n_step_max,
-        n_step_min=args.n_step_min,
-        n_step_decay_steps=args.n_step_decay_steps,
-        reset_grad_interval=args.reset_grad_interval,
-        replay_ratio=args.replay_ratio,
-        spr_weight=args.spr_weight,
-        jumps=args.jumps,
-        max_grad_norm=args.max_grad_norm,
-        tau=args.tau,
-        batch_size=args.batch_size,
-        learning_starts=args.learning_starts,
-        exploration_fraction=args.exploration_fraction,
-        start_e=args.start_e,
-        end_e=args.end_e,
-        prioritized_replay_alpha=args.prioritized_alpha,
-        prioritized_replay_beta=args.prioritized_beta,
-        prioritized_replay_eps=args.prioritized_eps,
-        n_atoms=args.n_atoms,
-        v_min=args.v_min,
-        v_max=args.v_max,
-        per_game_learning_starts=args.per_game_learning_starts,
-        seed=args.seed,
-        cuda=args.cuda,
-        track=args.track,
-        wandb_project_name=args.wandb_project_name,
-        wandb_entity=args.wandb_entity,
-        log_file="",
-        continual=args.continual,
-        continual_games=args.continual_games,
-        continual_cycles=args.continual_cycles,
-        continual_cycle_frames=args.continual_cycle_frames,
-    )
-
-
-def main():
-    config = parse_args()
-    log_root = "./results_final_bbf/smokey"
-    os.makedirs(log_root, exist_ok=True)
-    run_name = f"{config.env_id}__agent_bbf__{config.seed}__{int(time.time())}"
-
-    if config.track:
-        import wandb
-
-        wandb.init(
-            project=config.wandb_project_name,
-            entity=config.wandb_entity,
-            sync_tensorboard=True,
-            config=vars(config),
-            name=run_name,
-            monitor_gym=True,
-            save_code=True,
-        )
-
-    run_dir = os.path.join(log_root, run_name)
-    os.makedirs(run_dir, exist_ok=True)
-    config.log_file = os.path.join(run_dir, "agent.log")
-    config_path = os.path.join(run_dir, "hyperparameters.json")
-    with open(config_path, "w", encoding="utf-8") as cfg:
-        json.dump(vars(config), cfg, indent=2)
-    print(f"Logging run to {run_dir}")
-
-    random.seed(config.seed)
-    np.random.seed(config.seed)
-    torch.manual_seed(config.seed)
-
-    if config.log_file:
-        with open(config.log_file, "w", encoding="utf-8") as log_f:
-            log_f.write("")
-
-    writer = SummaryWriter(log_dir=os.path.join(run_dir, "tb"))
-    writer.add_text(
-        "hyperparameters",
-        "|param|value|\n|-|-|\n" + "\n".join(f"|{key}|{value}|" for key, value in vars(config).items()),
-    )
-
-    try:
-        if config.continual:
-            _run_continual_mode(config, writer, run_dir)
-        else:
-            _run_single_environment(config, writer, run_name, run_dir)
-    finally:
-        writer.close()
+    writer.close()
+    print("Done.")
 
 
 if __name__ == "__main__":
