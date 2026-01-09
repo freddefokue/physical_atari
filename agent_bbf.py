@@ -380,10 +380,12 @@ class SequenceReplayBuffer:
 
 class PrioritizedSequenceReplayBuffer:
     """Prioritized Experience Replay buffer with sequence support (Official BBF style)."""
-    def __init__(self, capacity, obs_shape, device, max_seq_len, eps=1e-6):
+    def __init__(self, capacity, obs_shape, device, max_seq_len, alpha=0.5, beta=0.5, eps=1e-6):
         self.capacity = capacity
         self.device = device
         self.max_seq_len = max_seq_len
+        self.alpha = alpha
+        self.beta = beta
         self.eps = eps
         self.obs_shape = obs_shape
 
@@ -496,8 +498,24 @@ def get_exponential_schedule(start, end, t, duration):
 
 @dataclass
 class AgentConfig:
+    # General run settings (align with bbf_atari.py CLI)
+    exp_name: str = os.path.basename(__file__)[:-3]
+    seed: int = 1
+    torch_deterministic: bool = True
+    cuda: bool = True
+    track: bool = False
+    wandb_project_name: str = "physical-atari"
+    wandb_entity: Optional[str] = None
+    capture_video: bool = False
+    save_model: bool = False
+    profile: bool = False
+    torch_profile: bool = False
+    torch_profile_steps: int = 50
+
+    # Environment / training shape
     env_id: str = "ALE/Breakout-v5"
-    total_steps: int = 100_000
+    total_steps: int = 100_000  # Alias for total_timesteps
+    num_envs: int = 1
     buffer_size: int = 120_000
     
     learning_rate: float = 0.0001
@@ -534,16 +552,13 @@ class AgentConfig:
 
     # Prioritized Experience Replay (PER)
     use_per: bool = True
+    per_alpha: float = 0.5
+    per_beta: float = 0.5
     per_eps: float = 1e-6
 
     # Mixed Precision Training
     use_amp: bool = True  # Enable automatic mixed precision (FP16) for faster training
 
-    seed: int = 1
-    cuda: bool = True
-    track: bool = False
-    wandb_project_name: str = "physical-atari"
-    wandb_entity: Optional[str] = None
     log_file: str = ""
     
     continual: bool = False
@@ -626,6 +641,8 @@ class Agent:
                 observation_space.shape,
                 self.device,
                 self.seq_req,
+                alpha=config.per_alpha,
+                beta=config.per_beta,
                 eps=config.per_eps
             )
         else:
@@ -995,6 +1012,7 @@ def agent_bbf_frame_runner(
                 training_start_time = time.time()
                 training_start_step = agent.global_step
             
+            sps = None
             if agent.grad_step % 100 == 0:
                 # SPS based on training time only (excludes warmup)
                 training_elapsed = time.time() - training_start_time
@@ -1002,13 +1020,13 @@ def agent_bbf_frame_runner(
                 sps = int(training_steps / (training_elapsed + 1e-5))
                 ep_count = len(episode_scores)
                 log(f"step={agent.global_step} loss={train_log['loss']:.4f} spr={train_log['spr_loss']:.4f} avg_q={train_log['avg_q']:.2f} gamma={train_log['gamma']:.4f} sps={sps} eps={ep_count}")
-            if writer:
+            if writer and sps is not None:
                 writer.add_scalar("losses/total", train_log['loss'], agent.global_step)
-                    writer.add_scalar("losses/spr_loss", train_log['spr_loss'], agent.global_step)
-                    writer.add_scalar("charts/avg_q", train_log['avg_q'], agent.global_step)
+                writer.add_scalar("losses/spr_loss", train_log['spr_loss'], agent.global_step)
+                writer.add_scalar("charts/avg_q", train_log['avg_q'], agent.global_step)
                 writer.add_scalar("charts/gamma", train_log['gamma'], agent.global_step)
                 writer.add_scalar("charts/n_step", train_log['n_step'], agent.global_step)
-                    writer.add_scalar("charts/SPS", sps, agent.global_step)
+                writer.add_scalar("charts/SPS", sps, agent.global_step)
 
         if info and "episode" in info:
             episode = info["episode"]
@@ -1092,51 +1110,84 @@ def _build_continual_benchmark_config(game_ids: Sequence[str], frame_budget: int
 
 def parse_args() -> AgentConfig:
     parser = argparse.ArgumentParser(description="BBF Agent for Continual Learning Benchmark")
+    parser.add_argument("--exp-name", type=str, default=os.path.basename(__file__)[:-3])
+    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--torch-deterministic", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--cuda", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--track", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--wandb-project-name", type=str, default="physical-atari")
+    parser.add_argument("--wandb-entity", type=str, default=None)
+    parser.add_argument("--capture-video", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--save-model", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--profile", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--torch-profile", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--torch-profile-steps", type=int, default=50)
+
     parser.add_argument("--env-id", type=str, default="ALE/Breakout-v5")
-    parser.add_argument("--total-steps", type=int, default=100_000)
+    parser.add_argument("--total-steps", "--total-timesteps", dest="total_steps", type=int, default=100_000)
+    parser.add_argument("--num-envs", type=int, default=1)
     parser.add_argument("--buffer-size", type=int, default=120_000)
     parser.add_argument("--learning-rate", type=float, default=0.0001)
+    parser.add_argument("--weight-decay", type=float, default=0.1)
+    parser.add_argument("--impala-width", type=int, default=4)
+    parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--replay-ratio", type=int, default=8, help="Number of gradient steps per env step")
+    parser.add_argument("--initial-gamma", type=float, default=0.97)
+    parser.add_argument("--final-gamma", type=float, default=0.997)
+    parser.add_argument("--initial-n-step", type=int, default=10)
+    parser.add_argument("--final-n-step", type=int, default=3)
+    parser.add_argument("--anneal-duration", type=int, default=10_000)
     parser.add_argument("--reset-interval", type=int, default=40_000, help="Env steps between periodic resets")
+    parser.add_argument("--shrink-factor", type=float, default=0.5)
+    parser.add_argument("--reset-warmup-steps", type=int, default=2000)
+    parser.add_argument("--spr-weight", type=float, default=5.0)
     parser.add_argument("--jumps", type=int, default=5, help="Number of SPR prediction jumps")
+    parser.add_argument("--n-atoms", type=int, default=51)
+    parser.add_argument("--v-min", type=float, default=-10.0)
+    parser.add_argument("--v-max", type=float, default=10.0)
+    parser.add_argument("--tau", type=float, default=0.005)
+    parser.add_argument("--start-e", type=float, default=1.0)
+    parser.add_argument("--end-e", type=float, default=0.01)
+    parser.add_argument("--exploration-fraction", type=float, default=0.10)
+    parser.add_argument("--learning-starts", type=int, default=2000)
+    parser.add_argument("--use-per", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--per-alpha", type=float, default=0.5)
+    parser.add_argument("--per-beta", type=float, default=0.5)
+    parser.add_argument("--per-eps", type=float, default=1e-6)
+    parser.add_argument("--use-amp", action=argparse.BooleanOptionalAction, default=True)
+
+    # Continual benchmark
     parser.add_argument("--continual", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--continual-games", type=str, default="")
     parser.add_argument("--continual-cycles", type=int, default=DEFAULT_CONTINUAL_CYCLES)
     parser.add_argument("--continual-cycle-frames", type=int, default=DEFAULT_CONTINUAL_CYCLE_FRAMES)
-    parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--track", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--wandb-project-name", type=str, default="physical-atari")
-    parser.add_argument("--cuda", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--per-game-learning-starts", type=int, default=2000)
     
     args = parser.parse_args()
-    return AgentConfig(
-        env_id=args.env_id,
-        total_steps=args.total_steps,
-        buffer_size=args.buffer_size,
-        learning_rate=args.learning_rate,
-        replay_ratio=args.replay_ratio,
-        reset_interval=args.reset_interval,
-        jumps=args.jumps,
-        continual=args.continual,
-        continual_games=args.continual_games,
-        continual_cycles=args.continual_cycles,
-        continual_cycle_frames=args.continual_cycle_frames,
-        seed=args.seed,
-        track=args.track,
-        wandb_project_name=args.wandb_project_name,
-        cuda=args.cuda,
-    )
+    return AgentConfig(**vars(args))
 
 
 def main():
     config = parse_args()
+
+    if config.num_envs != 1:
+        raise ValueError("agent_bbf.py currently supports num_envs=1 (to match BBF sequence handling).")
+
     log_root = './results_final_bbf'
     os.makedirs(log_root, exist_ok=True)
-    run_name = f"{config.env_id}__agent_bbf__{config.seed}__{int(time.time())}"
+    env_suffix = config.env_id.split("/")[-1] if "/" in config.env_id else config.env_id
+    run_name = f"{env_suffix}__{config.exp_name}__{config.seed}__{int(time.time())}"
     
     if config.track:
         import wandb
-        wandb.init(project=config.wandb_project_name, config=vars(config), name=run_name, monitor_gym=True, save_code=True)
+        wandb.init(
+            project=config.wandb_project_name,
+            entity=config.wandb_entity,
+            config=vars(config),
+            name=run_name,
+            monitor_gym=True,
+            save_code=True
+        )
 
     run_dir = os.path.join(log_root, run_name)
     os.makedirs(run_dir, exist_ok=True)
@@ -1150,7 +1201,8 @@ def main():
     random.seed(config.seed)
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
-    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.deterministic = config.torch_deterministic
+    torch.backends.cudnn.benchmark = not config.torch_deterministic
 
     writer = SummaryWriter(log_dir=os.path.join(run_dir, "tb"))
 
@@ -1177,9 +1229,9 @@ def main():
 
     if config.continual:
         # Create dummy env to get observation/action space for continual mode
-    dummy_env = make_atari_env(config.env_id, config.seed)
-    agent = Agent(dummy_env.observation_space, dummy_env.action_space, config)
-    dummy_env.close()
+        dummy_env = make_atari_env(config.env_id, config.seed)
+        agent = Agent(dummy_env.observation_space, dummy_env.action_space, config)
+        dummy_env.close()
         game_ids = _parse_continual_game_ids(config)
         
         # Adjust total_steps to match benchmark
@@ -1211,9 +1263,9 @@ def main():
         write_continual_summary(results, summary_path)
     else:
         # Single game mode - CleanRL-style training loop with SyncVectorEnv
-        num_envs = 1  # BBF uses single env for sequence correctness
+        num_envs = config.num_envs  # BBF uses single env for sequence correctness
         envs = gym.vector.SyncVectorEnv(
-            [make_env(config.env_id, config.seed + i, i, False, run_name) for i in range(num_envs)]
+            [make_env(config.env_id, config.seed + i, i, config.capture_video, run_name) for i in range(num_envs)]
         )
         
         # Reinitialize agent with correct observation space from vectorized env
@@ -1376,6 +1428,11 @@ def main():
             writer.add_scalar("final/mean_return", np.mean(all_returns), 0)
             writer.add_scalar("final/episodes", len(all_returns), 0)
             writer.add_scalar("final/total_time_minutes", total_time/60, 0)
+
+    if config.save_model:
+        final_model_path = os.path.join(run_dir, f"{config.exp_name}_final.pt")
+        agent.save_model(final_model_path)
+        print(f"Saved final model to {final_model_path}")
 
     writer.close()
     print("Done.")
