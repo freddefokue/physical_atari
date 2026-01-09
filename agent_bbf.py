@@ -36,6 +36,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from torch.amp import autocast, GradScaler
 from torch.utils.tensorboard import SummaryWriter
 
 # Import Benchmark interfaces
@@ -64,32 +65,97 @@ from common import (
     create_logger,
 )
 
+from cleanrl_utils.atari_wrappers import (
+    ClipRewardEnv,
+    EpisodicLifeEnv,
+    FireResetEnv,
+    MaxAndSkipEnv,
+    NoopResetEnv,
+)
+
+
+def make_env(env_id, seed, idx, capture_video=False, run_name="", full_action_space=False):
+    """Create a thunk for SyncVectorEnv (matches bbf_atari.py exactly).
+    
+    Args:
+        full_action_space: If True, use all 18 Atari actions (for continual learning).
+                          If False, use game-specific action space.
+    """
+    def thunk():
+        # Gymnasium 1.0+ ALE configuration:
+        # repeat_action_probability=0.0 ensures NO STICKY ACTIONS (Standard Atari 100k)
+        # full_action_space=True gives all 18 actions for continual learning
+        if capture_video and idx == 0:
+            env = gym.make(env_id, render_mode="rgb_array", frameskip=1, 
+                          repeat_action_probability=0.0, full_action_space=full_action_space)
+            env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
+        else:
+            env = gym.make(env_id, frameskip=1, repeat_action_probability=0.0,
+                          full_action_space=full_action_space)
+            
+        env = gym.wrappers.RecordEpisodeStatistics(env)
+        env = NoopResetEnv(env, noop_max=30)
+        env = MaxAndSkipEnv(env, skip=4)
+        env = EpisodicLifeEnv(env)
+        
+        if "FIRE" in env.unwrapped.get_action_meanings():
+            env = FireResetEnv(env)
+            
+        # Official BBF uses reward clipping (standard for Atari 100k)
+        env = ClipRewardEnv(env) 
+        
+        env = gym.wrappers.ResizeObservation(env, (84, 84))
+        env = gym.wrappers.GrayscaleObservation(env)
+        # Using FrameStackObservation (Gymnasium 1.0+) - Outputs (4, 84, 84)
+        env = gym.wrappers.FrameStackObservation(env, 4)
+        
+        env.action_space.seed(seed)
+        return env
+    return thunk
+
 
 # =============================================================================
 # NETWORK ARCHITECTURE (from CleanRL BBF)
 # =============================================================================
 
 class RandomShift(nn.Module):
-    """Data augmentation: random spatial shift + intensity noise."""
+    """Vectorized random shift augmentation using grid_sample (no Python loops)."""
     def __init__(self, pad=4, intensity_scale=0.05):
         super().__init__()
         self.pad = pad
         self.intensity_scale = intensity_scale
 
     def forward(self, x):
+        # Input: (B, C, H, W) - uint8 or float
         b, c, h, w = x.shape 
-        x = F.pad(x.float(), (self.pad, self.pad, self.pad, self.pad), mode="replicate")
-        top = torch.randint(0, 2 * self.pad + 1, (b,), device=x.device)
-        left = torch.randint(0, 2 * self.pad + 1, (b,), device=x.device)
-        out = torch.empty((b, c, h, w), device=x.device, dtype=x.dtype)
-        for i in range(b):
-            out[i] = x[i, :, top[i]:top[i] + h, left[i]:left[i] + w]
+        x = x.float() / 255.0  # Normalize to [0, 1] for grid_sample
         
+        # Random shifts in pixels, converted to normalized coordinates [-1, 1]
+        shift_y = (torch.randint(0, 2 * self.pad + 1, (b,), device=x.device) - self.pad).float()
+        shift_x = (torch.randint(0, 2 * self.pad + 1, (b,), device=x.device) - self.pad).float()
+        
+        # Convert pixel shifts to normalized grid coordinates
+        shift_y_norm = shift_y / h * 2
+        shift_x_norm = shift_x / w * 2
+        
+        # Build affine transformation matrix for translation only
+        theta = torch.zeros(b, 2, 3, device=x.device, dtype=x.dtype)
+        theta[:, 0, 0] = 1.0  # scale x
+        theta[:, 1, 1] = 1.0  # scale y
+        theta[:, 0, 2] = shift_x_norm  # translate x
+        theta[:, 1, 2] = shift_y_norm  # translate y
+        
+        # Generate sampling grid and apply transformation
+        grid = F.affine_grid(theta, x.shape, align_corners=False)
+        out = F.grid_sample(x, grid, mode='bilinear', padding_mode='border', align_corners=False)
+        
+        # Intensity augmentation (from official BBF/DrQ)
         if self.training:
             noise = torch.randn(b, 1, 1, 1, device=x.device).clamp(-2.0, 2.0)
             out = out * (1.0 + self.intensity_scale * noise)
         
-        return out
+        # Scale back to [0, 255] range
+        return out * 255.0
 
 
 class ResidualBlock(nn.Module):
@@ -100,16 +166,18 @@ class ResidualBlock(nn.Module):
         self.conv2 = nn.Conv2d(channels, channels, 3, padding=1)
 
     def forward(self, x):
+        # Pre-activation: ReLU before conv (better gradient flow)
         out = F.relu(x)
         out = self.conv1(out)
         out = F.relu(out)
         out = self.conv2(out)
-        return out + x
+        return out + x  # No ReLU after add
 
 
 class ImpalaBlock(nn.Module):
     def __init__(self, in_c, out_c):
         super().__init__()
+        # Official BBF uses stride=1 conv followed by MaxPool (not strided conv)
         self.conv = nn.Conv2d(in_c, out_c, 3, stride=1, padding=1)
         self.pool = nn.MaxPool2d(3, stride=2, padding=1)
         self.res1 = ResidualBlock(out_c)
@@ -171,6 +239,7 @@ class BBFNetwork(nn.Module):
     def encode(self, x):
         x = x / 255.0
         h = self.encoder(x)
+        # Latent renormalization (MuZero-style, from official BBF)
         h = self._renormalize(h)
         h = h.view(h.size(0), -1)
         return self.rep_head(h)
@@ -258,15 +327,66 @@ class SumTree:
         self.max_priority = 1.0
 
 
+class SequenceReplayBuffer:
+    """Uniform sampling replay buffer."""
+    def __init__(self, capacity, obs_shape, device, max_seq_len):
+        self.capacity = capacity
+        self.device = device
+        self.max_seq_len = max_seq_len
+        self.obs = np.zeros((capacity, *obs_shape), dtype=np.uint8)
+        self.actions = np.zeros((capacity), dtype=np.int64)
+        self.rewards = np.zeros((capacity), dtype=np.float32)
+        self.dones = np.zeros((capacity), dtype=np.bool_)
+        self.pos = 0
+        self.size = 0
+
+    def add(self, obs, action, reward, done, priority=None):
+        self.obs[self.pos] = obs
+        self.actions[self.pos] = action
+        self.rewards[self.pos] = reward
+        self.dones[self.pos] = done
+        self.pos = (self.pos + 1) % self.capacity
+        self.size = min(self.size + 1, self.capacity)
+
+    def sample(self, batch_size, seq_len):
+        if self.size < seq_len:
+            raise ValueError(f"Not enough data: size={self.size}, seq_len={seq_len}")
+
+        # Zero-Bias Modulo Sampling to handle circular wrapping
+        cursor = self.pos if self.size == self.capacity else 0
+        max_logical = self.size - seq_len + 1
+        logical_starts = np.random.randint(0, max_logical, size=batch_size)
+        physical_starts = (cursor + logical_starts) % self.capacity
+
+        seq_indices = (physical_starts[:, None] + np.arange(seq_len)) % self.capacity
+
+        return (
+            torch.as_tensor(self.obs[seq_indices], device=self.device),
+            torch.as_tensor(self.actions[seq_indices], device=self.device),
+            torch.as_tensor(self.rewards[seq_indices], device=self.device),
+            torch.as_tensor(self.dones[seq_indices], device=self.device),
+            physical_starts,
+            torch.ones(batch_size, device=self.device),
+        )
+
+    def update_priorities(self, indices, priorities):
+        pass  # No-op for uniform buffer
+
+    def reset_counters(self):
+        """Reset buffer for new game in continual learning (no memory reallocation)."""
+        self.pos = 0
+        self.size = 0
+
+
 class PrioritizedSequenceReplayBuffer:
-    """Prioritized Experience Replay buffer with sequence support."""
+    """Prioritized Experience Replay buffer with sequence support (Official BBF style)."""
     def __init__(self, capacity, obs_shape, device, max_seq_len, eps=1e-6):
         self.capacity = capacity
         self.device = device
         self.max_seq_len = max_seq_len
         self.eps = eps
         self.obs_shape = obs_shape
-        
+
         self.obs = np.zeros((capacity, *obs_shape), dtype=np.uint8)
         self.actions = np.zeros((capacity), dtype=np.int64)
         self.rewards = np.zeros((capacity), dtype=np.float32)
@@ -281,6 +401,7 @@ class PrioritizedSequenceReplayBuffer:
         self.rewards[self.pos] = reward
         self.dones[self.pos] = done
         
+        # New transitions get max priority (official BBF style: no alpha exponent)
         if priority is None:
             priority = self.tree.max_priority
         self.tree.update(self.pos, priority)
@@ -295,6 +416,7 @@ class PrioritizedSequenceReplayBuffer:
         indices = np.zeros(batch_size, dtype=np.int64)
         priorities = np.zeros(batch_size, dtype=np.float64)
         
+        # Stratified sampling for better coverage
         segment = self.tree.total / batch_size
         for i in range(batch_size):
             low = segment * i
@@ -305,6 +427,7 @@ class PrioritizedSequenceReplayBuffer:
             cursor = self.pos if self.size == self.capacity else 0
             max_valid = self.size - seq_len
             
+            # Retry if invalid index
             attempts = 0
             while attempts < 10:
                 if self.size == self.capacity:
@@ -323,6 +446,7 @@ class PrioritizedSequenceReplayBuffer:
         
         seq_indices = (indices[:, None] + np.arange(seq_len)) % self.capacity
         
+        # Compute importance sampling weights (Official BBF: 1/sqrt(prob), no beta)
         probs = priorities / (self.tree.total + 1e-10)
         weights = 1.0 / np.sqrt(probs + 1e-10)
         weights = weights / (weights.max() + 1e-10)
@@ -337,6 +461,7 @@ class PrioritizedSequenceReplayBuffer:
         )
     
     def update_priorities(self, indices, losses):
+        """Update priorities based on losses (Official BBF: sqrt(loss), no alpha)."""
         priorities = np.sqrt(losses + self.eps)
         for idx, priority in zip(indices, priorities):
             self.tree.update(idx, priority)
@@ -349,12 +474,29 @@ class PrioritizedSequenceReplayBuffer:
 
 
 # =============================================================================
+# SCHEDULE FUNCTIONS
+# =============================================================================
+
+def get_linear_schedule(start, end, t, duration):
+    if t >= duration:
+        return end
+    return start + (end - start) * (t / duration)
+
+
+def get_exponential_schedule(start, end, t, duration):
+    """Exponential interpolation in log-space (BBF paper specification)."""
+    if t >= duration:
+        return end
+    return start * (end / start) ** (t / duration)
+
+
+# =============================================================================
 # AGENT CONFIG
 # =============================================================================
 
 @dataclass
 class AgentConfig:
-    env_id: str = "BreakoutNoFrameskip-v4"
+    env_id: str = "ALE/Breakout-v5"
     total_steps: int = 100_000
     buffer_size: int = 120_000
     
@@ -373,20 +515,30 @@ class AgentConfig:
     
     reset_interval: int = 40_000
     shrink_factor: float = 0.5
+    reset_warmup_steps: int = 2000
     
-    spr_weight: float = 2.0
+    # Official paper value for SPR weight
+    spr_weight: float = 5.0
     jumps: int = 5
     
+    # Official value support (with reward clipping)
     n_atoms: int = 51
-    v_min: float = -100.0
-    v_max: float = 100.0
+    v_min: float = -10.0
+    v_max: float = 10.0
     tau: float = 0.005
 
     start_e: float = 1.0
     end_e: float = 0.01
     exploration_fraction: float = 0.10
     learning_starts: int = 2000
-    
+
+    # Prioritized Experience Replay (PER)
+    use_per: bool = True
+    per_eps: float = 1e-6
+
+    # Mixed Precision Training
+    use_amp: bool = True  # Enable automatic mixed precision (FP16) for faster training
+
     seed: int = 1
     cuda: bool = True
     track: bool = False
@@ -433,19 +585,19 @@ class Agent:
         obs_shape = observation_space.shape
         if obs_shape[0] == FRAME_SKIP:
             self.channels_last = False
-            in_channels = obs_shape[0]
+            self.in_channels = obs_shape[0]
         elif obs_shape[-1] == FRAME_SKIP:
             self.channels_last = True
-            in_channels = obs_shape[-1]
+            self.in_channels = obs_shape[-1]
         else:
             raise ValueError("Unable to infer stacked frame dimension.")
 
         # Networks
-        self.q_network = BBFNetwork(in_channels, self.num_actions, config).to(self.device)
-        self.target_network = BBFNetwork(in_channels, self.num_actions, config).to(self.device)
+        self.q_network = BBFNetwork(self.in_channels, self.num_actions, config).to(self.device)
+        self.target_network = BBFNetwork(self.in_channels, self.num_actions, config).to(self.device)
         self.target_network.load_state_dict(self.q_network.state_dict())
         
-        # Optimizer with weight decay excluding biases
+        # Optimizer with weight decay excluding biases (official BBF excludes 1D params)
         decay_params = []
         no_decay_params = []
         for name, param in self.q_network.named_parameters():
@@ -459,16 +611,32 @@ class Agent:
         ], lr=config.learning_rate, eps=1.5e-4)
         
         self.aug = RandomShift(pad=4).to(self.device)
-        
-        # Replay Buffer
+
+        # Initialize GradScaler for mixed precision training
+        self.scaler = GradScaler('cuda', enabled=config.use_amp and self.device.type == 'cuda')
+        if config.use_amp and self.device.type == 'cuda':
+            print("*** MIXED PRECISION (AMP) ENABLED - Using FP16 for faster training ***")
+
+        # Replay Buffer - choose based on use_per
         self.seq_req = config.jumps + 1 + config.initial_n_step
-        self.replay_buffer = PrioritizedSequenceReplayBuffer(
-            config.buffer_size, 
-            observation_space.shape, 
-            self.device, 
-            self.seq_req
-        )
-        
+        if config.use_per:
+            print("Using Prioritized Experience Replay (PER)")
+            self.replay_buffer = PrioritizedSequenceReplayBuffer(
+                config.buffer_size,
+                observation_space.shape,
+                self.device,
+                self.seq_req,
+                eps=config.per_eps
+            )
+        else:
+            print("Using Uniform Experience Replay")
+            self.replay_buffer = SequenceReplayBuffer(
+                config.buffer_size,
+                observation_space.shape,
+                self.device,
+                self.seq_req
+            )
+
         self.game_frame_counters: Dict[str, int] = {}
 
     def _get_epsilon(self):
@@ -477,31 +645,26 @@ class Agent:
             return self.config.end_e
         return self.config.start_e + (self.config.end_e - self.config.start_e) * (self.global_step / duration)
 
-    def _get_exponential_schedule(self, start, end, t, duration):
-        if t >= duration:
-            return end
-        return start * (end / start) ** (t / duration)
-
     def _hard_reset(self):
-        """BBF Shrink & Perturb reset."""
+        """
+        BBF Reset Strategy (from official implementation):
+        - Shrink-perturb ONLY: encoder, transition model (trans_fc, action_emb)
+        - Fully reset: heads (value, advantage), projection, predictor, rep_head
+        """
         print(f"  [Agent] Hard Reset (shrink={self.config.shrink_factor})...")
         with torch.no_grad():
-            fresh = BBFNetwork(
-                FRAME_SKIP if not self.channels_last else self.config.n_atoms,  # Dummy, we use in_channels from init
-                self.num_actions, 
-                self.config
-            ).to(self.device)
-            # Re-init fresh network with correct in_channels
-            fresh = BBFNetwork(4, self.num_actions, self.config).to(self.device)
-            
+            fresh = BBFNetwork(self.in_channels, self.num_actions, self.config).to(self.device)
             alpha = self.config.shrink_factor
             
             for (name, p), (_, p_new) in zip(self.q_network.named_parameters(), fresh.named_parameters()):
+                # Shrink-perturb only encoder and transition model
                 if "encoder" in name or "trans_fc" in name or "action_emb" in name:
                     p.data.copy_(alpha * p.data + (1.0 - alpha) * p_new.data)
                 else:
+                    # Fully reset: heads, projection, predictor, rep_head
                     p.data.copy_(p_new.data)
                 
+                # Always clear optimizer state (momentum etc.) for ALL params
                 if p in self.optimizer.state:
                     del self.optimizer.state[p]
             
@@ -537,7 +700,7 @@ class Agent:
             obs_tensor = obs_tensor.permute(0, 3, 1, 2)
             
         with torch.no_grad():
-            q_dist = self.target_network(obs_tensor)
+            q_dist = self.target_network(obs_tensor)  # Use TARGET network (matches bbf_atari.py)
             q_values = torch.sum(q_dist * self.target_network.support, dim=2)
             action = int(torch.argmax(q_values, dim=1).item())
             
@@ -565,20 +728,28 @@ class Agent:
         
         if self.replay_buffer.size > min_samples and self.global_step >= self.learning_ready_step:
             # Check for reset interval (BBF periodic resets)
-            if self.grad_step > 0 and self.grad_step % self.config.reset_interval == 0:
+            # Reset based on ENV STEPS (global_step), not grad steps, to match CleanRL
+            if self.global_step > self.learning_ready_step and self.global_step % self.config.reset_interval == 0:
+                print(f"  [Agent] Hard Reset at env step {self.global_step} (grad step {self.grad_step})")
                 self._hard_reset()
                 self.steps_since_reset = 0
+                
+                # Offline warmup after reset
+                print(f"  [Agent] Offline Warmup ({self.config.reset_warmup_steps} steps)...")
+                for _ in range(self.config.reset_warmup_steps):
+                    self.grad_step += 1
+                    self._train_batch(self.config.initial_gamma, self.config.initial_n_step)
             
             # Replay ratio loop
             for _ in range(self.config.replay_ratio):
                 self.grad_step += 1
                 self.steps_since_reset += 1
                 
-                curr_gamma = self._get_exponential_schedule(
+                curr_gamma = get_exponential_schedule(
                     self.config.initial_gamma, self.config.final_gamma, 
                     self.steps_since_reset, self.config.anneal_duration
                 )
-                curr_n = int(round(self._get_exponential_schedule(
+                curr_n = int(round(get_exponential_schedule(
                     self.config.initial_n_step, self.config.final_n_step, 
                     self.steps_since_reset, self.config.anneal_duration
                 )))
@@ -588,96 +759,155 @@ class Agent:
         return train_stats
 
     def _train_batch(self, curr_gamma, curr_n):
+        """Training logic with AMP support (matches bbf_atari.py exactly)."""
         args = self.config
+        use_amp = args.use_amp and self.device.type == 'cuda'
         fetch_len = args.jumps + 1 + curr_n
-        
+
         data_obs, data_act, data_rew, data_done, indices, weights = self.replay_buffer.sample(args.batch_size, fetch_len)
-        
+
         if self.channels_last:
             data_obs = data_obs.permute(0, 1, 4, 2, 3)
 
-        # --- SPR LOSS ---
-        obs_0 = self.aug(data_obs[:, 0])
-        z0 = self.q_network.encode(obs_0)
-        rollout_acts = data_act[:, :args.jumps]
-        z_seq = self.q_network.rollout_latents(z0, rollout_acts)
-        
-        target_latents = []
-        with torch.no_grad():
-            for j in range(1, args.jumps + 1):
-                obs_j = self.aug(data_obs[:, j])
-                t_z = self.target_network.encode(obs_j)
-                t_p = self.target_network.projection(t_z)
-                target_latents.append(F.normalize(t_p, dim=1))
-        target_latents = torch.stack(target_latents, dim=1)
-        
-        spr_loss = 0
-        spr_done_mask = 1.0 - data_done[:, :args.jumps].float()
-        cumulative_mask = torch.cumprod(spr_done_mask, dim=1)
-        
-        for j in range(1, args.jumps + 1):
-            z_j = z_seq[:, j]
-            p_j = self.q_network.projection(z_j)
-            pred_j = self.q_network.predictor(p_j)
-            pred_norm = F.normalize(pred_j, dim=1)
-            loss = F.mse_loss(pred_norm, target_latents[:, j-1], reduction='none').sum(dim=1)
-            mask = cumulative_mask[:, j-1]
-            spr_loss += (loss * mask).mean()
+        # --- FORWARD PASS WITH MIXED PRECISION ---
+        # AMP Strategy: FP16 for convolutions (fast), FP32 for C51/SPR (accurate)
+        with autocast(device_type='cuda', enabled=use_amp):
+            # --- AUGMENTATION (obs_0) ---
+            obs_0 = self.aug(data_obs[:, 0])
 
-        # --- C51 LOSS ---
-        with torch.no_grad():
+            # --- ENCODE (online) - Keep FP16 for speed ---
+            z0 = self.q_network.encode(obs_0)
+
+            # --- SPR ROLLOUT ---
+            rollout_acts = data_act[:, :args.jumps]
+            z_seq = self.q_network.rollout_latents(z0, rollout_acts)
+
+        # --- SPR TARGETS (target network) - FORCE FP32 for normalization ---
+        with torch.no_grad(), autocast(device_type='cuda', enabled=False):
+            # Stack obs for jumps 1..jumps: (batch, jumps, C, H, W) -> (batch*jumps, C, H, W)
+            obs_jumps = data_obs[:, 1:args.jumps+1]
+            B, J = obs_jumps.shape[0], obs_jumps.shape[1]
+            obs_jumps_flat = obs_jumps.reshape(-1, *obs_jumps.shape[2:])
+
+            # Augmentation + encode in FP16 (convolutions are fast)
+            with autocast(device_type='cuda', enabled=use_amp):
+                obs_jumps_aug = self.aug(obs_jumps_flat)
+                t_z_flat = self.target_network.encode(obs_jumps_aug)
+
+            # Projection + normalization in FP32 (critical for numerical stability)
+            t_z_flat = t_z_flat.float()
+            t_p_flat = self.target_network.projection(t_z_flat)
+            t_p_norm = F.normalize(t_p_flat, dim=1)
+
+            # Reshape: (batch*jumps, proj_dim) -> (batch, jumps, proj_dim)
+            target_latents = t_p_norm.view(B, J, -1)
+
+        # --- SPR LOSS - FORCE FP32 for normalization ---
+        with autocast(device_type='cuda', enabled=False):
+            # Get predicted latents for all jumps: z_seq[:, 1:] has shape (batch, jumps, latent_dim)
+            z_jumps = z_seq[:, 1:args.jumps+1].float()  # Force FP32
+            z_jumps_flat = z_jumps.reshape(-1, z_jumps.shape[-1])
+
+            # Projection + predictor + normalization in FP32
+            p_flat = self.q_network.projection(z_jumps_flat)
+            pred_flat = self.q_network.predictor(p_flat)
+            pred_norm = F.normalize(pred_flat, dim=1)
+
+            # Reshape back
+            pred_latents = pred_norm.view(B, J, -1)
+
+            # Compute MSE loss
+            spr_loss_per_jump = ((pred_latents - target_latents) ** 2).sum(dim=2)
+
+            # Apply cumulative done mask
+            spr_done_mask = 1.0 - data_done[:, :args.jumps].float()
+            cumulative_mask = torch.cumprod(spr_done_mask, dim=1)
+
+            # Match original: mean over batch for each jump, then sum over jumps
+            spr_loss = (spr_loss_per_jump * cumulative_mask).mean(dim=0).sum()
+
+        # --- C51 TARGET COMPUTATION - FORCE FP32 for distributional RL ---
+        avg_q = 0.0
+        with torch.no_grad(), autocast(device_type='cuda', enabled=False):
             gammas = torch.pow(curr_gamma, torch.arange(curr_n, device=self.device))
             not_done = 1.0 - data_done.float()
             mask_seq = torch.cat([torch.ones((args.batch_size, 1), device=self.device), not_done[:, :-1]], dim=1)
             reward_mask = torch.cumprod(mask_seq, dim=1)[:, :curr_n]
             n_step_rew = torch.sum(data_rew[:, :curr_n] * gammas * reward_mask, dim=1)
-            
+
             obs_n = data_obs[:, curr_n]
             bootstrap_mask = torch.prod(not_done[:, :curr_n], dim=1)
-            
-            next_dist = self.target_network(obs_n)
-            next_sup = self.target_network.support
-            
-            online_n_dist = self.q_network(obs_n)
+
+            # Forward passes in FP16 (fast), then convert to FP32 for distribution ops
+            with autocast(device_type='cuda', enabled=use_amp):
+                next_dist = self.target_network(obs_n)
+                online_n_dist = self.q_network(obs_n)
+
+            # All distribution operations in FP32
+            next_dist = next_dist.float()
+            online_n_dist = online_n_dist.float()
+            next_sup = self.target_network.support.float()
+
+            # Compute Q-values and best action in FP32
+            avg_q = (online_n_dist * self.q_network.support.float()).sum(2).mean().item()
             best_act = (online_n_dist * next_sup).sum(2).argmax(1)
             next_pmf = next_dist[torch.arange(args.batch_size), best_act]
-            
+
+            # C51 categorical projection in FP32 (critical!)
             gamma_n = curr_gamma ** curr_n
             Tz = n_step_rew.unsqueeze(1) + bootstrap_mask.unsqueeze(1) * gamma_n * next_sup.unsqueeze(0)
             Tz = Tz.clamp(min=args.v_min, max=args.v_max)
             b = (Tz - args.v_min) / self.q_network.delta_z
             l = b.floor().clamp(0, args.n_atoms - 1).long()
             u = b.ceil().clamp(0, args.n_atoms - 1).long()
-            
+
             target_pmf = torch.zeros_like(next_pmf)
             offset = torch.linspace(0, (args.batch_size - 1) * args.n_atoms, args.batch_size, device=self.device).long().unsqueeze(1)
             target_pmf.view(-1).index_add_(0, (l + offset).view(-1), (next_pmf * (u.float() - b)).view(-1))
             target_pmf.view(-1).index_add_(0, (u + offset).view(-1), (next_pmf * (b - l.float())).view(-1))
-        
-        curr_dist = self.q_network.get_dist(z0)
-        log_p = torch.log(curr_dist[torch.arange(args.batch_size), data_act[:, 0]] + 1e-8)
-        
-        c51_loss_per_sample = -torch.sum(target_pmf * log_p, dim=1)
-        weighted_c51_loss = (c51_loss_per_sample * weights).mean()
-        
-        total_loss = weighted_c51_loss + args.spr_weight * spr_loss
-        
+
+        # --- C51 LOSS - FORCE FP32 ---
+        with autocast(device_type='cuda', enabled=False):
+            z0_fp32 = z0.float()
+            curr_dist = self.q_network.get_dist(z0_fp32).float()
+            log_p = torch.log(curr_dist[torch.arange(args.batch_size), data_act[:, 0]] + 1e-8)
+
+            # Per-sample C51 loss (for priority updates)
+            c51_loss_per_sample = -torch.sum(target_pmf * log_p, dim=1)
+
+            # Apply importance sampling weights (PER correction)
+            weighted_c51_loss = (c51_loss_per_sample * weights).mean()
+            total_loss = weighted_c51_loss + args.spr_weight * spr_loss
+
+        # --- BACKWARD (with gradient scaling for AMP) ---
         self.optimizer.zero_grad()
-        total_loss.backward()
-        nn.utils.clip_grad_norm_(self.q_network.parameters(), 10.0)
-        self.optimizer.step()
-        
+        if self.scaler is not None and use_amp:
+            self.scaler.scale(total_loss).backward()
+        else:
+            total_loss.backward()
+
+        # --- OPTIMIZER STEP (with gradient scaling for AMP) ---
+        if self.scaler is not None and use_amp:
+            self.scaler.unscale_(self.optimizer)
+            nn.utils.clip_grad_norm_(self.q_network.parameters(), 10.0)
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            nn.utils.clip_grad_norm_(self.q_network.parameters(), 10.0)
+            self.optimizer.step()
+
         # Soft update target
         for param, target_param in zip(self.q_network.parameters(), self.target_network.parameters()):
             target_param.data.copy_(args.tau * param.data + (1.0 - args.tau) * target_param.data)
-        
-        # Update priorities
+
+        # Update priorities based on C51 loss (Official BBF uses sqrt(loss))
         losses = c51_loss_per_sample.detach().cpu().numpy()
         self.replay_buffer.update_priorities(indices, losses)
-            
+
         return {
             "loss": total_loss.item(),
             "spr_loss": spr_loss.item() if isinstance(spr_loss, torch.Tensor) else spr_loss,
+            "avg_q": avg_q,
             "gamma": curr_gamma,
             "n_step": curr_n
         }
@@ -698,12 +928,8 @@ def agent_bbf_frame_runner(
     writer: Optional[SummaryWriter] = None,
 ) -> FrameRunnerResult:
     
-    if handle.backend != 'gym' or handle.gym is None:
-        raise TypeError("agent_bbf_frame_runner requires a Gym environment handle.")
-
-    env = handle.gym
     config = agent.config
-    frames_per_step = max(1, handle.frames_per_step)
+    frames_per_step = FRAME_SKIP  # Use our constant, not handle's
     
     # Signal new game
     agent.start_new_game()
@@ -712,11 +938,17 @@ def agent_bbf_frame_runner(
     log = logger.log
 
     game_name = getattr(handle.spec, "name", context.name)
+    env_id = handle.spec.env_id if hasattr(handle.spec, 'env_id') else game_name
     max_step_budget = context.frame_budget // frames_per_step
     
-    log(f"Starting BBF on '{game_name}' for {max_step_budget} steps.")
+    log(f"Starting BBF on '{game_name}' (env_id={env_id}) for {max_step_budget} steps.")
 
+    # CRITICAL: Create our own environment with correct wrappers!
+    # The benchmark_runner's handle.gym might not have frameskip=1, repeat_action_probability=0.0
+    # Use full_action_space=True for continual mode (18 actions) to match agent's action space
     reset_seed = handle.spec.seed if handle.spec.seed is not None else config.seed
+    env = make_env(env_id, reset_seed, 0, False, game_name, full_action_space=config.continual)()  # Call thunk to get env
+    
     obs, info = env.reset(seed=reset_seed)
     
     episode_scores: List[float] = []
@@ -730,7 +962,13 @@ def agent_bbf_frame_runner(
     frames_since_reward = 0
     running_episode_score = 0.0
     start_time = time.time()
+    training_start_time = None
+    training_start_step = None
     last_model_save = context.last_model_save
+    
+    # Best model tracking for this game
+    best_return = float('-inf')
+    best_model_path = f"best_model_{game_name.replace('/', '_').replace(' ', '_')}.pt"
 
     for _ in range(max_step_budget):
         action = agent.act(obs)
@@ -751,22 +989,47 @@ def agent_bbf_frame_runner(
         frames_consumed += frames_per_step
         agent.game_frame_counters[game_name] = agent.game_frame_counters.get(game_name, 0) + frames_per_step
 
-        if train_log and agent.global_step % 1000 == 0:
-            sps = int(agent.global_step / max(1e-9, time.time() - start_time))
-            log(f"step={agent.global_step} loss={train_log['loss']:.4f} spr={train_log['spr_loss']:.4f} gamma={train_log['gamma']:.4f}")
+        if train_log:
+            # Track when training actually starts (after warmup)
+            if training_start_time is None:
+                training_start_time = time.time()
+                training_start_step = agent.global_step
+            
+            if agent.grad_step % 100 == 0:
+                # SPS based on training time only (excludes warmup)
+                training_elapsed = time.time() - training_start_time
+                training_steps = agent.global_step - training_start_step
+                sps = int(training_steps / (training_elapsed + 1e-5))
+                ep_count = len(episode_scores)
+                log(f"step={agent.global_step} loss={train_log['loss']:.4f} spr={train_log['spr_loss']:.4f} avg_q={train_log['avg_q']:.2f} gamma={train_log['gamma']:.4f} sps={sps} eps={ep_count}")
             if writer:
                 writer.add_scalar("losses/total", train_log['loss'], agent.global_step)
+                    writer.add_scalar("losses/spr_loss", train_log['spr_loss'], agent.global_step)
+                    writer.add_scalar("charts/avg_q", train_log['avg_q'], agent.global_step)
                 writer.add_scalar("charts/gamma", train_log['gamma'], agent.global_step)
                 writer.add_scalar("charts/n_step", train_log['n_step'], agent.global_step)
+                    writer.add_scalar("charts/SPS", sps, agent.global_step)
 
         if info and "episode" in info:
             episode = info["episode"]
-            episode_scores.append(float(episode["r"]))
+            ep_return = float(episode["r"])
+            ep_length = int(episode["l"])
+            episode_scores.append(ep_return)
             episode_end.append(context.frame_offset + frames_consumed)
-            log(f"global_step={agent.global_step}, episodic_return={episode['r']}")
+            log(f"--> Episode Done. Step={agent.global_step}, Return={ep_return:.0f}, Length={ep_length}")
             if writer:
-                writer.add_scalar("charts/episodic_return", episode["r"], agent.global_step)
-                writer.add_scalar(f"charts/episodic_return/{game_name}", episode["r"], agent.global_step)
+                writer.add_scalar("charts/episodic_return", ep_return, agent.global_step)
+                writer.add_scalar("charts/episodic_length", ep_length, agent.global_step)
+                writer.add_scalar(f"charts/episodic_return/{game_name}", ep_return, agent.global_step)
+            
+            # Save best model
+            if ep_return > best_return:
+                best_return = ep_return
+                agent.save_model(best_model_path)
+                log(f"    ★ New best! Saved model with return {best_return:.0f}")
+                if writer:
+                    writer.add_scalar("charts/best_return", best_return, agent.global_step)
+                    writer.add_scalar(f"charts/best_return/{game_name}", best_return, agent.global_step)
 
         if done_for_agent:
             obs, info = env.reset()
@@ -783,6 +1046,9 @@ def agent_bbf_frame_runner(
 
         if frames_consumed >= context.frame_budget:
             break
+
+    # Clean up environment we created
+    env.close()
 
     return FrameRunnerResult(last_model_save, episode_scores, episode_end, episode_graph, parms_graph)
 
@@ -826,10 +1092,13 @@ def _build_continual_benchmark_config(game_ids: Sequence[str], frame_budget: int
 
 def parse_args() -> AgentConfig:
     parser = argparse.ArgumentParser(description="BBF Agent for Continual Learning Benchmark")
-    parser.add_argument("--env-id", type=str, default="BreakoutNoFrameskip-v4")
+    parser.add_argument("--env-id", type=str, default="ALE/Breakout-v5")
     parser.add_argument("--total-steps", type=int, default=100_000)
     parser.add_argument("--buffer-size", type=int, default=120_000)
     parser.add_argument("--learning-rate", type=float, default=0.0001)
+    parser.add_argument("--replay-ratio", type=int, default=8, help="Number of gradient steps per env step")
+    parser.add_argument("--reset-interval", type=int, default=40_000, help="Env steps between periodic resets")
+    parser.add_argument("--jumps", type=int, default=5, help="Number of SPR prediction jumps")
     parser.add_argument("--continual", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--continual-games", type=str, default="")
     parser.add_argument("--continual-cycles", type=int, default=DEFAULT_CONTINUAL_CYCLES)
@@ -845,6 +1114,9 @@ def parse_args() -> AgentConfig:
         total_steps=args.total_steps,
         buffer_size=args.buffer_size,
         learning_rate=args.learning_rate,
+        replay_ratio=args.replay_ratio,
+        reset_interval=args.reset_interval,
+        jumps=args.jumps,
         continual=args.continual,
         continual_games=args.continual_games,
         continual_cycles=args.continual_cycles,
@@ -878,15 +1150,36 @@ def main():
     random.seed(config.seed)
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
+    torch.backends.cudnn.deterministic = True
 
     writer = SummaryWriter(log_dir=os.path.join(run_dir, "tb"))
 
-    # Create dummy env to get observation/action space
+    # Log hyperparameters to TensorBoard
+    writer.add_text("hyperparameters", 
+        "|param|value|\n|-|-|\n" + "\n".join([f"|{k}|{v}|" for k, v in vars(config).items()]))
+
+    # Print run configuration
+    print(f"\n{'='*60}")
+    print(f"RUN CONFIGURATION")
+    print(f"{'='*60}")
+    print(f"  Environment:    {config.env_id}")
+    print(f"  Replay Ratio:   {config.replay_ratio}")
+    print(f"  Reset Interval: {config.reset_interval} (env steps)")
+    print(f"  Total Steps:    {config.total_steps}")
+    print(f"  Seed:           {config.seed}")
+    print(f"  Learning Rate:  {config.learning_rate}")
+    print(f"  Continual:      {config.continual}")
+    if config.continual:
+        print(f"  Games:          {config.continual_games}")
+        print(f"  Cycles:         {config.continual_cycles}")
+        print(f"  Cycle Frames:   {config.continual_cycle_frames}")
+    print(f"{'='*60}\n")
+
+    if config.continual:
+        # Create dummy env to get observation/action space for continual mode
     dummy_env = make_atari_env(config.env_id, config.seed)
     agent = Agent(dummy_env.observation_space, dummy_env.action_space, config)
     dummy_env.close()
-
-    if config.continual:
         game_ids = _parse_continual_game_ids(config)
         
         # Adjust total_steps to match benchmark
@@ -917,37 +1210,172 @@ def main():
         summary_path = os.path.join(run_dir, "continual_summary.json")
         write_continual_summary(results, summary_path)
     else:
-        # Single game mode
-        env = make_atari_env(config.env_id, config.seed)
-        game_spec = GameSpec(
-            name=config.env_id,
-            frame_budget=config.total_steps * FRAME_SKIP,
-            seed=config.seed,
-            backend='gym',
-            env_id=config.env_id,
+        # Single game mode - CleanRL-style training loop with SyncVectorEnv
+        num_envs = 1  # BBF uses single env for sequence correctness
+        envs = gym.vector.SyncVectorEnv(
+            [make_env(config.env_id, config.seed + i, i, False, run_name) for i in range(num_envs)]
         )
-        handle = EnvironmentHandle(
-            backend='gym',
-            spec=game_spec,
-            frames_per_step=FRAME_SKIP,
-            gym=env,
-        )
-        context = FrameRunnerContext(
-            name=run_name,
-            data_dir=run_dir,
-            rank=0,
-            average_frames=100_000,
-            max_frames_without_reward=0,
-            lives_as_episodes=1,
-            save_incremental_models=False,
-            last_model_save=-1,
-            frame_budget=config.total_steps * FRAME_SKIP,
-            frame_offset=0,
-            graph_total_frames=config.total_steps * FRAME_SKIP,
-            delay_frames=0,
-        )
-        agent_bbf_frame_runner(agent, handle, context=context, writer=writer)
-        env.close()
+        
+        # Reinitialize agent with correct observation space from vectorized env
+        agent = Agent(envs.single_observation_space, envs.single_action_space, config)
+        
+        obs, _ = envs.reset(seed=config.seed)
+        start_time = time.time()
+        training_start_time = None
+        training_start_step = None
+        all_returns = []
+        
+        print("Starting Training Loop...")
+        
+        # Best model checkpointing
+        best_return = float('-inf')
+        best_model_path = os.path.join(run_dir, "best_model.pt")
+        
+        for global_step in range(config.total_steps):
+            # Warmup logging
+            if global_step <= config.learning_starts and global_step % 100 == 0:
+                print(f"Warmup: Filling Replay Buffer {global_step}/{config.learning_starts}")
+            
+            # --- ACTION SELECTION (vectorized) ---
+            epsilon = agent._get_epsilon()
+            if random.random() < epsilon:
+                actions = np.array([envs.single_action_space.sample() for _ in range(num_envs)])
+            else:
+                with torch.no_grad():
+                    q_dist = agent.target_network(torch.Tensor(obs).to(agent.device))
+                    q_values = torch.sum(q_dist * agent.target_network.support, dim=2)
+                    actions = torch.argmax(q_values, dim=1).cpu().numpy()
+            
+            # --- ENV STEP ---
+            next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+            
+            # --- EPISODE LOGGING (matches bbf_atari.py exactly) ---
+            if "final_info" in infos:
+                for info in infos["final_info"]:
+                    if info and "episode" in info:
+                        ep_return = float(info['episode']['r'])
+                        all_returns.append(ep_return)
+                        print(f"--> Episode Done. Step={global_step}, Return={ep_return:.0f}, Length={info['episode']['l']}")
+                        writer.add_scalar("charts/episodic_return", ep_return, global_step)
+                        writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+                        
+                        # Save best model
+                        if ep_return > best_return:
+                            best_return = ep_return
+                            agent.save_model(best_model_path)
+                            print(f"    ★ New best! Saved model with return {best_return:.0f}")
+                            writer.add_scalar("charts/best_return", best_return, global_step)
+            elif "episode" in infos:
+                ep_return = float(infos['episode']['r'])
+                all_returns.append(ep_return)
+                print(f"--> Episode Done. Step={global_step}, Return={ep_return:.0f}, Length={infos['episode']['l']}")
+                writer.add_scalar("charts/episodic_return", ep_return, global_step)
+                writer.add_scalar("charts/episodic_length", infos["episode"]["l"], global_step)
+                
+                # Save best model
+                if ep_return > best_return:
+                    best_return = ep_return
+                    agent.save_model(best_model_path)
+                    print(f"    ★ New best! Saved model with return {best_return:.0f}")
+                    writer.add_scalar("charts/best_return", best_return, global_step)
+            
+            # --- BUFFER ADD (vectorized) ---
+            for idx in range(num_envs):
+                done_flag = terminations[idx] or truncations[idx]
+                agent.replay_buffer.add(obs[idx], actions[idx], rewards[idx], done_flag)
+            
+            agent.global_step += 1
+            obs = next_obs  # SyncVectorEnv auto-resets
+            
+            # --- TRAINING ---
+            train_stats = None
+            min_samples = agent.seq_req + 1
+            
+            if agent.replay_buffer.size > min_samples and agent.global_step >= agent.learning_ready_step:
+                # Check for reset interval (BBF periodic resets)
+                if agent.global_step > agent.learning_ready_step and agent.global_step % config.reset_interval == 0:
+                    print(f"*** HARD RESET at env step {agent.global_step} (grad step {agent.grad_step}) ***")
+                    agent._hard_reset()
+                    agent.steps_since_reset = 0
+                    
+                    # Offline warmup after reset
+                    print(f"*** Offline Warmup ({config.reset_warmup_steps} steps) ***")
+                    for _ in range(config.reset_warmup_steps):
+                        agent.grad_step += 1
+                        agent._train_batch(config.initial_gamma, config.initial_n_step)
+                
+                # Replay ratio loop
+                for _ in range(config.replay_ratio):
+                    agent.grad_step += 1
+                    agent.steps_since_reset += 1
+                    
+                    curr_gamma = get_exponential_schedule(
+                        config.initial_gamma, config.final_gamma,
+                        agent.steps_since_reset, config.anneal_duration
+                    )
+                    curr_n = int(round(get_exponential_schedule(
+                        config.initial_n_step, config.final_n_step,
+                        agent.steps_since_reset, config.anneal_duration
+                    )))
+                    
+                    train_stats = agent._train_batch(curr_gamma, curr_n)
+            
+            # Training stats logging (CleanRL style)
+            if train_stats:
+                # Track when training actually starts (after warmup)
+                if training_start_time is None:
+                    training_start_time = time.time()
+                    training_start_step = global_step
+                    print(f"*** Training started at step {global_step} ***")
+                
+                if agent.grad_step % 100 == 0:
+                    # SPS based on training time only (excludes warmup)
+                    training_elapsed = time.time() - training_start_time
+                    training_steps = global_step - training_start_step
+                    sps = int(training_steps / (training_elapsed + 1e-5))
+                    remaining_steps = config.total_steps - global_step
+                    eta_min = (remaining_steps / (sps + 1e-5)) / 60
+                    
+                    print(f"Step: {global_step} | Grad: {agent.grad_step} | Loss: {train_stats['loss']:.3f} | SPR: {train_stats['spr_loss']:.3f} | "
+                          f"AvgQ: {train_stats['avg_q']:.2f} | Eps: {epsilon:.2f} | SPS: {sps} | ETA: {eta_min:.1f} min")
+                    
+                    writer.add_scalar("losses/total_loss", train_stats['loss'], agent.grad_step)
+                    writer.add_scalar("losses/spr_loss", train_stats['spr_loss'], agent.grad_step)
+                    writer.add_scalar("charts/avg_q", train_stats['avg_q'], agent.grad_step)
+                    writer.add_scalar("charts/n_step", train_stats['n_step'], agent.grad_step)
+                    writer.add_scalar("charts/gamma", train_stats['gamma'], agent.grad_step)
+                    writer.add_scalar("charts/SPS", sps, agent.grad_step)
+        
+        envs.close()
+        
+        # Final summary (CleanRL style)
+        total_time = time.time() - start_time
+        print(f"\n{'='*60}")
+        print(f"TRAINING COMPLETE - FINAL SUMMARY")
+        print(f"{'='*60}")
+        print(f"  Run Name:       {run_name}")
+        print(f"  Replay Ratio:   {config.replay_ratio}")
+        print(f"  Reset Interval: {config.reset_interval}")
+        print(f"  Seed:           {config.seed}")
+        print(f"  Environment:    {config.env_id}")
+        print(f"  Total Time:     {total_time/60:.1f} minutes")
+        print(f"  Grad Steps:     {agent.grad_step}")
+        if all_returns:
+            print(f"  Episodes:       {len(all_returns)}")
+            print(f"  Max Return:     {max(all_returns):.0f}")
+            print(f"  Mean Return:    {np.mean(all_returns):.1f}")
+            print(f"  Last 5:         {[int(r) for r in all_returns[-5:]]}")
+        if best_return > float('-inf'):
+            print(f"  Best Model:     {best_model_path}")
+            print(f"  Best Return:    {best_return:.0f}")
+        print(f"{'='*60}\n")
+        
+        # Log final metrics
+        if all_returns:
+            writer.add_scalar("final/max_return", max(all_returns), 0)
+            writer.add_scalar("final/mean_return", np.mean(all_returns), 0)
+            writer.add_scalar("final/episodes", len(all_returns), 0)
+            writer.add_scalar("final/total_time_minutes", total_time/60, 0)
 
     writer.close()
     print("Done.")

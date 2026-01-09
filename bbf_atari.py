@@ -411,18 +411,18 @@ class SequenceReplayBuffer:
         max_logical = self.size - seq_len + 1
         logical_starts = np.random.randint(0, max_logical, size=batch_size)
         physical_starts = (cursor + logical_starts) % self.capacity
-        
+
         seq_indices = (physical_starts[:, None] + np.arange(seq_len)) % self.capacity
-        
+
         return (
             torch.as_tensor(self.obs[seq_indices], device=self.device),
             torch.as_tensor(self.actions[seq_indices], device=self.device),
             torch.as_tensor(self.rewards[seq_indices], device=self.device),
             torch.as_tensor(self.dones[seq_indices], device=self.device),
-            physical_starts,  # Return indices for priority updates
-            torch.ones(batch_size, device=self.device),  # Uniform weights
+            physical_starts,
+            torch.ones(batch_size, device=self.device),
         )
-    
+
     def update_priorities(self, indices, priorities):
         pass  # No-op for uniform buffer
 
