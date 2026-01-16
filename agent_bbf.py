@@ -810,17 +810,18 @@ class Agent:
         if not self.profiler_active or self.profiler is None:
             return
 
-        # Check if profiling window is complete BEFORE stepping
-        # With repeat=1, the profiler auto-stops after the schedule completes
-        # We just need to stop calling step() and mark ourselves as inactive
+        # Calculate total steps needed for schedule to complete
+        # wait + warmup + active = total steps before on_trace_ready fires
         wait_steps = max(1, self.config.learning_starts // 10)
         total_profiler_steps = wait_steps + 5 + self.config.torch_profile_steps
-        if self.grad_step >= total_profiler_steps:
-            # Don't call stop() - the schedule with repeat=1 handles cleanup
-            # Just mark as inactive so we stop stepping
+
+        # Must call step() exactly total_profiler_steps times to complete the cycle
+        # Only stop AFTER completing (use > not >=)
+        if self.grad_step > total_profiler_steps:
+            # Schedule has completed, on_trace_ready already fired
             self.profiler_active = False
             self.profiler = None
-            print(f"*** Torch Profiler completed after {self.grad_step} grad steps ***")
+            print(f"*** Torch Profiler completed after {total_profiler_steps} grad steps ***")
             print(f"*** View with: tensorboard --logdir=<run_dir>/profiler ***")
             return
 
