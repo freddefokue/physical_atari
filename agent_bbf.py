@@ -689,19 +689,21 @@ class Agent:
 
     def start_new_game(self):
         """Called by BenchmarkRunner when a new game starts."""
-        print("[Agent] New Game - Resetting buffer and performing hard reset.")
-        
+        print(f"[Agent] New Game - global_step={self.global_step} grad_step={self.grad_step}")
+        print("[Agent] Resetting buffer and performing hard reset.")
+
         # Reset buffer
         self.replay_buffer.reset_counters()
-        
+
         # Reset annealing
         self.steps_since_reset = 0
-        
+
         # Shrink & Perturb
         self._hard_reset()
-        
+
         # Set learning threshold
         self.learning_ready_step = self.global_step + self.config.per_game_learning_starts
+        print(f"[Agent] learning_ready_step set to {self.learning_ready_step} (current + {self.config.per_game_learning_starts})")
 
     def act(self, observation) -> int:
         # Early epsilon check to avoid unnecessary GPU work
@@ -725,25 +727,46 @@ class Agent:
         self.last_action = action
         return action
 
-    def step(self, next_observation, reward: float, done: bool, info: Optional[Dict] = None):
+    def step(self, next_observation, reward: float, terminated: bool, truncated: bool = False, info: Optional[Dict] = None):
+        """Process a transition and optionally train.
+
+        Args:
+            next_observation: The observation after taking the action
+            reward: Reward received
+            terminated: True if episode ended due to MDP rules (no bootstrapping)
+            truncated: True if episode ended due to time limit/budget (should bootstrap)
+            info: Optional info dict from environment
+        """
         if self.last_obs is None or self.last_action is None:
             return None
 
-        # Add to buffer
-        self.replay_buffer.add(self.last_obs, self.last_action, reward, done)
+        # For replay buffer: only use `terminated` to decide bootstrapping
+        # truncated episodes should bootstrap (the episode didn't really end)
+        self.replay_buffer.add(self.last_obs, self.last_action, reward, terminated)
         self.global_step += 1
-        
+
         self.last_obs = np.array(next_observation, copy=False)
-        
-        if done:
+
+        # Clean up agent state if episode ended (either way)
+        if terminated or truncated:
             self.last_obs = None
             self.last_action = None
         
         # Training
         train_stats = None
         min_samples = self.seq_req + 1
-        
+
+        # Diagnostic logging every 1000 steps
+        if self.global_step % 1000 == 0:
+            print(f"[DIAG] step={self.global_step} buffer_size={self.replay_buffer.size} "
+                  f"min_samples={min_samples} learning_ready_step={self.learning_ready_step} "
+                  f"grad_step={self.grad_step}")
+
         if self.replay_buffer.size > min_samples and self.global_step >= self.learning_ready_step:
+            # One-time message when training starts
+            if self.grad_step == 0:
+                print(f"[TRAINING STARTED] step={self.global_step} buffer_size={self.replay_buffer.size}")
+
             # Check for reset interval (BBF periodic resets)
             # Reset based on ENV STEPS (global_step), not grad steps, to match CleanRL
             if self.global_step > self.learning_ready_step and self.global_step % self.config.reset_interval == 0:
@@ -921,6 +944,10 @@ class Agent:
         losses = c51_loss_per_sample.detach().cpu().numpy()
         self.replay_buffer.update_priorities(indices, losses)
 
+        # Diagnostic: confirm training is happening
+        if self.grad_step % 1000 == 0:
+            print(f"[TRAIN] grad_step={self.grad_step} loss={total_loss.item():.4f} spr={spr_loss.item():.4f} avg_q={avg_q:.2f}")
+
         return {
             "loss": total_loss.item(),
             "spr_loss": spr_loss.item() if isinstance(spr_loss, torch.Tensor) else spr_loss,
@@ -946,8 +973,8 @@ def agent_bbf_frame_runner(
 ) -> FrameRunnerResult:
     
     config = agent.config
-    frames_per_step = FRAME_SKIP  # Use our constant, not handle's
-    
+    frames_per_step = handle.frames_per_step
+
     # Signal new game
     agent.start_new_game()
 
@@ -957,15 +984,14 @@ def agent_bbf_frame_runner(
     game_name = getattr(handle.spec, "name", context.name)
     env_id = handle.spec.env_id if hasattr(handle.spec, 'env_id') else game_name
     max_step_budget = context.frame_budget // frames_per_step
-    
+
     log(f"Starting BBF on '{game_name}' (env_id={env_id}) for {max_step_budget} steps.")
 
-    # CRITICAL: Create our own environment with correct wrappers!
-    # The benchmark_runner's handle.gym might not have frameskip=1, repeat_action_probability=0.0
-    # Use full_action_space=True for continual mode (18 actions) to match agent's action space
+    # Use the environment created by BenchmarkRunner (already has correct wrappers)
+    if handle.gym is None:
+        raise ValueError(f"No gym environment in handle for game '{game_name}'. Ensure backend='gym' in GameSpec.")
+    env = handle.gym
     reset_seed = handle.spec.seed if handle.spec.seed is not None else config.seed
-    env = make_env(env_id, reset_seed, 0, False, game_name, full_action_space=config.continual)()  # Call thunk to get env
-    
     obs, info = env.reset(seed=reset_seed)
     
     episode_scores: List[float] = []
@@ -990,18 +1016,24 @@ def agent_bbf_frame_runner(
     for _ in range(max_step_budget):
         action = agent.act(obs)
         next_obs, reward, terminated, truncated, info = env.step(action)
-        done = terminated or truncated
-        
-        running_episode_score += reward
-        if reward != 0: 
-            frames_since_reward = 0
-        else: 
-            frames_since_reward += frames_per_step
-        
-        timed_out = (context.max_frames_without_reward > 0 and frames_since_reward >= context.max_frames_without_reward)
-        done_for_agent = done or timed_out
 
-        train_log = agent.step(next_obs, reward, done_for_agent, info)
+        running_episode_score += reward
+        if reward != 0:
+            frames_since_reward = 0
+        else:
+            frames_since_reward += frames_per_step
+
+        # Check for reward timeout (treat as truncation, not termination)
+        reward_timed_out = (context.max_frames_without_reward > 0 and frames_since_reward >= context.max_frames_without_reward)
+        if reward_timed_out:
+            truncated = True
+
+        # Check if this step will exhaust the frame budget (treat as truncation)
+        budget_exhausted = (frames_consumed + frames_per_step) >= context.frame_budget
+        if budget_exhausted and not terminated:
+            truncated = True
+
+        train_log = agent.step(next_obs, reward, terminated, truncated, info)
         
         frames_consumed += frames_per_step
         agent.game_frame_counters[game_name] = agent.game_frame_counters.get(game_name, 0) + frames_per_step
@@ -1039,7 +1071,7 @@ def agent_bbf_frame_runner(
                 writer.add_scalar("charts/episodic_return", ep_return, agent.global_step)
                 writer.add_scalar("charts/episodic_length", ep_length, agent.global_step)
                 writer.add_scalar(f"charts/episodic_return/{game_name}", ep_return, agent.global_step)
-            
+
             # Save best model
             if ep_return > best_return:
                 best_return = ep_return
@@ -1049,7 +1081,9 @@ def agent_bbf_frame_runner(
                     writer.add_scalar("charts/best_return", best_return, agent.global_step)
                     writer.add_scalar(f"charts/best_return/{game_name}", best_return, agent.global_step)
 
-        if done_for_agent:
+        # Reset environment if episode ended (either terminated or truncated)
+        episode_ended = terminated or truncated
+        if episode_ended:
             obs, info = env.reset()
             running_episode_score = 0.0
             frames_since_reward = 0
@@ -1063,10 +1097,11 @@ def agent_bbf_frame_runner(
         )
 
         if frames_consumed >= context.frame_budget:
+            if not terminated:
+                log(f"Game '{game_name}' truncated at frame budget ({frames_consumed} frames, {len(episode_scores)} episodes)")
             break
 
-    # Clean up environment we created
-    env.close()
+    # Note: env cleanup is handled by BenchmarkRunner in its finally block
 
     return FrameRunnerResult(last_model_save, episode_scores, episode_end, episode_graph, parms_graph)
 
@@ -1332,9 +1367,10 @@ def main():
                     writer.add_scalar("charts/best_return", best_return, global_step)
             
             # --- BUFFER ADD (vectorized) ---
+            # Only use `terminated` for buffer's done flag (for correct bootstrapping)
+            # Truncated episodes should bootstrap, terminated episodes should not
             for idx in range(num_envs):
-                done_flag = terminations[idx] or truncations[idx]
-                agent.replay_buffer.add(obs[idx], actions[idx], rewards[idx], done_flag)
+                agent.replay_buffer.add(obs[idx], actions[idx], rewards[idx], terminations[idx])
             
             agent.global_step += 1
             obs = next_obs  # SyncVectorEnv auto-resets

@@ -374,15 +374,19 @@ class BenchmarkRunner:
         return action_set
 
     def _make_gym_env(self, env_id: str, seed: int, spec: GameSpec) -> gym.Env:
-        env = gym.make(env_id)
-        
-        # --- FIX START: Apply Canonical Action Wrapper ---
-        # Forces the environment to accept 18 actions if the agent is configured that way
-        if self.use_canonical_full_actions or spec.params.get('use_canonical_full_actions'):
-            env = CanonicalActionWrapper(env)
-        # --- FIX END ---
+        # Configure ALE at creation time:
+        # - frameskip=1: We handle frame skipping via MaxAndSkipEnv wrapper
+        # - repeat_action_probability=0.0: We handle sticky actions via StickyActionEnv if needed
+        # - full_action_space: Set based on use_canonical_full_actions
+        use_full_actions = self.use_canonical_full_actions or spec.params.get('use_canonical_full_actions', False)
+        env = gym.make(
+            env_id,
+            frameskip=1,
+            repeat_action_probability=0.0,
+            full_action_space=use_full_actions,
+        )
 
-        # Add sticky actions wrapper if requested
+        # Add sticky actions wrapper if requested (applied BEFORE other wrappers)
         if spec.sticky_prob > 0.0:
             env = StickyActionEnv(env, sticky_prob=spec.sticky_prob)
 
