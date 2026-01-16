@@ -811,14 +811,16 @@ class Agent:
             return
 
         # Check if profiling window is complete BEFORE stepping
-        # (stepping after schedule completes causes RuntimeError)
+        # With repeat=1, the profiler auto-stops after the schedule completes
+        # We just need to stop calling step() and mark ourselves as inactive
         wait_steps = max(1, self.config.learning_starts // 10)
         total_profiler_steps = wait_steps + 5 + self.config.torch_profile_steps
         if self.grad_step >= total_profiler_steps:
-            self.profiler.stop()
+            # Don't call stop() - the schedule with repeat=1 handles cleanup
+            # Just mark as inactive so we stop stepping
             self.profiler_active = False
             self.profiler = None
-            print(f"*** Torch Profiler STOPPED after {self.grad_step} grad steps ***")
+            print(f"*** Torch Profiler completed after {self.grad_step} grad steps ***")
             print(f"*** View with: tensorboard --logdir=<run_dir>/profiler ***")
             return
 
@@ -1509,12 +1511,11 @@ def main():
         
         envs.close()
 
-        # Cleanup profiler if still active
+        # Mark profiler as inactive if still running (it will auto-cleanup)
         if agent.profiler_active and agent.profiler is not None:
-            agent.profiler.stop()
             agent.profiler_active = False
             agent.profiler = None
-            print(f"*** Torch Profiler STOPPED at end of training ***")
+            print(f"*** Torch Profiler completed at end of training ***")
             print(f"*** View results: tensorboard --logdir={run_dir}/profiler ***")
 
         # Final summary (CleanRL style)
