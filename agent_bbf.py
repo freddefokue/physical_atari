@@ -810,9 +810,8 @@ class Agent:
         if not self.profiler_active or self.profiler is None:
             return
 
-        self.profiler.step()
-
-        # Check if profiling window is complete
+        # Check if profiling window is complete BEFORE stepping
+        # (stepping after schedule completes causes RuntimeError)
         wait_steps = max(1, self.config.learning_starts // 10)
         total_profiler_steps = wait_steps + 5 + self.config.torch_profile_steps
         if self.grad_step >= total_profiler_steps:
@@ -821,6 +820,9 @@ class Agent:
             self.profiler = None
             print(f"*** Torch Profiler STOPPED after {self.grad_step} grad steps ***")
             print(f"*** View with: tensorboard --logdir=<run_dir>/profiler ***")
+            return
+
+        self.profiler.step()
 
     def _train_batch(self, curr_gamma, curr_n):
         """Training logic with AMP support (matches bbf_atari.py exactly)."""
