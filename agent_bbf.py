@@ -1019,7 +1019,7 @@ def agent_bbf_frame_runner(
             on_trace_ready=tensorboard_trace_handler(profiler_dir),
             record_shapes=True,
             profile_memory=True,
-            with_stack=True,
+            with_stack=False,  # Disabled due to PyTorch bug with Python stack tracing
         )
         agent.profiler.start()
         agent.profiler_active = True
@@ -1385,7 +1385,7 @@ def main():
                 on_trace_ready=tensorboard_trace_handler(profiler_dir),
                 record_shapes=True,
                 profile_memory=True,
-                with_stack=True,
+                with_stack=False,  # Disabled due to PyTorch bug with Python stack tracing
             )
             agent.profiler.start()
             agent.profiler_active = True
