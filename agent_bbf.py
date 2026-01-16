@@ -37,6 +37,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.amp import autocast, GradScaler
+from torch.profiler import profile, schedule, tensorboard_trace_handler, ProfilerActivity
 from torch.utils.tensorboard import SummaryWriter
 
 # Import Benchmark interfaces
@@ -656,6 +657,10 @@ class Agent:
 
         self.game_frame_counters: Dict[str, int] = {}
 
+        # Profiler state (for continual mode, managed externally)
+        self.profiler: Optional[torch.profiler.profile] = None
+        self.profiler_active: bool = False
+
     def _get_epsilon(self):
         duration = self.config.exploration_fraction * self.config.total_steps
         if self.global_step >= duration:
@@ -779,24 +784,43 @@ class Agent:
                 for _ in range(self.config.reset_warmup_steps):
                     self.grad_step += 1
                     self._train_batch(self.config.initial_gamma, self.config.initial_n_step)
-            
+                    self._step_profiler()
+
             # Replay ratio loop
             for _ in range(self.config.replay_ratio):
                 self.grad_step += 1
                 self.steps_since_reset += 1
-                
+
                 curr_gamma = get_exponential_schedule(
-                    self.config.initial_gamma, self.config.final_gamma, 
+                    self.config.initial_gamma, self.config.final_gamma,
                     self.steps_since_reset, self.config.anneal_duration
                 )
                 curr_n = int(round(get_exponential_schedule(
-                    self.config.initial_n_step, self.config.final_n_step, 
+                    self.config.initial_n_step, self.config.final_n_step,
                     self.steps_since_reset, self.config.anneal_duration
                 )))
-                
+
                 train_stats = self._train_batch(curr_gamma, curr_n)
-                
+                self._step_profiler()
+
         return train_stats
+
+    def _step_profiler(self):
+        """Step the profiler and stop it after scheduled steps complete."""
+        if not self.profiler_active or self.profiler is None:
+            return
+
+        self.profiler.step()
+
+        # Check if profiling window is complete
+        wait_steps = max(1, self.config.learning_starts // 10)
+        total_profiler_steps = wait_steps + 5 + self.config.torch_profile_steps
+        if self.grad_step >= total_profiler_steps:
+            self.profiler.stop()
+            self.profiler_active = False
+            self.profiler = None
+            print(f"*** Torch Profiler STOPPED after {self.grad_step} grad steps ***")
+            print(f"*** View with: tensorboard --logdir=<run_dir>/profiler ***")
 
     def _train_batch(self, curr_gamma, curr_n):
         """Training logic with AMP support (matches bbf_atari.py exactly)."""
@@ -974,6 +998,28 @@ def agent_bbf_frame_runner(
     
     config = agent.config
     frames_per_step = handle.frames_per_step
+
+    # Initialize profiler on first game if enabled (continual mode)
+    if config.torch_profile and agent.profiler is None:
+        profiler_dir = os.path.join(os.path.dirname(config.log_file), "profiler")
+        os.makedirs(profiler_dir, exist_ok=True)
+        agent.profiler = profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            schedule=schedule(
+                wait=max(1, config.learning_starts // 10),
+                warmup=5,
+                active=config.torch_profile_steps,
+                repeat=1
+            ),
+            on_trace_ready=tensorboard_trace_handler(profiler_dir),
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=True,
+        )
+        agent.profiler.start()
+        agent.profiler_active = True
+        print(f"*** Torch Profiler ENABLED - will profile {config.torch_profile_steps} steps ***")
+        print(f"*** Profiler output: {profiler_dir} ***")
 
     # Signal new game
     agent.start_new_game()
@@ -1313,10 +1359,33 @@ def main():
         all_returns = []
         
         print("Starting Training Loop...")
-        
+
         # Best model checkpointing
         best_return = float('-inf')
         best_model_path = os.path.join(run_dir, "best_model.pt")
+
+        # Setup torch.profiler if enabled (uses agent's profiler attributes)
+        if config.torch_profile:
+            profiler_dir = os.path.join(run_dir, "profiler")
+            os.makedirs(profiler_dir, exist_ok=True)
+            # Schedule: wait for buffer to fill, warmup GPU, then profile
+            agent.profiler = profile(
+                activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                schedule=schedule(
+                    wait=max(1, config.learning_starts // 10),  # Wait for some buffer filling
+                    warmup=5,
+                    active=config.torch_profile_steps,
+                    repeat=1
+                ),
+                on_trace_ready=tensorboard_trace_handler(profiler_dir),
+                record_shapes=True,
+                profile_memory=True,
+                with_stack=True,
+            )
+            agent.profiler.start()
+            agent.profiler_active = True
+            print(f"*** Torch Profiler ENABLED - will profile {config.torch_profile_steps} steps ***")
+            print(f"*** Profiler output: {profiler_dir} ***")
         
         for global_step in range(config.total_steps):
             # Warmup logging
@@ -1391,7 +1460,8 @@ def main():
                     for _ in range(config.reset_warmup_steps):
                         agent.grad_step += 1
                         agent._train_batch(config.initial_gamma, config.initial_n_step)
-                
+                        agent._step_profiler()
+
                 # Replay ratio loop
                 for _ in range(config.replay_ratio):
                     agent.grad_step += 1
@@ -1407,7 +1477,8 @@ def main():
                     )))
                     
                     train_stats = agent._train_batch(curr_gamma, curr_n)
-            
+                    agent._step_profiler()  # Profiler stepping handled by agent
+
             # Training stats logging (CleanRL style)
             if train_stats:
                 # Track when training actually starts (after warmup)
@@ -1435,7 +1506,15 @@ def main():
                     writer.add_scalar("charts/SPS", sps, agent.grad_step)
         
         envs.close()
-        
+
+        # Cleanup profiler if still active
+        if agent.profiler_active and agent.profiler is not None:
+            agent.profiler.stop()
+            agent.profiler_active = False
+            agent.profiler = None
+            print(f"*** Torch Profiler STOPPED at end of training ***")
+            print(f"*** View results: tensorboard --logdir={run_dir}/profiler ***")
+
         # Final summary (CleanRL style)
         total_time = time.time() - start_time
         print(f"\n{'='*60}")
