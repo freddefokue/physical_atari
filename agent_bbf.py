@@ -329,20 +329,37 @@ class SumTree:
 
 
 class SequenceReplayBuffer:
-    """Uniform sampling replay buffer."""
-    def __init__(self, capacity, obs_shape, device, max_seq_len):
+    """Uniform sampling replay buffer with pinned memory and pre-allocated GPU buffers."""
+    def __init__(self, capacity, obs_shape, device, max_seq_len, batch_size=32):
         self.capacity = capacity
         self.device = device
         self.max_seq_len = max_seq_len
-        self.obs = np.zeros((capacity, *obs_shape), dtype=np.uint8)
-        self.actions = np.zeros((capacity), dtype=np.int64)
-        self.rewards = np.zeros((capacity), dtype=np.float32)
-        self.dones = np.zeros((capacity), dtype=np.bool_)
+        self.batch_size = batch_size
+        self.obs_shape = obs_shape
+
+        # Pinned CPU tensors for storage (enables fast DMA transfers)
+        self.obs = torch.empty((capacity, *obs_shape), dtype=torch.uint8, pin_memory=True)
+        self.actions = torch.empty((capacity,), dtype=torch.int64, pin_memory=True)
+        self.rewards = torch.empty((capacity,), dtype=torch.float32, pin_memory=True)
+        self.dones = torch.empty((capacity,), dtype=torch.bool, pin_memory=True)
+
+        # Pre-allocated GPU buffers (avoids allocation churn)
+        self._obs_gpu = torch.empty((batch_size, max_seq_len, *obs_shape),
+                                     dtype=torch.uint8, device=device)
+        self._actions_gpu = torch.empty((batch_size, max_seq_len),
+                                         dtype=torch.int64, device=device)
+        self._rewards_gpu = torch.empty((batch_size, max_seq_len),
+                                         dtype=torch.float32, device=device)
+        self._dones_gpu = torch.empty((batch_size, max_seq_len),
+                                       dtype=torch.bool, device=device)
+        self._weights_gpu = torch.ones(batch_size, dtype=torch.float32, device=device)
+
         self.pos = 0
         self.size = 0
 
     def add(self, obs, action, reward, done, priority=None):
-        self.obs[self.pos] = obs
+        # Direct assignment to pinned tensors
+        self.obs[self.pos].copy_(torch.as_tensor(obs))
         self.actions[self.pos] = action
         self.rewards[self.pos] = reward
         self.dones[self.pos] = done
@@ -361,14 +378,43 @@ class SequenceReplayBuffer:
 
         seq_indices = (physical_starts[:, None] + np.arange(seq_len)) % self.capacity
 
+        # Gather from pinned CPU tensors (convert indices to torch for efficient indexing)
+        seq_indices_t = torch.from_numpy(seq_indices)
+        obs_batch = self.obs[seq_indices_t]
+        actions_batch = self.actions[seq_indices_t]
+        rewards_batch = self.rewards[seq_indices_t]
+        dones_batch = self.dones[seq_indices_t]
+
+        # Resize GPU buffers if needed (only on first call or batch_size/seq_len change)
+        if self._obs_gpu.shape[0] != batch_size or self._obs_gpu.shape[1] != seq_len:
+            self._resize_gpu_buffers(batch_size, seq_len)
+
+        # Copy to pre-allocated GPU buffers with non_blocking
+        self._obs_gpu[:batch_size, :seq_len].copy_(obs_batch, non_blocking=True)
+        self._actions_gpu[:batch_size, :seq_len].copy_(actions_batch, non_blocking=True)
+        self._rewards_gpu[:batch_size, :seq_len].copy_(rewards_batch, non_blocking=True)
+        self._dones_gpu[:batch_size, :seq_len].copy_(dones_batch, non_blocking=True)
+
         return (
-            torch.as_tensor(self.obs[seq_indices], device=self.device),
-            torch.as_tensor(self.actions[seq_indices], device=self.device),
-            torch.as_tensor(self.rewards[seq_indices], device=self.device),
-            torch.as_tensor(self.dones[seq_indices], device=self.device),
+            self._obs_gpu[:batch_size, :seq_len],
+            self._actions_gpu[:batch_size, :seq_len],
+            self._rewards_gpu[:batch_size, :seq_len],
+            self._dones_gpu[:batch_size, :seq_len],
             physical_starts,
-            torch.ones(batch_size, device=self.device),
+            self._weights_gpu[:batch_size],
         )
+
+    def _resize_gpu_buffers(self, batch_size, seq_len):
+        """Resize GPU buffers if batch_size or seq_len changes."""
+        self._obs_gpu = torch.empty((batch_size, seq_len, *self.obs_shape),
+                                     dtype=torch.uint8, device=self.device)
+        self._actions_gpu = torch.empty((batch_size, seq_len),
+                                         dtype=torch.int64, device=self.device)
+        self._rewards_gpu = torch.empty((batch_size, seq_len),
+                                         dtype=torch.float32, device=self.device)
+        self._dones_gpu = torch.empty((batch_size, seq_len),
+                                       dtype=torch.bool, device=self.device)
+        self._weights_gpu = torch.ones(batch_size, dtype=torch.float32, device=self.device)
 
     def update_priorities(self, indices, priorities):
         pass  # No-op for uniform buffer
@@ -380,8 +426,8 @@ class SequenceReplayBuffer:
 
 
 class PrioritizedSequenceReplayBuffer:
-    """Prioritized Experience Replay buffer with sequence support (Official BBF style)."""
-    def __init__(self, capacity, obs_shape, device, max_seq_len, alpha=0.5, beta=0.5, eps=1e-6):
+    """Prioritized Experience Replay buffer with pinned memory and pre-allocated GPU buffers."""
+    def __init__(self, capacity, obs_shape, device, max_seq_len, alpha=0.5, beta=0.5, eps=1e-6, batch_size=32):
         self.capacity = capacity
         self.device = device
         self.max_seq_len = max_seq_len
@@ -389,36 +435,51 @@ class PrioritizedSequenceReplayBuffer:
         self.beta = beta
         self.eps = eps
         self.obs_shape = obs_shape
+        self.batch_size = batch_size
 
-        self.obs = np.zeros((capacity, *obs_shape), dtype=np.uint8)
-        self.actions = np.zeros((capacity), dtype=np.int64)
-        self.rewards = np.zeros((capacity), dtype=np.float32)
-        self.dones = np.zeros((capacity), dtype=np.bool_)
+        # Pinned CPU tensors for storage (enables fast DMA transfers)
+        self.obs = torch.empty((capacity, *obs_shape), dtype=torch.uint8, pin_memory=True)
+        self.actions = torch.empty((capacity,), dtype=torch.int64, pin_memory=True)
+        self.rewards = torch.empty((capacity,), dtype=torch.float32, pin_memory=True)
+        self.dones = torch.empty((capacity,), dtype=torch.bool, pin_memory=True)
+
+        # Pre-allocated GPU buffers (avoids allocation churn)
+        self._obs_gpu = torch.empty((batch_size, max_seq_len, *obs_shape),
+                                     dtype=torch.uint8, device=device)
+        self._actions_gpu = torch.empty((batch_size, max_seq_len),
+                                         dtype=torch.int64, device=device)
+        self._rewards_gpu = torch.empty((batch_size, max_seq_len),
+                                         dtype=torch.float32, device=device)
+        self._dones_gpu = torch.empty((batch_size, max_seq_len),
+                                       dtype=torch.bool, device=device)
+        self._weights_gpu = torch.empty(batch_size, dtype=torch.float32, device=device)
+
         self.tree = SumTree(capacity)
         self.pos = 0
         self.size = 0
 
     def add(self, obs, action, reward, done, priority=None):
-        self.obs[self.pos] = obs
+        # Direct assignment to pinned tensors
+        self.obs[self.pos].copy_(torch.as_tensor(obs))
         self.actions[self.pos] = action
         self.rewards[self.pos] = reward
         self.dones[self.pos] = done
-        
+
         # New transitions get max priority (official BBF style: no alpha exponent)
         if priority is None:
             priority = self.tree.max_priority
         self.tree.update(self.pos, priority)
-        
+
         self.pos = (self.pos + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
 
     def sample(self, batch_size, seq_len):
         if self.size < seq_len:
             raise ValueError(f"Not enough data: size={self.size}, seq_len={seq_len}")
-        
+
         indices = np.zeros(batch_size, dtype=np.int64)
         priorities = np.zeros(batch_size, dtype=np.float64)
-        
+
         # Stratified sampling for better coverage
         segment = self.tree.total / batch_size
         for i in range(batch_size):
@@ -426,10 +487,10 @@ class PrioritizedSequenceReplayBuffer:
             high = segment * (i + 1)
             s = np.random.uniform(low, high)
             idx = self.tree.get(s)
-            
+
             cursor = self.pos if self.size == self.capacity else 0
             max_valid = self.size - seq_len
-            
+
             # Retry if invalid index
             attempts = 0
             while attempts < 10:
@@ -443,32 +504,63 @@ class PrioritizedSequenceReplayBuffer:
                 s = np.random.uniform(low, high)
                 idx = self.tree.get(s)
                 attempts += 1
-            
+
             indices[i] = idx
             priorities[i] = self.tree[idx]
-        
+
         seq_indices = (indices[:, None] + np.arange(seq_len)) % self.capacity
-        
+
+        # Gather from pinned CPU tensors (uses torch indexing, not numpy)
+        seq_indices_t = torch.from_numpy(seq_indices)
+        obs_batch = self.obs[seq_indices_t]
+        actions_batch = self.actions[seq_indices_t]
+        rewards_batch = self.rewards[seq_indices_t]
+        dones_batch = self.dones[seq_indices_t]
+
         # Compute importance sampling weights (Official BBF: 1/sqrt(prob), no beta)
         probs = priorities / (self.tree.total + 1e-10)
         weights = 1.0 / np.sqrt(probs + 1e-10)
         weights = weights / (weights.max() + 1e-10)
-        
+        weights_t = torch.from_numpy(weights.astype(np.float32))
+
+        # Resize GPU buffers if needed (only on first call or batch_size/seq_len change)
+        if self._obs_gpu.shape[0] != batch_size or self._obs_gpu.shape[1] != seq_len:
+            self._resize_gpu_buffers(batch_size, seq_len)
+
+        # Copy to pre-allocated GPU buffers with non_blocking
+        self._obs_gpu[:batch_size, :seq_len].copy_(obs_batch, non_blocking=True)
+        self._actions_gpu[:batch_size, :seq_len].copy_(actions_batch, non_blocking=True)
+        self._rewards_gpu[:batch_size, :seq_len].copy_(rewards_batch, non_blocking=True)
+        self._dones_gpu[:batch_size, :seq_len].copy_(dones_batch, non_blocking=True)
+        self._weights_gpu[:batch_size].copy_(weights_t, non_blocking=True)
+
         return (
-            torch.as_tensor(self.obs[seq_indices], device=self.device),
-            torch.as_tensor(self.actions[seq_indices], device=self.device),
-            torch.as_tensor(self.rewards[seq_indices], device=self.device),
-            torch.as_tensor(self.dones[seq_indices], device=self.device),
+            self._obs_gpu[:batch_size, :seq_len],
+            self._actions_gpu[:batch_size, :seq_len],
+            self._rewards_gpu[:batch_size, :seq_len],
+            self._dones_gpu[:batch_size, :seq_len],
             indices,
-            torch.as_tensor(weights, device=self.device, dtype=torch.float32),
+            self._weights_gpu[:batch_size],
         )
-    
+
+    def _resize_gpu_buffers(self, batch_size, seq_len):
+        """Resize GPU buffers if batch_size or seq_len changes."""
+        self._obs_gpu = torch.empty((batch_size, seq_len, *self.obs_shape),
+                                     dtype=torch.uint8, device=self.device)
+        self._actions_gpu = torch.empty((batch_size, seq_len),
+                                         dtype=torch.int64, device=self.device)
+        self._rewards_gpu = torch.empty((batch_size, seq_len),
+                                         dtype=torch.float32, device=self.device)
+        self._dones_gpu = torch.empty((batch_size, seq_len),
+                                       dtype=torch.bool, device=self.device)
+        self._weights_gpu = torch.empty(batch_size, dtype=torch.float32, device=self.device)
+
     def update_priorities(self, indices, losses):
         """Update priorities based on losses (Official BBF: sqrt(loss), no alpha)."""
         priorities = np.sqrt(losses + self.eps)
         for idx, priority in zip(indices, priorities):
             self.tree.update(idx, priority)
-    
+
     def reset_counters(self):
         """Reset buffer for new game in continual learning (no memory reallocation)."""
         self.pos = 0
@@ -636,7 +728,7 @@ class Agent:
         # Replay Buffer - choose based on use_per
         self.seq_req = config.jumps + 1 + config.initial_n_step
         if config.use_per:
-            print("Using Prioritized Experience Replay (PER)")
+            print("Using Prioritized Experience Replay (PER) with pinned memory")
             self.replay_buffer = PrioritizedSequenceReplayBuffer(
                 config.buffer_size,
                 observation_space.shape,
@@ -644,15 +736,17 @@ class Agent:
                 self.seq_req,
                 alpha=config.per_alpha,
                 beta=config.per_beta,
-                eps=config.per_eps
+                eps=config.per_eps,
+                batch_size=config.batch_size
             )
         else:
-            print("Using Uniform Experience Replay")
+            print("Using Uniform Experience Replay with pinned memory")
             self.replay_buffer = SequenceReplayBuffer(
                 config.buffer_size,
                 observation_space.shape,
                 self.device,
-                self.seq_req
+                self.seq_req,
+                batch_size=config.batch_size
             )
 
         self.game_frame_counters: Dict[str, int] = {}
