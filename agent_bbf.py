@@ -1062,29 +1062,38 @@ class Agent:
             total_loss = weighted_c51_loss + args.spr_weight * spr_loss
 
         # --- BACKWARD (with gradient scaling for AMP) ---
-        self.optimizer.zero_grad()
-        if self.scaler is not None and use_amp:
-            self.scaler.scale(total_loss).backward()
-        else:
-            total_loss.backward()
+        with rf("OPT/zero_grad"):
+            self.optimizer.zero_grad()
+        with rf("BWD/backward"):
+            if self.scaler is not None and use_amp:
+                self.scaler.scale(total_loss).backward()
+            else:
+                total_loss.backward()
 
         # --- OPTIMIZER STEP (with gradient scaling for AMP) ---
-        if self.scaler is not None and use_amp:
-            self.scaler.unscale_(self.optimizer)
-            nn.utils.clip_grad_norm_(self.q_network.parameters(), 10.0)
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-        else:
-            nn.utils.clip_grad_norm_(self.q_network.parameters(), 10.0)
-            self.optimizer.step()
+        with rf("OPT/step"):
+            if self.scaler is not None and use_amp:
+                with rf("OPT/unscale"):
+                    self.scaler.unscale_(self.optimizer)
+                with rf("OPT/clip_grad"):
+                    nn.utils.clip_grad_norm_(self.q_network.parameters(), 10.0)
+                self.scaler.step(self.optimizer)
+                with rf("OPT/update_scale"):
+                    self.scaler.update()
+            else:
+                with rf("OPT/clip_grad"):
+                    nn.utils.clip_grad_norm_(self.q_network.parameters(), 10.0)
+                self.optimizer.step()
 
         # Soft update target
-        for param, target_param in zip(self.q_network.parameters(), self.target_network.parameters()):
-            target_param.data.copy_(args.tau * param.data + (1.0 - args.tau) * target_param.data)
+        with rf("OPT/target_update"):
+            for param, target_param in zip(self.q_network.parameters(), self.target_network.parameters()):
+                target_param.data.copy_(args.tau * param.data + (1.0 - args.tau) * target_param.data)
 
         # Update priorities based on C51 loss (Official BBF uses sqrt(loss))
-        losses = c51_loss_per_sample.detach().cpu().numpy()
-        self.replay_buffer.update_priorities(indices, losses)
+        with rf("OPT/priority_update"):
+            losses = c51_loss_per_sample.detach().cpu().numpy()
+            self.replay_buffer.update_priorities(indices, losses)
 
         # Diagnostic: confirm training is happening
         if self.grad_step % 1000 == 0:
