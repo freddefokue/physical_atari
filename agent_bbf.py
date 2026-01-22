@@ -360,7 +360,9 @@ class SequenceReplayBuffer:
 
     def add_gpu(self, obs_t, action, reward, done, priority=None):
         # Expect obs_t on correct device with uint8 dtype to avoid extra copies.
-        if obs_t.device != self.device:
+        if obs_t.device.type != self.device.type:
+            raise ValueError(f"add_gpu expects obs on {self.device}, got {obs_t.device}")
+        if self.device.index is not None and obs_t.device.index != self.device.index:
             raise ValueError(f"add_gpu expects obs on {self.device}, got {obs_t.device}")
         if obs_t.dtype != torch.uint8:
             obs_t = obs_t.to(dtype=torch.uint8)
@@ -457,7 +459,9 @@ class PrioritizedSequenceReplayBuffer:
 
     def add_gpu(self, obs_t, action, reward, done, priority=None):
         # Expect obs_t on correct device with uint8 dtype to avoid extra copies.
-        if obs_t.device != self.device:
+        if obs_t.device.type != self.device.type:
+            raise ValueError(f"add_gpu expects obs on {self.device}, got {obs_t.device}")
+        if self.device.index is not None and obs_t.device.index != self.device.index:
             raise ValueError(f"add_gpu expects obs on {self.device}, got {obs_t.device}")
         if obs_t.dtype != torch.uint8:
             obs_t = obs_t.to(dtype=torch.uint8)
