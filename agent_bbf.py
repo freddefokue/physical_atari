@@ -130,7 +130,8 @@ class RandomShift(nn.Module):
     def forward(self, x):
         # Input: (B, C, H, W) - uint8 or float
         b, c, h, w = x.shape 
-        x = x.float() / 255.0  # Normalize to [0, 1] for grid_sample
+        if x.dtype == torch.uint8:
+            x = x.float().div_(255.0)  # Normalize to [0, 1] for grid_sample
         
         # Random shifts in pixels, converted to normalized coordinates [-1, 1]
         shift_y = (torch.randint(0, 2 * self.pad + 1, (b,), device=x.device) - self.pad).float()
@@ -153,7 +154,7 @@ class RandomShift(nn.Module):
         
         # Intensity augmentation (from official BBF/DrQ)
         if self.training:
-            noise = torch.randn(b, 1, 1, 1, device=x.device).clamp(-2.0, 2.0)
+            noise = torch.randn(b, 1, 1, 1, device=x.device, dtype=x.dtype).clamp(-2.0, 2.0)
             out = out * (1.0 + self.intensity_scale * noise)
         
         # Return float in [0, 1] range
@@ -936,13 +937,21 @@ class Agent:
         with rf("RB/permute_if_needed"):
             if self.channels_last:
                 data_obs = data_obs.permute(0, 1, 4, 2, 3)
+        
+        # Normalize observations once per batch to avoid repeated casts in downstream blocks.
+        obs_dtype = torch.get_autocast_gpu_dtype() if use_amp else torch.float32
+        with rf("RB/normalize_obs"):
+            if data_obs.dtype == torch.uint8:
+                data_obs_f = data_obs.to(dtype=obs_dtype).div_(255.0)
+            else:
+                data_obs_f = data_obs if data_obs.dtype == obs_dtype else data_obs.to(dtype=obs_dtype)
 
         # --- FORWARD PASS WITH MIXED PRECISION ---
         # AMP Strategy: FP16 for convolutions (fast), FP32 for C51/SPR (accurate)
         with autocast(device_type='cuda', enabled=use_amp):
             # --- AUGMENTATION (obs_0) ---
             with rf("AUG/random_shift"):
-                obs_0 = self.aug(data_obs[:, 0])
+                obs_0 = self.aug(data_obs_f[:, 0])
 
             # --- ENCODE (online) - Keep FP16 for speed ---
             with rf("NET/encode_online"):
@@ -955,7 +964,7 @@ class Agent:
         # --- SPR TARGETS (target network) - FORCE FP32 for normalization ---
         with rf("SPR/targets"), torch.no_grad(), autocast(device_type='cuda', enabled=False):
             # Stack obs for jumps 1..jumps: (batch, jumps, C, H, W) -> (batch*jumps, C, H, W)
-            obs_jumps = data_obs[:, 1:args.jumps+1]
+            obs_jumps = data_obs_f[:, 1:args.jumps+1]
             B, J = obs_jumps.shape[0], obs_jumps.shape[1]
             obs_jumps_flat = obs_jumps.reshape(-1, *obs_jumps.shape[2:])
 
@@ -1006,7 +1015,7 @@ class Agent:
             reward_mask = torch.cumprod(mask_seq, dim=1)[:, :curr_n]
             n_step_rew = torch.sum(data_rew[:, :curr_n] * gammas * reward_mask, dim=1)
 
-            obs_n = data_obs[:, curr_n]
+            obs_n = data_obs_f[:, curr_n]
             bootstrap_mask = torch.prod(not_done[:, :curr_n], dim=1)
 
             # Forward passes in FP16 (fast), then convert to FP32 for distribution ops
