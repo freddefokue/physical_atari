@@ -202,6 +202,7 @@ class BBFNetwork(nn.Module):
         self.delta_z = (args.v_max - args.v_min) / (args.n_atoms - 1)
         self.n_actions = num_actions
         self.register_buffer("support", torch.linspace(args.v_min, args.v_max, args.n_atoms))
+        self.register_buffer("support_fp32", torch.linspace(args.v_min, args.v_max, args.n_atoms, dtype=torch.float32))
         
         w = args.impala_width
         self.encoder = nn.Sequential(
@@ -989,7 +990,8 @@ class Agent:
             spr_loss_per_jump = ((pred_latents - target_latents) ** 2).sum(dim=2)
 
             # Apply cumulative done mask
-            spr_done_mask = 1.0 - data_done[:, :args.jumps].float()
+            data_done_f = data_done.float()
+            spr_done_mask = 1.0 - data_done_f[:, :args.jumps]
             cumulative_mask = torch.cumprod(spr_done_mask, dim=1)
 
             # Match original: mean over batch for each jump, then sum over jumps
@@ -999,7 +1001,7 @@ class Agent:
         avg_q = 0.0
         with rf("C51/targets"), torch.no_grad(), autocast(device_type='cuda', enabled=False):
             gammas = torch.pow(curr_gamma, torch.arange(curr_n, device=self.device))
-            not_done = 1.0 - data_done.float()
+            not_done = 1.0 - data_done_f
             mask_seq = torch.cat([torch.ones((args.batch_size, 1), device=self.device), not_done[:, :-1]], dim=1)
             reward_mask = torch.cumprod(mask_seq, dim=1)[:, :curr_n]
             n_step_rew = torch.sum(data_rew[:, :curr_n] * gammas * reward_mask, dim=1)
@@ -1015,10 +1017,10 @@ class Agent:
             # All distribution operations in FP32
             next_dist = next_dist.float()
             online_n_dist = online_n_dist.float()
-            next_sup = self.target_network.support.float()
+            next_sup = self.target_network.support_fp32
 
             # Compute Q-values and best action in FP32
-            avg_q = (online_n_dist * self.q_network.support.float()).sum(2).mean().item()
+            avg_q = (online_n_dist * self.q_network.support_fp32).sum(2).mean()
             best_act = (online_n_dist * next_sup).sum(2).argmax(1)
             next_pmf = next_dist[torch.arange(args.batch_size), best_act]
 
@@ -1077,12 +1079,13 @@ class Agent:
 
         # Diagnostic: confirm training is happening
         if self.grad_step % 1000 == 0:
-            print(f"[TRAIN] grad_step={self.grad_step} loss={total_loss.item():.4f} spr={spr_loss.item():.4f} avg_q={avg_q:.2f}")
+            avg_q_item = avg_q.item() if isinstance(avg_q, torch.Tensor) else float(avg_q)
+            print(f"[TRAIN] grad_step={self.grad_step} loss={total_loss.item():.4f} spr={spr_loss.item():.4f} avg_q={avg_q_item:.2f}")
 
         return {
             "loss": total_loss.item(),
             "spr_loss": spr_loss.item() if isinstance(spr_loss, torch.Tensor) else spr_loss,
-            "avg_q": avg_q,
+            "avg_q": avg_q.item() if isinstance(avg_q, torch.Tensor) else avg_q,
             "gamma": curr_gamma,
             "n_step": curr_n
         }
