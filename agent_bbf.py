@@ -28,6 +28,7 @@ import random
 import time
 from dataclasses import dataclass
 import json
+from contextlib import nullcontext
 from typing import Dict, List, Optional, Sequence
 
 import gymnasium as gym
@@ -37,7 +38,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.amp import autocast, GradScaler
-from torch.profiler import profile, schedule, tensorboard_trace_handler, ProfilerActivity
+from torch.profiler import profile, schedule, tensorboard_trace_handler, ProfilerActivity, record_function
 from torch.utils.tensorboard import SummaryWriter
 
 # Import Benchmark interfaces
@@ -925,26 +926,32 @@ class Agent:
         use_amp = args.use_amp and self.device.type == 'cuda'
         fetch_len = args.jumps + 1 + curr_n
 
-        data_obs, data_act, data_rew, data_done, indices, weights = self.replay_buffer.sample(args.batch_size, fetch_len)
+        rf = record_function if self.profiler_active else (lambda _: nullcontext())
 
-        if self.channels_last:
-            data_obs = data_obs.permute(0, 1, 4, 2, 3)
+        with rf("RB/sample"):
+            data_obs, data_act, data_rew, data_done, indices, weights = self.replay_buffer.sample(args.batch_size, fetch_len)
+
+        with rf("RB/permute_if_needed"):
+            if self.channels_last:
+                data_obs = data_obs.permute(0, 1, 4, 2, 3)
 
         # --- FORWARD PASS WITH MIXED PRECISION ---
         # AMP Strategy: FP16 for convolutions (fast), FP32 for C51/SPR (accurate)
         with autocast(device_type='cuda', enabled=use_amp):
             # --- AUGMENTATION (obs_0) ---
-            obs_0 = self.aug(data_obs[:, 0])
+            with rf("AUG/random_shift"):
+                obs_0 = self.aug(data_obs[:, 0])
 
             # --- ENCODE (online) - Keep FP16 for speed ---
-            z0 = self.q_network.encode(obs_0)
+            with rf("NET/encode_online"):
+                z0 = self.q_network.encode(obs_0)
 
             # --- SPR ROLLOUT ---
             rollout_acts = data_act[:, :args.jumps]
             z_seq = self.q_network.rollout_latents(z0, rollout_acts)
 
         # --- SPR TARGETS (target network) - FORCE FP32 for normalization ---
-        with torch.no_grad(), autocast(device_type='cuda', enabled=False):
+        with rf("SPR/targets"), torch.no_grad(), autocast(device_type='cuda', enabled=False):
             # Stack obs for jumps 1..jumps: (batch, jumps, C, H, W) -> (batch*jumps, C, H, W)
             obs_jumps = data_obs[:, 1:args.jumps+1]
             B, J = obs_jumps.shape[0], obs_jumps.shape[1]
@@ -964,7 +971,7 @@ class Agent:
             target_latents = t_p_norm.view(B, J, -1)
 
         # --- SPR LOSS - FORCE FP32 for normalization ---
-        with autocast(device_type='cuda', enabled=False):
+        with rf("SPR/loss"), autocast(device_type='cuda', enabled=False):
             # Get predicted latents for all jumps: z_seq[:, 1:] has shape (batch, jumps, latent_dim)
             z_jumps = z_seq[:, 1:args.jumps+1].float()  # Force FP32
             z_jumps_flat = z_jumps.reshape(-1, z_jumps.shape[-1])
@@ -989,7 +996,7 @@ class Agent:
 
         # --- C51 TARGET COMPUTATION - FORCE FP32 for distributional RL ---
         avg_q = 0.0
-        with torch.no_grad(), autocast(device_type='cuda', enabled=False):
+        with rf("C51/targets"), torch.no_grad(), autocast(device_type='cuda', enabled=False):
             gammas = torch.pow(curr_gamma, torch.arange(curr_n, device=self.device))
             not_done = 1.0 - data_done.float()
             mask_seq = torch.cat([torch.ones((args.batch_size, 1), device=self.device), not_done[:, :-1]], dim=1)
@@ -1030,7 +1037,7 @@ class Agent:
             target_pmf.view(-1).index_add_(0, (u + offset).view(-1), (next_pmf * (b - l.float())).view(-1))
 
         # --- C51 LOSS - FORCE FP32 ---
-        with autocast(device_type='cuda', enabled=False):
+        with rf("C51/loss"), autocast(device_type='cuda', enabled=False):
             z0_fp32 = z0.float()
             curr_dist = self.q_network.get_dist(z0_fp32).float()
             log_p = torch.log(curr_dist[torch.arange(args.batch_size), data_act[:, 0]] + 1e-8)
