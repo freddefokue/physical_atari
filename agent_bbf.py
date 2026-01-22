@@ -358,6 +358,19 @@ class SequenceReplayBuffer:
         self.pos = (self.pos + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
 
+    def add_gpu(self, obs_t, action, reward, done, priority=None):
+        # Expect obs_t on correct device with uint8 dtype to avoid extra copies.
+        if obs_t.device != self.device:
+            raise ValueError(f"add_gpu expects obs on {self.device}, got {obs_t.device}")
+        if obs_t.dtype != torch.uint8:
+            obs_t = obs_t.to(dtype=torch.uint8)
+        self.obs[self.pos].copy_(obs_t)
+        self.actions[self.pos] = int(action)
+        self.rewards[self.pos] = float(reward)
+        self.dones[self.pos] = bool(done)
+        self.pos = (self.pos + 1) % self.capacity
+        self.size = min(self.size + 1, self.capacity)
+
     def sample(self, batch_size, seq_len):
         if self.size < seq_len:
             raise ValueError(f"Not enough data: size={self.size}, seq_len={seq_len}")
@@ -430,6 +443,25 @@ class PrioritizedSequenceReplayBuffer:
     def add(self, obs, action, reward, done, priority=None):
         # Small H2D transfer per step (~28KB, unavoidable but tiny compared to batch gather)
         self.obs[self.pos].copy_(torch.as_tensor(obs, device=self.device))
+        self.actions[self.pos] = int(action)
+        self.rewards[self.pos] = float(reward)
+        self.dones[self.pos] = bool(done)
+
+        # New transitions get max priority (official BBF style: no alpha exponent)
+        if priority is None:
+            priority = self.tree.max_priority
+        self.tree.update(self.pos, priority)
+
+        self.pos = (self.pos + 1) % self.capacity
+        self.size = min(self.size + 1, self.capacity)
+
+    def add_gpu(self, obs_t, action, reward, done, priority=None):
+        # Expect obs_t on correct device with uint8 dtype to avoid extra copies.
+        if obs_t.device != self.device:
+            raise ValueError(f"add_gpu expects obs on {self.device}, got {obs_t.device}")
+        if obs_t.dtype != torch.uint8:
+            obs_t = obs_t.to(dtype=torch.uint8)
+        self.obs[self.pos].copy_(obs_t)
         self.actions[self.pos] = int(action)
         self.rewards[self.pos] = float(reward)
         self.dones[self.pos] = bool(done)
@@ -632,6 +664,7 @@ class Agent:
         self.steps_since_reset = 0
         
         self.last_obs: Optional[np.ndarray] = None
+        self.last_obs_t: Optional[torch.Tensor] = None
         self.last_action: Optional[int] = None
         self.learning_ready_step = config.learning_starts
 
@@ -749,6 +782,7 @@ class Agent:
 
         # Reset annealing
         self.steps_since_reset = 0
+        self.last_obs_t = None
 
         # Shrink & Perturb
         self._hard_reset()
@@ -762,11 +796,13 @@ class Agent:
         epsilon = self._get_epsilon()
         if random.random() < epsilon:
             self.last_obs = np.array(observation, copy=False)
+            self.last_obs_t = None
             self.last_action = random.randint(0, self.num_actions - 1)
             return self.last_action
         
         obs_np = np.array(observation, copy=False)
-        obs_tensor = torch.as_tensor(obs_np, dtype=torch.float32, device=self.device).unsqueeze(0)
+        obs_t = torch.as_tensor(obs_np, device=self.device, dtype=torch.uint8)
+        obs_tensor = obs_t.unsqueeze(0)
         if self.channels_last:
             obs_tensor = obs_tensor.permute(0, 3, 1, 2)
             
@@ -776,6 +812,7 @@ class Agent:
             action = int(torch.argmax(q_values, dim=1).item())
             
         self.last_obs = obs_np
+        self.last_obs_t = obs_t
         self.last_action = action
         return action
 
@@ -794,10 +831,14 @@ class Agent:
 
         # For replay buffer: only use `terminated` to decide bootstrapping
         # truncated episodes should bootstrap (the episode didn't really end)
-        self.replay_buffer.add(self.last_obs, self.last_action, reward, terminated)
+        if self.last_obs_t is not None:
+            self.replay_buffer.add_gpu(self.last_obs_t, self.last_action, reward, terminated)
+        else:
+            self.replay_buffer.add(self.last_obs, self.last_action, reward, terminated)
         self.global_step += 1
 
         self.last_obs = np.array(next_observation, copy=False)
+        self.last_obs_t = None
 
         # Clean up agent state if episode ended (either way)
         if terminated or truncated:
@@ -978,7 +1019,9 @@ class Agent:
             u = b.ceil().clamp(0, args.n_atoms - 1).long()
 
             target_pmf = torch.zeros_like(next_pmf)
-            offset = torch.linspace(0, (args.batch_size - 1) * args.n_atoms, args.batch_size, device=self.device).long().unsqueeze(1)
+            if not hasattr(self, "_c51_offset") or self._c51_offset.device != self.device or self._c51_offset.shape[0] != args.batch_size:
+                self._c51_offset = (torch.arange(args.batch_size, device=self.device, dtype=torch.long) * args.n_atoms).unsqueeze(1)
+            offset = self._c51_offset
             target_pmf.view(-1).index_add_(0, (l + offset).view(-1), (next_pmf * (u.float() - b)).view(-1))
             target_pmf.view(-1).index_add_(0, (u + offset).view(-1), (next_pmf * (b - l.float())).view(-1))
 
@@ -1445,12 +1488,17 @@ def main():
                 print(f"Warmup: Filling Replay Buffer {global_step}/{config.learning_starts}")
             
             # --- ACTION SELECTION (vectorized) ---
+            obs_t = torch.as_tensor(obs, device=agent.device, dtype=torch.uint8)
+            obs_t_net = obs_t
+            if agent.channels_last:
+                obs_t_net = obs_t_net.permute(0, 3, 1, 2)
+
             epsilon = agent._get_epsilon()
             if random.random() < epsilon:
                 actions = np.array([envs.single_action_space.sample() for _ in range(num_envs)])
             else:
                 with torch.no_grad():
-                    q_dist = agent.target_network(torch.Tensor(obs).to(agent.device))
+                    q_dist = agent.target_network(obs_t_net)
                     q_values = torch.sum(q_dist * agent.target_network.support, dim=2)
                     actions = torch.argmax(q_values, dim=1).cpu().numpy()
             
@@ -1491,7 +1539,7 @@ def main():
             # Only use `terminated` for buffer's done flag (for correct bootstrapping)
             # Truncated episodes should bootstrap, terminated episodes should not
             for idx in range(num_envs):
-                agent.replay_buffer.add(obs[idx], actions[idx], rewards[idx], terminations[idx])
+                agent.replay_buffer.add_gpu(obs_t[idx], actions[idx], rewards[idx], terminations[idx])
             
             agent.global_step += 1
             obs = next_obs  # SyncVectorEnv auto-resets
