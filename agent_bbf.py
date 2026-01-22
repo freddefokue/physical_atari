@@ -156,8 +156,8 @@ class RandomShift(nn.Module):
             noise = torch.randn(b, 1, 1, 1, device=x.device).clamp(-2.0, 2.0)
             out = out * (1.0 + self.intensity_scale * noise)
         
-        # Scale back to [0, 255] range
-        return out * 255.0
+        # Return float in [0, 1] range
+        return out
 
 
 class ResidualBlock(nn.Module):
@@ -239,7 +239,8 @@ class BBFNetwork(nn.Module):
         self.trans_fc = nn.Linear(self.latent_dim * 2, self.latent_dim)
 
     def encode(self, x):
-        x = x / 255.0
+        if x.dtype == torch.uint8:
+            x = x.float() / 255.0
         h = self.encoder(x)
         # Latent renormalization (MuZero-style, from official BBF)
         h = self._renormalize(h)
