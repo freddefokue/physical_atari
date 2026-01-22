@@ -358,11 +358,11 @@ class SequenceReplayBuffer:
         self.size = 0
 
     def add(self, obs, action, reward, done, priority=None):
-        # Direct assignment to pinned tensors
+        # Direct assignment to pinned tensors (convert numpy scalars to python types)
         self.obs[self.pos].copy_(torch.as_tensor(obs))
-        self.actions[self.pos] = action
-        self.rewards[self.pos] = reward
-        self.dones[self.pos] = done
+        self.actions[self.pos] = int(action)
+        self.rewards[self.pos] = float(reward)
+        self.dones[self.pos] = bool(done)
         self.pos = (self.pos + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
 
@@ -459,11 +459,11 @@ class PrioritizedSequenceReplayBuffer:
         self.size = 0
 
     def add(self, obs, action, reward, done, priority=None):
-        # Direct assignment to pinned tensors
+        # Direct assignment to pinned tensors (convert numpy scalars to python types)
         self.obs[self.pos].copy_(torch.as_tensor(obs))
-        self.actions[self.pos] = action
-        self.rewards[self.pos] = reward
-        self.dones[self.pos] = done
+        self.actions[self.pos] = int(action)
+        self.rewards[self.pos] = float(reward)
+        self.dones[self.pos] = bool(done)
 
         # New transitions get max priority (official BBF style: no alpha exponent)
         if priority is None:
