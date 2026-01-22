@@ -773,9 +773,9 @@ class Agent:
                 print(f"[TRAINING STARTED] step={self.global_step} buffer_size={self.replay_buffer.size}")
 
             # Check for reset interval (BBF periodic resets)
-            # Reset based on ENV STEPS (global_step), not grad steps, to match CleanRL
-            if self.global_step > self.learning_ready_step and self.global_step % self.config.reset_interval == 0:
-                print(f"  [Agent] Hard Reset at env step {self.global_step} (grad step {self.grad_step})")
+            # Reset based on GRADIENT STEPS (paper: "reset every 40k gradient steps")
+            if self.grad_step > 0 and self.grad_step % self.config.reset_interval == 0:
+                print(f"  [Agent] Hard Reset at grad step {self.grad_step} (env step {self.global_step})")
                 self._hard_reset()
                 self.steps_since_reset = 0
                 
@@ -1223,7 +1223,7 @@ def parse_args() -> AgentConfig:
     parser.add_argument("--initial-n-step", type=int, default=10)
     parser.add_argument("--final-n-step", type=int, default=3)
     parser.add_argument("--anneal-duration", type=int, default=10_000)
-    parser.add_argument("--reset-interval", type=int, default=40_000, help="Env steps between periodic resets")
+    parser.add_argument("--reset-interval", type=int, default=40_000, help="Gradient steps between periodic resets (paper: 40k)")
     parser.add_argument("--shrink-factor", type=float, default=0.5)
     parser.add_argument("--reset-warmup-steps", type=int, default=2000)
     parser.add_argument("--spr-weight", type=float, default=5.0)
@@ -1302,7 +1302,7 @@ def main():
     print(f"{'='*60}")
     print(f"  Environment:    {config.env_id}")
     print(f"  Replay Ratio:   {config.replay_ratio}")
-    print(f"  Reset Interval: {config.reset_interval} (env steps)")
+    print(f"  Reset Interval: {config.reset_interval} (grad steps)")
     print(f"  Total Steps:    {config.total_steps}")
     print(f"  Seed:           {config.seed}")
     print(f"  Learning Rate:  {config.learning_rate}")
@@ -1455,8 +1455,9 @@ def main():
             
             if agent.replay_buffer.size > min_samples and agent.global_step >= agent.learning_ready_step:
                 # Check for reset interval (BBF periodic resets)
-                if agent.global_step > agent.learning_ready_step and agent.global_step % config.reset_interval == 0:
-                    print(f"*** HARD RESET at env step {agent.global_step} (grad step {agent.grad_step}) ***")
+                # Reset based on GRADIENT STEPS (paper: "reset every 40k gradient steps")
+                if agent.grad_step > 0 and agent.grad_step % config.reset_interval == 0:
+                    print(f"*** HARD RESET at grad step {agent.grad_step} (env step {agent.global_step}) ***")
                     agent._hard_reset()
                     agent.steps_since_reset = 0
                     
@@ -1526,7 +1527,7 @@ def main():
         print(f"{'='*60}")
         print(f"  Run Name:       {run_name}")
         print(f"  Replay Ratio:   {config.replay_ratio}")
-        print(f"  Reset Interval: {config.reset_interval}")
+        print(f"  Reset Interval: {config.reset_interval} (grad steps)")
         print(f"  Seed:           {config.seed}")
         print(f"  Environment:    {config.env_id}")
         print(f"  Total Time:     {total_time/60:.1f} minutes")
