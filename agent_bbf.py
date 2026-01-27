@@ -1270,47 +1270,7 @@ class Agent:
             # Match original: mean over batch for each jump, then sum over jumps
             spr_loss = (spr_loss_per_jump * cumulative_mask).mean(dim=0).sum()
 
-        # --- C51 TARGET COMPUTATION - FORCE FP32 for distributional RL ---
-        avg_q = 0.0
-        with torch.no_grad(), autocast(device_type='cuda', enabled=False):
-            not_done = 1.0 - data_done_f
-            mask_seq = torch.cat([self._ones_col, not_done[:, :-1]], dim=1)
-            reward_mask = torch.cumprod(mask_seq, dim=1)[:, :curr_n]
-            n_step_rew = torch.sum(data_rew[:, :curr_n] * gammas * reward_mask, dim=1)
-
-            obs_n = data_obs_f[:, curr_n]
-            if use_channels_last:
-                obs_n = obs_n.contiguous(memory_format=torch.channels_last)
-            bootstrap_mask = torch.prod(not_done[:, :curr_n], dim=1)
-
-            # Forward passes in FP16 (fast), then convert to FP32 for distribution ops
-            with autocast(device_type='cuda', enabled=use_amp):
-                next_dist = self.target_network(obs_n)
-                online_n_dist = self.q_network(obs_n)
-
-            # All distribution operations in FP32
-            next_dist = next_dist.float()
-            online_n_dist = online_n_dist.float()
-            next_sup = self.target_network.support_fp32
-
-            # Compute Q-values and best action in FP32
-            avg_q = (online_n_dist * self.q_network.support_fp32).sum(2).mean()
-            best_act = (online_n_dist * next_sup).sum(2).argmax(1)
-            next_pmf = next_dist[self._batch_range, best_act]
-
-            # C51 categorical projection in FP32 (critical!)
-            gamma_n = curr_gamma ** curr_n
-            Tz = n_step_rew.unsqueeze(1) + bootstrap_mask.unsqueeze(1) * gamma_n * next_sup.unsqueeze(0)
-            Tz = Tz.clamp(min=args.v_min, max=args.v_max)
-            b = (Tz - args.v_min) / self.q_network.delta_z
-            l = b.floor().clamp(0, args.n_atoms - 1).long()
-            u = b.ceil().clamp(0, args.n_atoms - 1).long()
-
-            target_pmf = torch.zeros_like(next_pmf)
-            target_pmf.view(-1).index_add_(0, (l + offset).view(-1), (next_pmf * (u.float() - b)).view(-1))
-            target_pmf.view(-1).index_add_(0, (u + offset).view(-1), (next_pmf * (b - l.float())).view(-1))
-
-        return z0, target_pmf, spr_loss, avg_q
+        return z0, spr_loss
 
     def _train_batch(self, curr_gamma, curr_n):
         """Training logic with AMP support (compile-friendly)."""
@@ -1362,7 +1322,7 @@ class Agent:
             self._c51_offset = (self._batch_range * args.n_atoms).unsqueeze(1)
         offset = self._c51_offset
 
-        z0, target_pmf, spr_loss, avg_q = self._train_batch_core(
+        z0, spr_loss = self._train_batch_core(
             data_obs_f,
             data_act,
             data_rew,
@@ -1374,6 +1334,46 @@ class Agent:
             use_amp,
             use_channels_last,
         )
+
+        # --- C51 TARGET COMPUTATION - FORCE FP32 for distributional RL ---
+        avg_q = 0.0
+        with torch.no_grad(), autocast(device_type='cuda', enabled=False):
+            not_done = 1.0 - data_done_f
+            mask_seq = torch.cat([self._ones_col, not_done[:, :-1]], dim=1)
+            reward_mask = torch.cumprod(mask_seq, dim=1)[:, :curr_n]
+            n_step_rew = torch.sum(data_rew[:, :curr_n] * gammas * reward_mask, dim=1)
+
+            obs_n = data_obs_f[:, curr_n]
+            if use_channels_last:
+                obs_n = obs_n.contiguous(memory_format=torch.channels_last)
+            bootstrap_mask = torch.prod(not_done[:, :curr_n], dim=1)
+
+            # Forward passes in FP16 (fast), then convert to FP32 for distribution ops
+            with autocast(device_type='cuda', enabled=use_amp):
+                next_dist = self.target_network(obs_n)
+                online_n_dist = self.q_network(obs_n)
+
+            # All distribution operations in FP32
+            next_dist = next_dist.float()
+            online_n_dist = online_n_dist.float()
+            next_sup = self.target_network.support_fp32
+
+            # Compute Q-values and best action in FP32
+            avg_q = (online_n_dist * self.q_network.support_fp32).sum(2).mean()
+            best_act = (online_n_dist * next_sup).sum(2).argmax(1)
+            next_pmf = next_dist[self._batch_range, best_act]
+
+            # C51 categorical projection in FP32 (critical!)
+            gamma_n = curr_gamma ** curr_n
+            Tz = n_step_rew.unsqueeze(1) + bootstrap_mask.unsqueeze(1) * gamma_n * next_sup.unsqueeze(0)
+            Tz = Tz.clamp(min=args.v_min, max=args.v_max)
+            b = (Tz - args.v_min) / self.q_network.delta_z
+            l = b.floor().clamp(0, args.n_atoms - 1).long()
+            u = b.ceil().clamp(0, args.n_atoms - 1).long()
+
+            target_pmf = torch.zeros_like(next_pmf)
+            target_pmf.view(-1).index_add_(0, (l + offset).view(-1), (next_pmf * (u.float() - b)).view(-1))
+            target_pmf.view(-1).index_add_(0, (u + offset).view(-1), (next_pmf * (b - l.float())).view(-1))
 
         # --- C51 LOSS - FORCE FP32 (kept outside compile to avoid graph breaks) ---
         z0_fp32 = z0.float()
