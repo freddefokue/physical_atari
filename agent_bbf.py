@@ -708,6 +708,15 @@ class Agent:
         if config.channels_last_memory and self.device.type == "cuda":
             self.q_network = self.q_network.to(memory_format=torch.channels_last)
             self.target_network = self.target_network.to(memory_format=torch.channels_last)
+            # One-time confirmation that channels-last memory format took effect.
+            try:
+                first_param = next(self.q_network.parameters())
+                print(
+                    "[INIT] channels_last_memory enabled; q_network channels_last="
+                    f"{first_param.is_contiguous(memory_format=torch.channels_last)}"
+                )
+            except StopIteration:
+                print("[INIT] channels_last_memory enabled; q_network has no parameters?")
         # Cache parameter lists for faster foreach EMA updates
         self._online_params = list(self.q_network.parameters())
         self._target_params = list(self.target_network.parameters())
