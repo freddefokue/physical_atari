@@ -782,11 +782,11 @@ class Agent:
         if config.torch_compile:
             if not hasattr(torch, "compile"):
                 print("[WARN] torch.compile not available; running eager.")
-            elif config.torch_profile or config.profile:
-                print("[INFO] torch.compile disabled while profiler is active.")
             elif self.device.type != "cuda":
                 print("[INFO] torch.compile enabled only for CUDA; running eager.")
             else:
+                if config.torch_profile or config.profile:
+                    print("[INFO] torch.compile enabled with profiler; record_function markers inside compiled core may be ignored.")
                 try:
                     self._train_batch_core = torch.compile(self._train_batch_core, mode=config.torch_compile_mode)
                     self._train_batch_compiled = True
@@ -1269,7 +1269,7 @@ class Agent:
 
     def _train_batch(self, curr_gamma, curr_n):
         """Training logic with AMP support (compile-friendly)."""
-        if self.profiler_active:
+        if self.profiler_active and not self._train_batch_compiled:
             return self._train_batch_profile(curr_gamma, curr_n)
 
         args = self.config
@@ -1277,19 +1277,24 @@ class Agent:
         use_channels_last = args.channels_last_memory and self.device.type == "cuda"
         fetch_len = args.jumps + 1 + curr_n
 
-        data_obs, data_act, data_rew, data_done, indices, weights = self.replay_buffer.sample(
-            args.batch_size, fetch_len
-        )
+        rf = record_function if self.profiler_active else (lambda _: nullcontext())
 
-        if self.channels_last:
-            data_obs = data_obs.permute(0, 1, 4, 2, 3)
+        with rf("RB/sample"):
+            data_obs, data_act, data_rew, data_done, indices, weights = self.replay_buffer.sample(
+                args.batch_size, fetch_len
+            )
+
+        with rf("RB/permute_if_needed"):
+            if self.channels_last:
+                data_obs = data_obs.permute(0, 1, 4, 2, 3)
 
         # Normalize observations once per batch to avoid repeated casts in downstream blocks.
         obs_dtype = torch.get_autocast_dtype("cuda") if use_amp else torch.float32
-        if data_obs.dtype == torch.uint8:
-            data_obs_f = data_obs.to(dtype=obs_dtype).div_(255.0)
-        else:
-            data_obs_f = data_obs if data_obs.dtype == obs_dtype else data_obs.to(dtype=obs_dtype)
+        with rf("RB/normalize_obs"):
+            if data_obs.dtype == torch.uint8:
+                data_obs_f = data_obs.to(dtype=obs_dtype).div_(255.0)
+            else:
+                data_obs_f = data_obs if data_obs.dtype == obs_dtype else data_obs.to(dtype=obs_dtype)
 
         data_done_f = data_done.float()
         if not hasattr(self, "_batch_range") or self._batch_range.device != self.device or self._batch_range.numel() != args.batch_size:
@@ -1317,17 +1322,18 @@ class Agent:
             self._c51_offset = (self._batch_range * args.n_atoms).unsqueeze(1)
         offset = self._c51_offset
 
-        z0, spr_loss = self._train_batch_core(
-            data_obs_f,
-            data_act,
-            data_done_f,
-            use_amp,
-            use_channels_last,
-        )
+        with rf("SPR/core"):
+            z0, spr_loss = self._train_batch_core(
+                data_obs_f,
+                data_act,
+                data_done_f,
+                use_amp,
+                use_channels_last,
+            )
 
         # --- C51 TARGET COMPUTATION - FORCE FP32 for distributional RL ---
         avg_q = 0.0
-        with torch.no_grad(), autocast(device_type='cuda', enabled=False):
+        with rf("C51/targets"), torch.no_grad(), autocast(device_type='cuda', enabled=False):
             not_done = 1.0 - data_done_f
             mask_seq = torch.cat([self._ones_col, not_done[:, :-1]], dim=1)
             reward_mask = torch.cumprod(mask_seq, dim=1)[:, :curr_n]
@@ -1366,36 +1372,44 @@ class Agent:
             target_pmf.view(-1).index_add_(0, (u + offset).view(-1), (next_pmf * (b - l.float())).view(-1))
 
         # --- C51 LOSS - FORCE FP32 (kept outside compile to avoid graph breaks) ---
-        z0_fp32 = z0.float()
-        curr_dist = self.q_network.get_dist(z0_fp32)
-        log_p = torch.log(curr_dist[self._batch_range, data_act[:, 0]] + 1e-8)
+        with rf("C51/loss"):
+            z0_fp32 = z0.float()
+            curr_dist = self.q_network.get_dist(z0_fp32)
+            log_p = torch.log(curr_dist[self._batch_range, data_act[:, 0]] + 1e-8)
 
-        # Per-sample C51 loss (for priority updates)
-        c51_loss_per_sample = -torch.sum(target_pmf * log_p, dim=1)
+            # Per-sample C51 loss (for priority updates)
+            c51_loss_per_sample = -torch.sum(target_pmf * log_p, dim=1)
 
-        # Apply importance sampling weights (PER correction)
-        weighted_c51_loss = (c51_loss_per_sample * weights).mean()
-        total_loss = weighted_c51_loss + args.spr_weight * spr_loss
+            # Apply importance sampling weights (PER correction)
+            weighted_c51_loss = (c51_loss_per_sample * weights).mean()
+            total_loss = weighted_c51_loss + args.spr_weight * spr_loss
 
         # --- BACKWARD (with gradient scaling for AMP) ---
-        self.optimizer.zero_grad()
-        if self.scaler is not None and use_amp:
-            self.scaler.scale(total_loss).backward()
-        else:
-            total_loss.backward()
+        with rf("OPT/zero_grad"):
+            self.optimizer.zero_grad()
+        with rf("BWD/backward"):
+            if self.scaler is not None and use_amp:
+                self.scaler.scale(total_loss).backward()
+            else:
+                total_loss.backward()
 
         # --- OPTIMIZER STEP (with gradient scaling for AMP) ---
-        if self.scaler is not None and use_amp:
-            self.scaler.unscale_(self.optimizer)
-            nn.utils.clip_grad_norm_(self.q_network.parameters(), 10.0)
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-        else:
-            nn.utils.clip_grad_norm_(self.q_network.parameters(), 10.0)
-            self.optimizer.step()
+        with rf("OPT/step"):
+            if self.scaler is not None and use_amp:
+                with rf("OPT/unscale"):
+                    self.scaler.unscale_(self.optimizer)
+                with rf("OPT/clip_grad"):
+                    nn.utils.clip_grad_norm_(self.q_network.parameters(), 10.0)
+                self.scaler.step(self.optimizer)
+                with rf("OPT/update_scale"):
+                    self.scaler.update()
+            else:
+                with rf("OPT/clip_grad"):
+                    nn.utils.clip_grad_norm_(self.q_network.parameters(), 10.0)
+                self.optimizer.step()
 
         # Soft update target
-        with torch.no_grad():
+        with rf("OPT/target_update"), torch.no_grad():
             if hasattr(torch, "_foreach_mul_") and hasattr(torch, "_foreach_add_"):
                 torch._foreach_mul_(self._target_params, 1.0 - args.tau)
                 torch._foreach_add_(self._target_params, self._online_params, alpha=args.tau)
@@ -1404,8 +1418,9 @@ class Agent:
                     target_param.data.copy_(args.tau * param.data + (1.0 - args.tau) * target_param.data)
 
         # Update priorities based on C51 loss (Official BBF uses sqrt(loss))
-        losses = c51_loss_per_sample.detach().cpu().numpy()
-        self.replay_buffer.update_priorities(indices, losses)
+        with rf("OPT/priority_update"):
+            losses = c51_loss_per_sample.detach().cpu().numpy()
+            self.replay_buffer.update_priorities(indices, losses)
 
         # Diagnostic: confirm training is happening
         if self.grad_step % 1000 == 0:
