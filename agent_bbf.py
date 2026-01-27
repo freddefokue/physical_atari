@@ -1431,7 +1431,7 @@ def main():
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
     torch.backends.cudnn.deterministic = config.torch_deterministic
-    torch.backends.cudnn.benchmark = not config.torch_deterministic
+    torch.backends.cudnn.benchmark = True
     if config.cuda and torch.cuda.is_available():
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
