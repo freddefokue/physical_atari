@@ -1197,12 +1197,7 @@ class Agent:
         self,
         data_obs_f: torch.Tensor,
         data_act: torch.Tensor,
-        data_rew: torch.Tensor,
         data_done_f: torch.Tensor,
-        gammas: torch.Tensor,
-        offset: torch.Tensor,
-        curr_gamma: float,
-        curr_n: int,
         use_amp: bool,
         use_channels_last: bool,
     ):
@@ -1325,12 +1320,7 @@ class Agent:
         z0, spr_loss = self._train_batch_core(
             data_obs_f,
             data_act,
-            data_rew,
             data_done_f,
-            gammas,
-            offset,
-            curr_gamma,
-            curr_n,
             use_amp,
             use_channels_last,
         )
