@@ -1315,9 +1315,10 @@ class Agent:
         l = b.floor().clamp(0, args.n_atoms - 1).long()
         u = b.ceil().clamp(0, args.n_atoms - 1).long()
 
-        target_pmf = torch.zeros_like(next_pmf)
-        target_pmf.view(-1).index_add_(0, (l + offset).view(-1), (next_pmf * (u.float() - b)).view(-1))
-        target_pmf.view(-1).index_add_(0, (u + offset).view(-1), (next_pmf * (b - l.float())).view(-1))
+        flat = torch.zeros_like(next_pmf).reshape(-1)
+        flat = flat.index_add(0, (l + offset).view(-1), (next_pmf * (u.float() - b)).view(-1))
+        flat = flat.index_add(0, (u + offset).view(-1), (next_pmf * (b - l.float())).view(-1))
+        target_pmf = flat.view_as(next_pmf)
         return target_pmf, avg_q
 
     def _train_batch(self, curr_gamma, curr_n):
