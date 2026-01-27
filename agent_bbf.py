@@ -253,11 +253,11 @@ class BBFNetwork(nn.Module):
     def _renormalize(self, x):
         """Min-max normalize spatial latent to [0, 1] (official BBF)."""
         shape = x.shape
-        x = x.view(x.size(0), -1)
+        x = x.reshape(x.size(0), -1)
         x_min = x.min(dim=-1, keepdim=True)[0]
         x_max = x.max(dim=-1, keepdim=True)[0]
         x = (x - x_min) / (x_max - x_min + 1e-5)
-        return x.view(shape)
+        return x.reshape(shape)
 
     def forward(self, x):
         z = self.encode(x)
