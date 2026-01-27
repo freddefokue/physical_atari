@@ -1274,7 +1274,7 @@ class Agent:
         self,
         next_dist: torch.Tensor,
         online_n_dist: torch.Tensor,
-        data_rew: torch.Tensor,
+        data_rew_f: torch.Tensor,
         data_done_f: torch.Tensor,
         gammas: torch.Tensor,
         gamma_n: torch.Tensor,
@@ -1289,13 +1289,19 @@ class Agent:
         not_done = 1.0 - data_done_f
         mask_seq = torch.cat([ones_col, not_done[:, :-1]], dim=1)
         reward_mask = torch.cumprod(mask_seq, dim=1)[:, :curr_n]
-        n_step_rew = torch.sum(data_rew[:, :curr_n] * gammas * reward_mask, dim=1)
+        n_step_rew = torch.sum(data_rew_f[:, :curr_n] * gammas * reward_mask, dim=1)
 
         bootstrap_mask = torch.prod(not_done[:, :curr_n], dim=1)
 
         next_dist = next_dist.float()
         online_n_dist = online_n_dist.float()
         next_sup = self.target_network.support_fp32
+        if n_step_rew.dtype != next_sup.dtype:
+            n_step_rew = n_step_rew.to(dtype=next_sup.dtype)
+        if bootstrap_mask.dtype != next_sup.dtype:
+            bootstrap_mask = bootstrap_mask.to(dtype=next_sup.dtype)
+        if gamma_n.dtype != next_sup.dtype:
+            gamma_n = gamma_n.to(dtype=next_sup.dtype)
 
         avg_q = (online_n_dist * self.q_network.support_fp32).sum(2).mean()
         best_act = (online_n_dist * next_sup).sum(2).argmax(1)
@@ -1343,6 +1349,7 @@ class Agent:
                 data_obs_f = data_obs if data_obs.dtype == obs_dtype else data_obs.to(dtype=obs_dtype)
 
         data_done_f = data_done.float()
+        data_rew_f = data_rew.float()
         if not hasattr(self, "_batch_range") or self._batch_range.device != self.device or self._batch_range.numel() != args.batch_size:
             self._batch_range = torch.arange(args.batch_size, device=self.device, dtype=torch.long)
         if (
@@ -1357,10 +1364,10 @@ class Agent:
             not hasattr(self, "_gamma_pows")
             or self._gamma_pows.device != self.device
             or self._gamma_pows.numel() != curr_n
-            or self._gamma_pows.dtype != data_rew.dtype
+            or self._gamma_pows.dtype != data_rew_f.dtype
             or getattr(self, "_gamma_pows_gamma", None) != curr_gamma
         ):
-            self._gamma_pows = torch.pow(curr_gamma, torch.arange(curr_n, device=self.device, dtype=data_rew.dtype))
+            self._gamma_pows = torch.pow(curr_gamma, torch.arange(curr_n, device=self.device, dtype=data_rew_f.dtype))
             self._gamma_pows_gamma = curr_gamma
         gammas = self._gamma_pows
 
@@ -1391,7 +1398,7 @@ class Agent:
             target_pmf, avg_q = self._c51_targets_core(
                 next_dist,
                 online_n_dist,
-                data_rew,
+                data_rew_f,
                 data_done_f,
                 gammas,
                 gamma_n,
