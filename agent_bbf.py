@@ -1556,7 +1556,7 @@ def main():
         training_start_time = None
         training_start_step = None
         env_start_time = time.time()
-        env_start_step = global_step
+        env_start_step = 0
         all_returns = []
         
         print("Starting Training Loop...")
