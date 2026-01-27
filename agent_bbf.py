@@ -1238,6 +1238,8 @@ def agent_bbf_frame_runner(
     start_time = time.time()
     training_start_time = None
     training_start_step = None
+    env_start_time = time.time()
+    env_start_step = agent.global_step
     last_model_save = context.last_model_save
     
     # Best model tracking for this game
@@ -1289,6 +1291,14 @@ def agent_bbf_frame_runner(
                 writer.add_scalar("charts/avg_q", train_log['avg_q'], agent.global_step)
                 writer.add_scalar("charts/gamma", train_log['gamma'], agent.global_step)
                 writer.add_scalar("charts/n_step", train_log['n_step'], agent.global_step)
+                writer.add_scalar("charts/SPS", sps, agent.global_step)
+        elif agent.global_step % 100 == 0:
+            # Env-only SPS before training starts (e.g., replay_ratio=0)
+            env_elapsed = time.time() - env_start_time
+            env_steps = agent.global_step - env_start_step
+            sps = int(env_steps / (env_elapsed + 1e-5))
+            log(f"step={agent.global_step} sps={sps} (env-only)")
+            if writer:
                 writer.add_scalar("charts/SPS", sps, agent.global_step)
 
         if info and "episode" in info:
@@ -1545,6 +1555,8 @@ def main():
         start_time = time.time()
         training_start_time = None
         training_start_step = None
+        env_start_time = time.time()
+        env_start_step = global_step
         all_returns = []
         
         print("Starting Training Loop...")
@@ -1701,6 +1713,13 @@ def main():
                     writer.add_scalar("charts/n_step", train_stats['n_step'], agent.grad_step)
                     writer.add_scalar("charts/gamma", train_stats['gamma'], agent.grad_step)
                     writer.add_scalar("charts/SPS", sps, agent.grad_step)
+            elif global_step % 100 == 0:
+                # Env-only SPS before training starts (e.g., replay_ratio=0)
+                env_elapsed = time.time() - env_start_time
+                env_steps = global_step - env_start_step
+                sps = int(env_steps / (env_elapsed + 1e-5))
+                print(f"Step: {global_step} | SPS: {sps} (env-only)")
+                writer.add_scalar("charts/SPS", sps, global_step)
         
         envs.close()
 
