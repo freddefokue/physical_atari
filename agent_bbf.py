@@ -22,6 +22,7 @@ This implementation wraps the correct CleanRL BBF logic to fit the benchmark run
 from __future__ import annotations
 
 import argparse
+import inspect
 import math
 import os
 import random
@@ -709,10 +710,13 @@ class Agent:
                 no_decay_params.append(param)
             else:
                 decay_params.append(param)
+        adamw_kwargs = {"lr": config.learning_rate, "eps": 1.5e-4}
+        if "fused" in inspect.signature(optim.AdamW).parameters:
+            adamw_kwargs["fused"] = self.device.type == "cuda"
         self.optimizer = optim.AdamW([
-            {'params': decay_params, 'weight_decay': config.weight_decay},
-            {'params': no_decay_params, 'weight_decay': 0.0}
-        ], lr=config.learning_rate, eps=1.5e-4)
+            {"params": decay_params, "weight_decay": config.weight_decay},
+            {"params": no_decay_params, "weight_decay": 0.0},
+        ], **adamw_kwargs)
         
         self.aug = RandomShift(pad=4).to(self.device)
 
