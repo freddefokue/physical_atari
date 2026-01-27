@@ -697,6 +697,9 @@ class Agent:
         self.q_network = BBFNetwork(self.in_channels, self.num_actions, config).to(self.device)
         self.target_network = BBFNetwork(self.in_channels, self.num_actions, config).to(self.device)
         self.target_network.load_state_dict(self.q_network.state_dict())
+        # Cache parameter lists for faster foreach EMA updates
+        self._online_params = list(self.q_network.parameters())
+        self._target_params = list(self.target_network.parameters())
         
         # Optimizer with weight decay excluding biases (official BBF excludes 1D params)
         decay_params = []
@@ -1087,9 +1090,13 @@ class Agent:
                 self.optimizer.step()
 
         # Soft update target
-        with rf("OPT/target_update"):
-            for param, target_param in zip(self.q_network.parameters(), self.target_network.parameters()):
-                target_param.data.copy_(args.tau * param.data + (1.0 - args.tau) * target_param.data)
+        with rf("OPT/target_update"), torch.no_grad():
+            if hasattr(torch, "_foreach_mul_") and hasattr(torch, "_foreach_add_"):
+                torch._foreach_mul_(self._target_params, 1.0 - args.tau)
+                torch._foreach_add_(self._target_params, self._online_params, alpha=args.tau)
+            else:
+                for param, target_param in zip(self._online_params, self._target_params):
+                    target_param.data.copy_(args.tau * param.data + (1.0 - args.tau) * target_param.data)
 
         # Update priorities based on C51 loss (Official BBF uses sqrt(loss))
         with rf("OPT/priority_update"):
