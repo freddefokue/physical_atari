@@ -837,12 +837,13 @@ class Agent:
         if self.last_obs is None or self.last_action is None:
             return None
 
-        # For replay buffer: only use `terminated` to decide bootstrapping
-        # truncated episodes should bootstrap (the episode didn't really end)
+        # For replay buffer: use terminated OR truncated as boundary.
+        # This avoids bootstrapping from auto-reset observations on truncation.
+        done_flag = terminated or truncated
         if self.last_obs_t is not None:
-            self.replay_buffer.add_gpu(self.last_obs_t, self.last_action, reward, terminated)
+            self.replay_buffer.add_gpu(self.last_obs_t, self.last_action, reward, done_flag)
         else:
-            self.replay_buffer.add(self.last_obs, self.last_action, reward, terminated)
+            self.replay_buffer.add(self.last_obs, self.last_action, reward, done_flag)
         self.global_step += 1
 
         self.last_obs = np.array(next_observation, copy=False)
@@ -1569,10 +1570,10 @@ def main():
                     writer.add_scalar("charts/best_return", best_return, global_step)
             
             # --- BUFFER ADD (vectorized) ---
-            # Only use `terminated` for buffer's done flag (for correct bootstrapping)
-            # Truncated episodes should bootstrap, terminated episodes should not
+            # Use terminated OR truncated as boundary to avoid bootstrapping across auto-resets.
             for idx in range(num_envs):
-                agent.replay_buffer.add_gpu(obs_t[idx], actions[idx], rewards[idx], terminations[idx])
+                done_flag = terminations[idx] or truncations[idx]
+                agent.replay_buffer.add_gpu(obs_t[idx], actions[idx], rewards[idx], done_flag)
             
             agent.global_step += 1
             obs = next_obs  # SyncVectorEnv auto-resets
