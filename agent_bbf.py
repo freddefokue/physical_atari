@@ -1199,7 +1199,6 @@ class Agent:
         data_act: torch.Tensor,
         data_rew: torch.Tensor,
         data_done_f: torch.Tensor,
-        weights: torch.Tensor,
         gammas: torch.Tensor,
         offset: torch.Tensor,
         curr_gamma: float,
@@ -1311,20 +1310,7 @@ class Agent:
             target_pmf.view(-1).index_add_(0, (l + offset).view(-1), (next_pmf * (u.float() - b)).view(-1))
             target_pmf.view(-1).index_add_(0, (u + offset).view(-1), (next_pmf * (b - l.float())).view(-1))
 
-        # --- C51 LOSS - FORCE FP32 ---
-        with autocast(device_type='cuda', enabled=False):
-            z0_fp32 = z0.float()
-            curr_dist = self.q_network.get_dist(z0_fp32)
-            log_p = torch.log(curr_dist[self._batch_range, data_act[:, 0]] + 1e-8)
-
-            # Per-sample C51 loss (for priority updates)
-            c51_loss_per_sample = -torch.sum(target_pmf * log_p, dim=1)
-
-            # Apply importance sampling weights (PER correction)
-            weighted_c51_loss = (c51_loss_per_sample * weights).mean()
-            total_loss = weighted_c51_loss + args.spr_weight * spr_loss
-
-        return total_loss, spr_loss, avg_q, c51_loss_per_sample
+        return z0, target_pmf, spr_loss, avg_q
 
     def _train_batch(self, curr_gamma, curr_n):
         """Training logic with AMP support (compile-friendly)."""
@@ -1376,12 +1362,11 @@ class Agent:
             self._c51_offset = (self._batch_range * args.n_atoms).unsqueeze(1)
         offset = self._c51_offset
 
-        total_loss, spr_loss, avg_q, c51_loss_per_sample = self._train_batch_core(
+        z0, target_pmf, spr_loss, avg_q = self._train_batch_core(
             data_obs_f,
             data_act,
             data_rew,
             data_done_f,
-            weights,
             gammas,
             offset,
             curr_gamma,
@@ -1389,6 +1374,18 @@ class Agent:
             use_amp,
             use_channels_last,
         )
+
+        # --- C51 LOSS - FORCE FP32 (kept outside compile to avoid graph breaks) ---
+        z0_fp32 = z0.float()
+        curr_dist = self.q_network.get_dist(z0_fp32)
+        log_p = torch.log(curr_dist[self._batch_range, data_act[:, 0]] + 1e-8)
+
+        # Per-sample C51 loss (for priority updates)
+        c51_loss_per_sample = -torch.sum(target_pmf * log_p, dim=1)
+
+        # Apply importance sampling weights (PER correction)
+        weighted_c51_loss = (c51_loss_per_sample * weights).mean()
+        total_loss = weighted_c51_loss + args.spr_weight * spr_loss
 
         # --- BACKWARD (with gradient scaling for AMP) ---
         self.optimizer.zero_grad()
