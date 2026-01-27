@@ -779,6 +779,7 @@ class Agent:
 
         # Optional torch.compile for the training step core (CUDA only).
         self._train_batch_compiled = False
+        self._c51_targets_compiled = False
         if config.torch_compile:
             if not hasattr(torch, "compile"):
                 print("[WARN] torch.compile not available; running eager.")
@@ -790,6 +791,8 @@ class Agent:
                 try:
                     self._train_batch_core = torch.compile(self._train_batch_core, mode=config.torch_compile_mode)
                     self._train_batch_compiled = True
+                    self._c51_targets_core = torch.compile(self._c51_targets_core, mode=config.torch_compile_mode)
+                    self._c51_targets_compiled = True
                     print(f"[INIT] torch.compile enabled for train step core (mode={config.torch_compile_mode}).")
                 except Exception as exc:
                     print(f"[WARN] torch.compile failed; running eager. ({exc})")
@@ -1267,6 +1270,56 @@ class Agent:
 
         return z0, spr_loss
 
+    def _c51_targets_core(
+        self,
+        data_obs_f: torch.Tensor,
+        data_rew: torch.Tensor,
+        data_done_f: torch.Tensor,
+        gammas: torch.Tensor,
+        gamma_n: torch.Tensor,
+        batch_range: torch.Tensor,
+        ones_col: torch.Tensor,
+        offset: torch.Tensor,
+        curr_n: int,
+        use_amp: bool,
+        use_channels_last: bool,
+    ):
+        """C51 target computation (compile-friendly)."""
+        args = self.config
+
+        not_done = 1.0 - data_done_f
+        mask_seq = torch.cat([ones_col, not_done[:, :-1]], dim=1)
+        reward_mask = torch.cumprod(mask_seq, dim=1)[:, :curr_n]
+        n_step_rew = torch.sum(data_rew[:, :curr_n] * gammas * reward_mask, dim=1)
+
+        obs_n = data_obs_f[:, curr_n]
+        if use_channels_last:
+            obs_n = obs_n.contiguous(memory_format=torch.channels_last)
+        bootstrap_mask = torch.prod(not_done[:, :curr_n], dim=1)
+
+        with autocast(device_type="cuda", enabled=use_amp):
+            next_dist = self.target_network(obs_n)
+            online_n_dist = self.q_network(obs_n)
+
+        next_dist = next_dist.float()
+        online_n_dist = online_n_dist.float()
+        next_sup = self.target_network.support_fp32
+
+        avg_q = (online_n_dist * self.q_network.support_fp32).sum(2).mean()
+        best_act = (online_n_dist * next_sup).sum(2).argmax(1)
+        next_pmf = next_dist[batch_range, best_act]
+
+        Tz = n_step_rew.unsqueeze(1) + bootstrap_mask.unsqueeze(1) * gamma_n * next_sup.unsqueeze(0)
+        Tz = Tz.clamp(min=args.v_min, max=args.v_max)
+        b = (Tz - args.v_min) / self.q_network.delta_z
+        l = b.floor().clamp(0, args.n_atoms - 1).long()
+        u = b.ceil().clamp(0, args.n_atoms - 1).long()
+
+        target_pmf = torch.zeros_like(next_pmf)
+        target_pmf.view(-1).index_add_(0, (l + offset).view(-1), (next_pmf * (u.float() - b)).view(-1))
+        target_pmf.view(-1).index_add_(0, (u + offset).view(-1), (next_pmf * (b - l.float())).view(-1))
+        return target_pmf, avg_q
+
     def _train_batch(self, curr_gamma, curr_n):
         """Training logic with AMP support (compile-friendly)."""
         if self.profiler_active and not self._train_batch_compiled:
@@ -1333,43 +1386,21 @@ class Agent:
 
         # --- C51 TARGET COMPUTATION - FORCE FP32 for distributional RL ---
         avg_q = 0.0
-        with rf("C51/targets"), torch.no_grad(), autocast(device_type='cuda', enabled=False):
-            not_done = 1.0 - data_done_f
-            mask_seq = torch.cat([self._ones_col, not_done[:, :-1]], dim=1)
-            reward_mask = torch.cumprod(mask_seq, dim=1)[:, :curr_n]
-            n_step_rew = torch.sum(data_rew[:, :curr_n] * gammas * reward_mask, dim=1)
-
-            obs_n = data_obs_f[:, curr_n]
-            if use_channels_last:
-                obs_n = obs_n.contiguous(memory_format=torch.channels_last)
-            bootstrap_mask = torch.prod(not_done[:, :curr_n], dim=1)
-
-            # Forward passes in FP16 (fast), then convert to FP32 for distribution ops
-            with autocast(device_type='cuda', enabled=use_amp):
-                next_dist = self.target_network(obs_n)
-                online_n_dist = self.q_network(obs_n)
-
-            # All distribution operations in FP32
-            next_dist = next_dist.float()
-            online_n_dist = online_n_dist.float()
-            next_sup = self.target_network.support_fp32
-
-            # Compute Q-values and best action in FP32
-            avg_q = (online_n_dist * self.q_network.support_fp32).sum(2).mean()
-            best_act = (online_n_dist * next_sup).sum(2).argmax(1)
-            next_pmf = next_dist[self._batch_range, best_act]
-
-            # C51 categorical projection in FP32 (critical!)
-            gamma_n = curr_gamma ** curr_n
-            Tz = n_step_rew.unsqueeze(1) + bootstrap_mask.unsqueeze(1) * gamma_n * next_sup.unsqueeze(0)
-            Tz = Tz.clamp(min=args.v_min, max=args.v_max)
-            b = (Tz - args.v_min) / self.q_network.delta_z
-            l = b.floor().clamp(0, args.n_atoms - 1).long()
-            u = b.ceil().clamp(0, args.n_atoms - 1).long()
-
-            target_pmf = torch.zeros_like(next_pmf)
-            target_pmf.view(-1).index_add_(0, (l + offset).view(-1), (next_pmf * (u.float() - b)).view(-1))
-            target_pmf.view(-1).index_add_(0, (u + offset).view(-1), (next_pmf * (b - l.float())).view(-1))
+        with rf("C51/targets"), torch.no_grad():
+            gamma_n = gammas[-1] * curr_gamma
+            target_pmf, avg_q = self._c51_targets_core(
+                data_obs_f,
+                data_rew,
+                data_done_f,
+                gammas,
+                gamma_n,
+                self._batch_range,
+                self._ones_col,
+                offset,
+                curr_n,
+                use_amp,
+                use_channels_last,
+            )
 
         # --- C51 LOSS - FORCE FP32 (kept outside compile to avoid graph breaks) ---
         with rf("C51/loss"):
