@@ -777,7 +777,7 @@ class Agent:
         self.profiler: Optional[torch.profiler.profile] = None
         self.profiler_active: bool = False
 
-        # Optional torch.compile for the training step (CUDA only).
+        # Optional torch.compile for the training step core (CUDA only).
         self._train_batch_compiled = False
         if config.torch_compile:
             if not hasattr(torch, "compile"):
@@ -788,9 +788,9 @@ class Agent:
                 print("[INFO] torch.compile enabled only for CUDA; running eager.")
             else:
                 try:
-                    self._train_batch = torch.compile(self._train_batch, mode=config.torch_compile_mode)
+                    self._train_batch_core = torch.compile(self._train_batch_core, mode=config.torch_compile_mode)
                     self._train_batch_compiled = True
-                    print(f"[INIT] torch.compile enabled for train step (mode={config.torch_compile_mode}).")
+                    print(f"[INIT] torch.compile enabled for train step core (mode={config.torch_compile_mode}).")
                 except Exception as exc:
                     print(f"[WARN] torch.compile failed; running eager. ({exc})")
 
@@ -979,8 +979,8 @@ class Agent:
 
         self.profiler.step()
 
-    def _train_batch(self, curr_gamma, curr_n):
-        """Training logic with AMP support (matches bbf_atari.py exactly)."""
+    def _train_batch_profile(self, curr_gamma, curr_n):
+        """Training logic with AMP support (profiling-enabled)."""
         args = self.config
         use_amp = args.use_amp and self.device.type == 'cuda'
         use_channels_last = args.channels_last_memory and self.device.type == "cuda"
@@ -1179,6 +1179,246 @@ class Agent:
         with rf("OPT/priority_update"):
             losses = c51_loss_per_sample.detach().cpu().numpy()
             self.replay_buffer.update_priorities(indices, losses)
+
+        # Diagnostic: confirm training is happening
+        if self.grad_step % 1000 == 0:
+            avg_q_item = avg_q.item() if isinstance(avg_q, torch.Tensor) else float(avg_q)
+            print(f"[TRAIN] grad_step={self.grad_step} loss={total_loss.item():.4f} spr={spr_loss.item():.4f} avg_q={avg_q_item:.2f}")
+
+        return {
+            "loss": total_loss.item(),
+            "spr_loss": spr_loss.item() if isinstance(spr_loss, torch.Tensor) else spr_loss,
+            "avg_q": avg_q.item() if isinstance(avg_q, torch.Tensor) else avg_q,
+            "gamma": curr_gamma,
+            "n_step": curr_n
+        }
+
+    def _train_batch_core(
+        self,
+        data_obs_f: torch.Tensor,
+        data_act: torch.Tensor,
+        data_rew: torch.Tensor,
+        data_done_f: torch.Tensor,
+        weights: torch.Tensor,
+        gammas: torch.Tensor,
+        offset: torch.Tensor,
+        curr_gamma: float,
+        curr_n: int,
+        use_amp: bool,
+        use_channels_last: bool,
+    ):
+        """Core training computation without profiling/optimizer side effects."""
+        args = self.config
+
+        # --- FORWARD PASS WITH MIXED PRECISION ---
+        # AMP Strategy: FP16 for convolutions (fast), FP32 for C51/SPR (accurate)
+        with autocast(device_type='cuda', enabled=use_amp):
+            # --- AUGMENTATION (obs_0) ---
+            obs_0 = self.aug(data_obs_f[:, 0])
+            if use_channels_last:
+                obs_0 = obs_0.contiguous(memory_format=torch.channels_last)
+
+            # --- ENCODE (online) - Keep FP16 for speed ---
+            z0 = self.q_network.encode(obs_0)
+
+            # --- SPR ROLLOUT ---
+            rollout_acts = data_act[:, :args.jumps]
+            z_seq = self.q_network.rollout_latents(z0, rollout_acts)
+
+        # --- SPR TARGETS (target network) - FORCE FP32 for normalization ---
+        with torch.no_grad(), autocast(device_type='cuda', enabled=False):
+            # Stack obs for jumps 1..jumps: (batch, jumps, C, H, W) -> (batch*jumps, C, H, W)
+            obs_jumps = data_obs_f[:, 1:args.jumps + 1]
+            B, J = obs_jumps.shape[0], obs_jumps.shape[1]
+            obs_jumps_flat = obs_jumps.reshape(-1, *obs_jumps.shape[2:])
+
+            # Augmentation + encode in FP16 (convolutions are fast)
+            with autocast(device_type='cuda', enabled=use_amp):
+                obs_jumps_aug = self.aug(obs_jumps_flat)
+                if use_channels_last:
+                    obs_jumps_aug = obs_jumps_aug.contiguous(memory_format=torch.channels_last)
+                t_z_flat = self.target_network.encode(obs_jumps_aug)
+
+            # Projection + normalization in FP32 (critical for numerical stability)
+            t_z_flat = t_z_flat.float()
+            t_p_flat = self.target_network.projection(t_z_flat)
+            t_p_norm = F.normalize(t_p_flat, dim=1)
+
+            # Reshape: (batch*jumps, proj_dim) -> (batch, jumps, proj_dim)
+            target_latents = t_p_norm.view(B, J, -1)
+
+        # --- SPR LOSS - FORCE FP32 for normalization ---
+        with autocast(device_type='cuda', enabled=False):
+            # Get predicted latents for all jumps: z_seq[:, 1:] has shape (batch, jumps, latent_dim)
+            z_jumps = z_seq[:, 1:args.jumps + 1].float()  # Force FP32
+            z_jumps_flat = z_jumps.reshape(-1, z_jumps.shape[-1])
+
+            # Projection + predictor + normalization in FP32
+            p_flat = self.q_network.projection(z_jumps_flat)
+            pred_flat = self.q_network.predictor(p_flat)
+            pred_norm = F.normalize(pred_flat, dim=1)
+
+            # Reshape back
+            pred_latents = pred_norm.view(B, J, -1)
+
+            # Compute MSE loss
+            spr_loss_per_jump = ((pred_latents - target_latents) ** 2).sum(dim=2)
+
+            # Apply cumulative done mask
+            spr_done_mask = 1.0 - data_done_f[:, :args.jumps]
+            cumulative_mask = torch.cumprod(spr_done_mask, dim=1)
+
+            # Match original: mean over batch for each jump, then sum over jumps
+            spr_loss = (spr_loss_per_jump * cumulative_mask).mean(dim=0).sum()
+
+        # --- C51 TARGET COMPUTATION - FORCE FP32 for distributional RL ---
+        avg_q = 0.0
+        with torch.no_grad(), autocast(device_type='cuda', enabled=False):
+            not_done = 1.0 - data_done_f
+            mask_seq = torch.cat([self._ones_col, not_done[:, :-1]], dim=1)
+            reward_mask = torch.cumprod(mask_seq, dim=1)[:, :curr_n]
+            n_step_rew = torch.sum(data_rew[:, :curr_n] * gammas * reward_mask, dim=1)
+
+            obs_n = data_obs_f[:, curr_n]
+            if use_channels_last:
+                obs_n = obs_n.contiguous(memory_format=torch.channels_last)
+            bootstrap_mask = torch.prod(not_done[:, :curr_n], dim=1)
+
+            # Forward passes in FP16 (fast), then convert to FP32 for distribution ops
+            with autocast(device_type='cuda', enabled=use_amp):
+                next_dist = self.target_network(obs_n)
+                online_n_dist = self.q_network(obs_n)
+
+            # All distribution operations in FP32
+            next_dist = next_dist.float()
+            online_n_dist = online_n_dist.float()
+            next_sup = self.target_network.support_fp32
+
+            # Compute Q-values and best action in FP32
+            avg_q = (online_n_dist * self.q_network.support_fp32).sum(2).mean()
+            best_act = (online_n_dist * next_sup).sum(2).argmax(1)
+            next_pmf = next_dist[self._batch_range, best_act]
+
+            # C51 categorical projection in FP32 (critical!)
+            gamma_n = curr_gamma ** curr_n
+            Tz = n_step_rew.unsqueeze(1) + bootstrap_mask.unsqueeze(1) * gamma_n * next_sup.unsqueeze(0)
+            Tz = Tz.clamp(min=args.v_min, max=args.v_max)
+            b = (Tz - args.v_min) / self.q_network.delta_z
+            l = b.floor().clamp(0, args.n_atoms - 1).long()
+            u = b.ceil().clamp(0, args.n_atoms - 1).long()
+
+            target_pmf = torch.zeros_like(next_pmf)
+            target_pmf.view(-1).index_add_(0, (l + offset).view(-1), (next_pmf * (u.float() - b)).view(-1))
+            target_pmf.view(-1).index_add_(0, (u + offset).view(-1), (next_pmf * (b - l.float())).view(-1))
+
+        # --- C51 LOSS - FORCE FP32 ---
+        with autocast(device_type='cuda', enabled=False):
+            z0_fp32 = z0.float()
+            curr_dist = self.q_network.get_dist(z0_fp32)
+            log_p = torch.log(curr_dist[self._batch_range, data_act[:, 0]] + 1e-8)
+
+            # Per-sample C51 loss (for priority updates)
+            c51_loss_per_sample = -torch.sum(target_pmf * log_p, dim=1)
+
+            # Apply importance sampling weights (PER correction)
+            weighted_c51_loss = (c51_loss_per_sample * weights).mean()
+            total_loss = weighted_c51_loss + args.spr_weight * spr_loss
+
+        return total_loss, spr_loss, avg_q, c51_loss_per_sample
+
+    def _train_batch(self, curr_gamma, curr_n):
+        """Training logic with AMP support (compile-friendly)."""
+        if self.profiler_active:
+            return self._train_batch_profile(curr_gamma, curr_n)
+
+        args = self.config
+        use_amp = args.use_amp and self.device.type == 'cuda'
+        use_channels_last = args.channels_last_memory and self.device.type == "cuda"
+        fetch_len = args.jumps + 1 + curr_n
+
+        data_obs, data_act, data_rew, data_done, indices, weights = self.replay_buffer.sample(
+            args.batch_size, fetch_len
+        )
+
+        if self.channels_last:
+            data_obs = data_obs.permute(0, 1, 4, 2, 3)
+
+        # Normalize observations once per batch to avoid repeated casts in downstream blocks.
+        obs_dtype = torch.get_autocast_dtype("cuda") if use_amp else torch.float32
+        if data_obs.dtype == torch.uint8:
+            data_obs_f = data_obs.to(dtype=obs_dtype).div_(255.0)
+        else:
+            data_obs_f = data_obs if data_obs.dtype == obs_dtype else data_obs.to(dtype=obs_dtype)
+
+        data_done_f = data_done.float()
+        if not hasattr(self, "_batch_range") or self._batch_range.device != self.device or self._batch_range.numel() != args.batch_size:
+            self._batch_range = torch.arange(args.batch_size, device=self.device, dtype=torch.long)
+        if (
+            not hasattr(self, "_ones_col")
+            or self._ones_col.device != self.device
+            or self._ones_col.shape[0] != args.batch_size
+            or self._ones_col.dtype != data_done_f.dtype
+        ):
+            self._ones_col = torch.ones((args.batch_size, 1), device=self.device, dtype=data_done_f.dtype)
+
+        if (
+            not hasattr(self, "_gamma_pows")
+            or self._gamma_pows.device != self.device
+            or self._gamma_pows.numel() != curr_n
+            or self._gamma_pows.dtype != data_rew.dtype
+            or getattr(self, "_gamma_pows_gamma", None) != curr_gamma
+        ):
+            self._gamma_pows = torch.pow(curr_gamma, torch.arange(curr_n, device=self.device, dtype=data_rew.dtype))
+            self._gamma_pows_gamma = curr_gamma
+        gammas = self._gamma_pows
+
+        if not hasattr(self, "_c51_offset") or self._c51_offset.device != self.device or self._c51_offset.shape[0] != args.batch_size:
+            self._c51_offset = (self._batch_range * args.n_atoms).unsqueeze(1)
+        offset = self._c51_offset
+
+        total_loss, spr_loss, avg_q, c51_loss_per_sample = self._train_batch_core(
+            data_obs_f,
+            data_act,
+            data_rew,
+            data_done_f,
+            weights,
+            gammas,
+            offset,
+            curr_gamma,
+            curr_n,
+            use_amp,
+            use_channels_last,
+        )
+
+        # --- BACKWARD (with gradient scaling for AMP) ---
+        self.optimizer.zero_grad()
+        if self.scaler is not None and use_amp:
+            self.scaler.scale(total_loss).backward()
+        else:
+            total_loss.backward()
+
+        # --- OPTIMIZER STEP (with gradient scaling for AMP) ---
+        if self.scaler is not None and use_amp:
+            self.scaler.unscale_(self.optimizer)
+            nn.utils.clip_grad_norm_(self.q_network.parameters(), 10.0)
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            nn.utils.clip_grad_norm_(self.q_network.parameters(), 10.0)
+            self.optimizer.step()
+
+        # Soft update target
+        with torch.no_grad():
+            if hasattr(torch, "_foreach_mul_") and hasattr(torch, "_foreach_add_"):
+                torch._foreach_mul_(self._target_params, 1.0 - args.tau)
+                torch._foreach_add_(self._target_params, self._online_params, alpha=args.tau)
+            else:
+                for param, target_param in zip(self._online_params, self._target_params):
+                    target_param.data.copy_(args.tau * param.data + (1.0 - args.tau) * target_param.data)
+
+        # Update priorities based on C51 loss (Official BBF uses sqrt(loss))
+        losses = c51_loss_per_sample.detach().cpu().numpy()
+        self.replay_buffer.update_priorities(indices, losses)
 
         # Diagnostic: confirm training is happening
         if self.grad_step % 1000 == 0:
