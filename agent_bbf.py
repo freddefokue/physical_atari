@@ -651,6 +651,8 @@ class AgentConfig:
     # Mixed Precision Training
     use_amp: bool = True  # Enable automatic mixed precision (FP16) for faster training
     channels_last_memory: bool = False  # Use channels-last memory format for convs (CUDA only)
+    torch_compile: bool = False  # Use torch.compile on the train step (CUDA only)
+    torch_compile_mode: str = "reduce-overhead"
 
     log_file: str = ""
     
@@ -774,6 +776,23 @@ class Agent:
         # Profiler state (for continual mode, managed externally)
         self.profiler: Optional[torch.profiler.profile] = None
         self.profiler_active: bool = False
+
+        # Optional torch.compile for the training step (CUDA only).
+        self._train_batch_compiled = False
+        if config.torch_compile:
+            if not hasattr(torch, "compile"):
+                print("[WARN] torch.compile not available; running eager.")
+            elif config.torch_profile or config.profile:
+                print("[INFO] torch.compile disabled while profiler is active.")
+            elif self.device.type != "cuda":
+                print("[INFO] torch.compile enabled only for CUDA; running eager.")
+            else:
+                try:
+                    self._train_batch = torch.compile(self._train_batch, mode=config.torch_compile_mode)
+                    self._train_batch_compiled = True
+                    print(f"[INIT] torch.compile enabled for train step (mode={config.torch_compile_mode}).")
+                except Exception as exc:
+                    print(f"[WARN] torch.compile failed; running eager. ({exc})")
 
     def _get_epsilon(self):
         duration = self.config.exploration_fraction * self.config.total_steps
@@ -1441,6 +1460,8 @@ def parse_args() -> AgentConfig:
     parser.add_argument("--per-eps", type=float, default=1e-6)
     parser.add_argument("--use-amp", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--channels-last-memory", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--torch-compile", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--torch-compile-mode", type=str, default="reduce-overhead")
 
     # Continual benchmark
     parser.add_argument("--continual", action=argparse.BooleanOptionalAction, default=False)
