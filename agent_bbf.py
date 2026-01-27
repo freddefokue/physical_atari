@@ -961,7 +961,6 @@ class Agent:
                 data_obs_f = data_obs.to(dtype=obs_dtype).div_(255.0)
             else:
                 data_obs_f = data_obs if data_obs.dtype == obs_dtype else data_obs.to(dtype=obs_dtype)
-        data_done_f = data_done.float()
 
         # --- FORWARD PASS WITH MIXED PRECISION ---
         # AMP Strategy: FP16 for convolutions (fast), FP32 for C51/SPR (accurate)
@@ -1016,6 +1015,7 @@ class Agent:
             spr_loss_per_jump = ((pred_latents - target_latents) ** 2).sum(dim=2)
 
             # Apply cumulative done mask
+            data_done_f = data_done.float()
             spr_done_mask = 1.0 - data_done_f[:, :args.jumps]
             cumulative_mask = torch.cumprod(spr_done_mask, dim=1)
 
@@ -1067,7 +1067,7 @@ class Agent:
         # --- C51 LOSS - FORCE FP32 ---
         with rf("C51/loss"), autocast(device_type='cuda', enabled=False):
             z0_fp32 = z0.float()
-            curr_dist = self.q_network.get_dist(z0_fp32)
+            curr_dist = self.q_network.get_dist(z0_fp32).float()
             log_p = torch.log(curr_dist[torch.arange(args.batch_size), data_act[:, 0]] + 1e-8)
 
             # Per-sample C51 loss (for priority updates)
