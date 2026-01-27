@@ -1272,7 +1272,8 @@ class Agent:
 
     def _c51_targets_core(
         self,
-        data_obs_f: torch.Tensor,
+        next_dist: torch.Tensor,
+        online_n_dist: torch.Tensor,
         data_rew: torch.Tensor,
         data_done_f: torch.Tensor,
         gammas: torch.Tensor,
@@ -1281,10 +1282,8 @@ class Agent:
         ones_col: torch.Tensor,
         offset: torch.Tensor,
         curr_n: int,
-        use_amp: bool,
-        use_channels_last: bool,
     ):
-        """C51 target computation (compile-friendly)."""
+        """C51 target projection (compile-friendly)."""
         args = self.config
 
         not_done = 1.0 - data_done_f
@@ -1292,14 +1291,7 @@ class Agent:
         reward_mask = torch.cumprod(mask_seq, dim=1)[:, :curr_n]
         n_step_rew = torch.sum(data_rew[:, :curr_n] * gammas * reward_mask, dim=1)
 
-        obs_n = data_obs_f[:, curr_n]
-        if use_channels_last:
-            obs_n = obs_n.contiguous(memory_format=torch.channels_last)
         bootstrap_mask = torch.prod(not_done[:, :curr_n], dim=1)
-
-        with autocast(device_type="cuda", enabled=use_amp):
-            next_dist = self.target_network(obs_n)
-            online_n_dist = self.q_network(obs_n)
 
         next_dist = next_dist.float()
         online_n_dist = online_n_dist.float()
@@ -1388,9 +1380,17 @@ class Agent:
         # --- C51 TARGET COMPUTATION - FORCE FP32 for distributional RL ---
         avg_q = 0.0
         with rf("C51/targets"), torch.no_grad():
+            obs_n = data_obs_f[:, curr_n]
+            if use_channels_last:
+                obs_n = obs_n.contiguous(memory_format=torch.channels_last)
+            with autocast(device_type="cuda", enabled=use_amp):
+                next_dist = self.target_network(obs_n)
+                online_n_dist = self.q_network(obs_n)
+
             gamma_n = gammas[-1] * curr_gamma
             target_pmf, avg_q = self._c51_targets_core(
-                data_obs_f,
+                next_dist,
+                online_n_dist,
                 data_rew,
                 data_done_f,
                 gammas,
@@ -1399,8 +1399,6 @@ class Agent:
                 self._ones_col,
                 offset,
                 curr_n,
-                use_amp,
-                use_channels_last,
             )
 
         # --- C51 LOSS - FORCE FP32 (kept outside compile to avoid graph breaks) ---
