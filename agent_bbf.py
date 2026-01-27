@@ -968,6 +968,16 @@ class Agent:
                 data_obs_f = data_obs.to(dtype=obs_dtype).div_(255.0)
             else:
                 data_obs_f = data_obs if data_obs.dtype == obs_dtype else data_obs.to(dtype=obs_dtype)
+        data_done_f = data_done.float()
+        if not hasattr(self, "_batch_range") or self._batch_range.device != self.device or self._batch_range.numel() != args.batch_size:
+            self._batch_range = torch.arange(args.batch_size, device=self.device, dtype=torch.long)
+        if (
+            not hasattr(self, "_ones_col")
+            or self._ones_col.device != self.device
+            or self._ones_col.shape[0] != args.batch_size
+            or self._ones_col.dtype != data_done_f.dtype
+        ):
+            self._ones_col = torch.ones((args.batch_size, 1), device=self.device, dtype=data_done_f.dtype)
 
         # --- FORWARD PASS WITH MIXED PRECISION ---
         # AMP Strategy: FP16 for convolutions (fast), FP32 for C51/SPR (accurate)
@@ -1026,7 +1036,6 @@ class Agent:
             spr_loss_per_jump = ((pred_latents - target_latents) ** 2).sum(dim=2)
 
             # Apply cumulative done mask
-            data_done_f = data_done.float()
             spr_done_mask = 1.0 - data_done_f[:, :args.jumps]
             cumulative_mask = torch.cumprod(spr_done_mask, dim=1)
 
@@ -1036,9 +1045,18 @@ class Agent:
         # --- C51 TARGET COMPUTATION - FORCE FP32 for distributional RL ---
         avg_q = 0.0
         with rf("C51/targets"), torch.no_grad(), autocast(device_type='cuda', enabled=False):
-            gammas = torch.pow(curr_gamma, torch.arange(curr_n, device=self.device))
+            if (
+                not hasattr(self, "_gamma_pows")
+                or self._gamma_pows.device != self.device
+                or self._gamma_pows.numel() != curr_n
+                or self._gamma_pows.dtype != data_rew.dtype
+                or getattr(self, "_gamma_pows_gamma", None) != curr_gamma
+            ):
+                self._gamma_pows = torch.pow(curr_gamma, torch.arange(curr_n, device=self.device, dtype=data_rew.dtype))
+                self._gamma_pows_gamma = curr_gamma
+            gammas = self._gamma_pows
             not_done = 1.0 - data_done_f
-            mask_seq = torch.cat([torch.ones((args.batch_size, 1), device=self.device), not_done[:, :-1]], dim=1)
+            mask_seq = torch.cat([self._ones_col, not_done[:, :-1]], dim=1)
             reward_mask = torch.cumprod(mask_seq, dim=1)[:, :curr_n]
             n_step_rew = torch.sum(data_rew[:, :curr_n] * gammas * reward_mask, dim=1)
 
@@ -1060,7 +1078,7 @@ class Agent:
             # Compute Q-values and best action in FP32
             avg_q = (online_n_dist * self.q_network.support_fp32).sum(2).mean()
             best_act = (online_n_dist * next_sup).sum(2).argmax(1)
-            next_pmf = next_dist[torch.arange(args.batch_size), best_act]
+            next_pmf = next_dist[self._batch_range, best_act]
 
             # C51 categorical projection in FP32 (critical!)
             gamma_n = curr_gamma ** curr_n
@@ -1072,7 +1090,7 @@ class Agent:
 
             target_pmf = torch.zeros_like(next_pmf)
             if not hasattr(self, "_c51_offset") or self._c51_offset.device != self.device or self._c51_offset.shape[0] != args.batch_size:
-                self._c51_offset = (torch.arange(args.batch_size, device=self.device, dtype=torch.long) * args.n_atoms).unsqueeze(1)
+                self._c51_offset = (self._batch_range * args.n_atoms).unsqueeze(1)
             offset = self._c51_offset
             target_pmf.view(-1).index_add_(0, (l + offset).view(-1), (next_pmf * (u.float() - b)).view(-1))
             target_pmf.view(-1).index_add_(0, (u + offset).view(-1), (next_pmf * (b - l.float())).view(-1))
@@ -1080,8 +1098,8 @@ class Agent:
         # --- C51 LOSS - FORCE FP32 ---
         with rf("C51/loss"), autocast(device_type='cuda', enabled=False):
             z0_fp32 = z0.float()
-            curr_dist = self.q_network.get_dist(z0_fp32).float()
-            log_p = torch.log(curr_dist[torch.arange(args.batch_size), data_act[:, 0]] + 1e-8)
+            curr_dist = self.q_network.get_dist(z0_fp32)
+            log_p = torch.log(curr_dist[self._batch_range, data_act[:, 0]] + 1e-8)
 
             # Per-sample C51 loss (for priority updates)
             c51_loss_per_sample = -torch.sum(target_pmf * log_p, dim=1)
