@@ -1468,11 +1468,6 @@ def main():
     random.seed(config.seed)
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
-    # Reduce CPU overhead in single-process runs.
-    torch.set_num_threads(1)
-    # Default tensor placement for new tensors (CUDA only).
-    if config.cuda and torch.cuda.is_available():
-        torch.set_default_device("cuda")
     torch.backends.cudnn.deterministic = config.torch_deterministic
     torch.backends.cudnn.benchmark = not config.torch_deterministic
     if config.cuda and torch.cuda.is_available():
