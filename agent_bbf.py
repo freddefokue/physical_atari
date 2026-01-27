@@ -350,6 +350,10 @@ class SequenceReplayBuffer:
 
         # Pre-allocated weights buffer (uniform weights for this buffer type)
         self._weights_gpu = torch.ones(batch_size, dtype=torch.float32, device=device)
+        # Cached sequence offsets to build indices on GPU.
+        self._seq_offsets = torch.arange(max_seq_len, device=device, dtype=torch.long)
+        # Cached sample start indices.
+        self._starts_gpu = torch.empty(batch_size, device=device, dtype=torch.long)
 
         self.pos = 0
         self.size = 0
@@ -385,13 +389,15 @@ class SequenceReplayBuffer:
         # Zero-Bias Modulo Sampling to handle circular wrapping
         cursor = self.pos if self.size == self.capacity else 0
         max_logical = self.size - seq_len + 1
-        logical_starts = np.random.randint(0, max_logical, size=batch_size)
-        physical_starts = (cursor + logical_starts) % self.capacity
+        # Sample starts directly on GPU to avoid CPU->GPU copies.
+        if self._starts_gpu.shape[0] != batch_size:
+            self._starts_gpu = torch.empty(batch_size, device=self.device, dtype=torch.long)
+        if self._seq_offsets.numel() != seq_len:
+            self._seq_offsets = torch.arange(seq_len, device=self.device, dtype=torch.long)
+        torch.randint(0, max_logical, (batch_size,), device=self.device, out=self._starts_gpu)
+        physical_starts = (self._starts_gpu + cursor) % self.capacity
 
-        seq_indices = (physical_starts[:, None] + np.arange(seq_len)) % self.capacity
-
-        # Upload indices to GPU (tiny: batch_size * seq_len * 8 bytes)
-        seq_indices_gpu = torch.from_numpy(seq_indices).to(self.device)
+        seq_indices_gpu = (physical_starts.unsqueeze(1) + self._seq_offsets.unsqueeze(0)) % self.capacity
 
         # Fast GPU gather (no H2D copy needed - data already on GPU)
         obs_batch = self.obs[seq_indices_gpu]
@@ -408,7 +414,7 @@ class SequenceReplayBuffer:
             actions_batch,
             rewards_batch,
             dones_batch,
-            physical_starts,
+            physical_starts.detach().cpu().numpy(),
             self._weights_gpu[:batch_size],
         )
 
