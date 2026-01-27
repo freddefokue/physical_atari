@@ -923,6 +923,14 @@ class Agent:
         # Only stop AFTER completing (use > not >=)
         if self.grad_step > total_profiler_steps:
             # Schedule has completed, on_trace_ready already fired
+            try:
+                table = self.profiler.key_averages(group_by_input_shape=True).table(
+                    sort_by="self_cuda_time_total", row_limit=50
+                )
+                print("*** Profiler (grouped by input shape) ***")
+                print(table)
+            except Exception as exc:
+                print(f"*** Profiler summary failed: {exc} ***")
             self.profiler_active = False
             self.profiler = None
             print(f"*** Torch Profiler completed after {total_profiler_steps} grad steps ***")
