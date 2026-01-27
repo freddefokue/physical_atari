@@ -644,6 +644,7 @@ class AgentConfig:
 
     # Mixed Precision Training
     use_amp: bool = True  # Enable automatic mixed precision (FP16) for faster training
+    channels_last_memory: bool = False  # Use channels-last memory format for convs (CUDA only)
 
     log_file: str = ""
     
@@ -698,6 +699,9 @@ class Agent:
         self.q_network = BBFNetwork(self.in_channels, self.num_actions, config).to(self.device)
         self.target_network = BBFNetwork(self.in_channels, self.num_actions, config).to(self.device)
         self.target_network.load_state_dict(self.q_network.state_dict())
+        if config.channels_last_memory and self.device.type == "cuda":
+            self.q_network = self.q_network.to(memory_format=torch.channels_last)
+            self.target_network = self.target_network.to(memory_format=torch.channels_last)
         # Cache parameter lists for faster foreach EMA updates
         self._online_params = list(self.q_network.parameters())
         self._target_params = list(self.target_network.parameters())
@@ -820,6 +824,8 @@ class Agent:
         obs_tensor = obs_t.unsqueeze(0)
         if self.channels_last:
             obs_tensor = obs_tensor.permute(0, 3, 1, 2)
+        if self.config.channels_last_memory and self.device.type == "cuda":
+            obs_tensor = obs_tensor.contiguous(memory_format=torch.channels_last)
             
         with torch.no_grad():
             q_dist = self.target_network(obs_tensor)  # Use TARGET network (matches bbf_atari.py)
@@ -943,6 +949,7 @@ class Agent:
         """Training logic with AMP support (matches bbf_atari.py exactly)."""
         args = self.config
         use_amp = args.use_amp and self.device.type == 'cuda'
+        use_channels_last = args.channels_last_memory and self.device.type == "cuda"
         fetch_len = args.jumps + 1 + curr_n
 
         rf = record_function if self.profiler_active else (lambda _: nullcontext())
@@ -968,6 +975,8 @@ class Agent:
             # --- AUGMENTATION (obs_0) ---
             with rf("AUG/random_shift"):
                 obs_0 = self.aug(data_obs_f[:, 0])
+                if use_channels_last:
+                    obs_0 = obs_0.contiguous(memory_format=torch.channels_last)
 
             # --- ENCODE (online) - Keep FP16 for speed ---
             with rf("NET/encode_online"):
@@ -987,6 +996,8 @@ class Agent:
             # Augmentation + encode in FP16 (convolutions are fast)
             with autocast(device_type='cuda', enabled=use_amp):
                 obs_jumps_aug = self.aug(obs_jumps_flat)
+                if use_channels_last:
+                    obs_jumps_aug = obs_jumps_aug.contiguous(memory_format=torch.channels_last)
                 t_z_flat = self.target_network.encode(obs_jumps_aug)
 
             # Projection + normalization in FP32 (critical for numerical stability)
@@ -1032,6 +1043,8 @@ class Agent:
             n_step_rew = torch.sum(data_rew[:, :curr_n] * gammas * reward_mask, dim=1)
 
             obs_n = data_obs_f[:, curr_n]
+            if use_channels_last:
+                obs_n = obs_n.contiguous(memory_format=torch.channels_last)
             bootstrap_mask = torch.prod(not_done[:, :curr_n], dim=1)
 
             # Forward passes in FP16 (fast), then convert to FP32 for distribution ops
@@ -1384,6 +1397,7 @@ def parse_args() -> AgentConfig:
     parser.add_argument("--per-beta", type=float, default=0.5)
     parser.add_argument("--per-eps", type=float, default=1e-6)
     parser.add_argument("--use-amp", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--channels-last-memory", action=argparse.BooleanOptionalAction, default=False)
 
     # Continual benchmark
     parser.add_argument("--continual", action=argparse.BooleanOptionalAction, default=False)
@@ -1548,6 +1562,8 @@ def main():
             obs_t_net = obs_t
             if agent.channels_last:
                 obs_t_net = obs_t_net.permute(0, 3, 1, 2)
+            if config.channels_last_memory and agent.device.type == "cuda":
+                obs_t_net = obs_t_net.contiguous(memory_format=torch.channels_last)
 
             epsilon = agent._get_epsilon()
             if random.random() < epsilon:
