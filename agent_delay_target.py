@@ -1113,7 +1113,10 @@ def main():
                         sticky_prob=0.0,
                         delay_frames=6,
                         seed=seed + cycle_index,
-                        params={'reduce_action_set': reduce_action_setting},
+                        params={
+                            'reduce_action_set': reduce_action_setting,
+                            'use_canonical_full_actions': True,
+                        },
                     )
                 )
             cycles.append(CycleConfig(cycle_index=cycle_index, games=cycle_games))

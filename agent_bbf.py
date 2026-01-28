@@ -1676,7 +1676,11 @@ def _build_continual_benchmark_config(game_ids: Sequence[str], frame_budget: int
                     backend='gym',
                     env_id=env_id,
                     params={
-                        'noop_max': 30, 'frame_skip': FRAME_SKIP, 'resize_shape': (84, 84), 'grayscale': True
+                        'noop_max': 30,
+                        'frame_skip': FRAME_SKIP,
+                        'resize_shape': (84, 84),
+                        'grayscale': True,
+                        'use_canonical_full_actions': True,
                     },
                 )
             )

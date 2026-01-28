@@ -808,6 +808,7 @@ def _build_continual_benchmark_config(
                         'frame_stack': FRAME_SKIP,
                         'resize_shape': (84, 84),
                         'grayscale': True,
+                        'use_canonical_full_actions': True,
                     },
                 )
             )
