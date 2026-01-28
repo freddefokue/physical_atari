@@ -609,6 +609,7 @@ class AgentConfig:
     total_steps: int = 100_000  # Alias for total_timesteps
     num_envs: int = 1
     buffer_size: int = 120_000
+    full_action_space: bool = False
     
     learning_rate: float = 0.0001
     weight_decay: float = 0.1
@@ -1707,6 +1708,12 @@ def parse_args() -> AgentConfig:
     parser.add_argument("--total-steps", "--total-timesteps", dest="total_steps", type=int, default=100_000)
     parser.add_argument("--num-envs", type=int, default=1)
     parser.add_argument("--buffer-size", type=int, default=120_000)
+    parser.add_argument(
+        "--full-action-space",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use the full 18-action Atari set (single-game mode).",
+    )
     parser.add_argument("--learning-rate", type=float, default=0.0001)
     parser.add_argument("--weight-decay", type=float, default=0.1)
     parser.add_argument("--impala-width", type=int, default=4)
@@ -1806,6 +1813,7 @@ def main():
     print(f"  Total Steps:    {config.total_steps}")
     print(f"  Seed:           {config.seed}")
     print(f"  Learning Rate:  {config.learning_rate}")
+    print(f"  Full Actions:   {config.full_action_space}")
     print(f"  Continual:      {config.continual}")
     if config.continual:
         print(f"  Games:          {config.continual_games}")
@@ -1851,7 +1859,17 @@ def main():
         # Single game mode - CleanRL-style training loop with SyncVectorEnv
         num_envs = config.num_envs  # BBF uses single env for sequence correctness
         envs = gym.vector.SyncVectorEnv(
-            [make_env(config.env_id, config.seed + i, i, config.capture_video, run_name) for i in range(num_envs)]
+            [
+                make_env(
+                    config.env_id,
+                    config.seed + i,
+                    i,
+                    config.capture_video,
+                    run_name,
+                    full_action_space=config.full_action_space,
+                )
+                for i in range(num_envs)
+            ]
         )
         
         # Reinitialize agent with correct observation space from vectorized env
