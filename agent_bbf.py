@@ -22,6 +22,7 @@ This implementation wraps the correct CleanRL BBF logic to fit the benchmark run
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import inspect
 import math
 import os
@@ -610,6 +611,10 @@ class AgentConfig:
     num_envs: int = 1
     buffer_size: int = 120_000
     full_action_space: bool = False
+    continual_reset_on_game_switch: bool = False
+    allow_resets_in_continual: bool = False
+    continual_sticky_prob: float = 0.25
+    continual_delay_frames: int = 0
     
     learning_rate: float = 0.0001
     weight_decay: float = 0.1
@@ -922,7 +927,8 @@ class Agent:
 
             # Check for reset interval (BBF periodic resets)
             # Reset based on GRADIENT STEPS (paper: "reset every 40k gradient steps")
-            if self.grad_step > 0 and self.grad_step % self.config.reset_interval == 0:
+            allow_resets = not (self.config.continual and not self.config.allow_resets_in_continual)
+            if allow_resets and self.config.reset_interval > 0 and self.grad_step > 0 and self.grad_step % self.config.reset_interval == 0:
                 print(f"  [Agent] Hard Reset at grad step {self.grad_step} (env step {self.global_step})")
                 self._hard_reset()
                 self.steps_since_reset = 0
@@ -1507,8 +1513,9 @@ def agent_bbf_frame_runner(
         print(f"*** Torch Profiler ENABLED - will profile {config.torch_profile_steps} steps ***")
         print(f"*** Profiler output: {profiler_dir} ***")
 
-    # Signal new game
-    agent.start_new_game()
+    # Signal new game (optional for continual learning)
+    if not (config.continual and not config.continual_reset_on_game_switch):
+        agent.start_new_game()
 
     logger = create_logger(log_file=getattr(config, "log_file", None))
     log = logger.log
@@ -1547,9 +1554,17 @@ def agent_bbf_frame_runner(
     best_return = float('-inf')
     best_model_path = f"best_model_{game_name.replace('/', '_').replace(' ', '_')}.pt"
 
+    delay_frames = max(0, int(context.delay_frames))
+    action_delay = deque([0] * delay_frames) if delay_frames > 0 else None
+
     for _ in range(max_step_budget):
         action = agent.act(obs)
-        next_obs, reward, terminated, truncated, info = env.step(action)
+        if action_delay is not None:
+            action_delay.append(action)
+            action_to_env = action_delay.popleft()
+        else:
+            action_to_env = action
+        next_obs, reward, terminated, truncated, info = env.step(action_to_env)
 
         running_episode_score += reward
         if reward != 0:
@@ -1629,6 +1644,8 @@ def agent_bbf_frame_runner(
             obs, info = env.reset()
             running_episode_score = 0.0
             frames_since_reward = 0
+            if action_delay is not None:
+                action_delay = deque([0] * delay_frames)
         else:
             obs = next_obs
             
@@ -1673,6 +1690,8 @@ def _build_continual_benchmark_config(game_ids: Sequence[str], frame_budget: int
                 GameSpec(
                     name=env_id,
                     frame_budget=frame_budget,
+                    sticky_prob=config.continual_sticky_prob,
+                    delay_frames=config.continual_delay_frames,
                     seed=config.seed + cycle_index,
                     backend='gym',
                     env_id=env_id,
@@ -1713,6 +1732,30 @@ def parse_args() -> AgentConfig:
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Use the full 18-action Atari set (single-game mode).",
+    )
+    parser.add_argument(
+        "--continual-reset-on-game-switch",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Reset BBF state when switching games in continual mode (oracle baseline).",
+    )
+    parser.add_argument(
+        "--allow-resets-in-continual",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Allow BBF periodic hard resets during continual runs.",
+    )
+    parser.add_argument(
+        "--continual-sticky-prob",
+        type=float,
+        default=0.25,
+        help="Sticky action probability for continual benchmark games.",
+    )
+    parser.add_argument(
+        "--continual-delay-frames",
+        type=int,
+        default=0,
+        help="Action delay (frames) for continual benchmark games.",
     )
     parser.add_argument("--learning-rate", type=float, default=0.0001)
     parser.add_argument("--weight-decay", type=float, default=0.1)
@@ -1819,6 +1862,10 @@ def main():
         print(f"  Games:          {config.continual_games}")
         print(f"  Cycles:         {config.continual_cycles}")
         print(f"  Cycle Frames:   {config.continual_cycle_frames}")
+        print(f"  Sticky Prob:    {config.continual_sticky_prob}")
+        print(f"  Delay Frames:   {config.continual_delay_frames}")
+        print(f"  Reset on Switch:{config.continual_reset_on_game_switch}")
+        print(f"  Allow Resets:   {config.allow_resets_in_continual}")
     print(f"{'='*60}\n")
 
     if config.continual:

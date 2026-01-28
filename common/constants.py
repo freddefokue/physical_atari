@@ -42,15 +42,16 @@ NOOP_MAX = 30
 # =============================================================================
 
 # Default game list for continual benchmark (8 games)
+# Default game list for continual benchmark (8 games, Carmack talk set)
 DEFAULT_CONTINUAL_GAMES = (
-    "BreakoutNoFrameskip-v4",
-    "PongNoFrameskip-v4",
-    "SpaceInvadersNoFrameskip-v4",
-    "SeaquestNoFrameskip-v4",
-    "QbertNoFrameskip-v4",
-    "BeamRiderNoFrameskip-v4",
-    "RiverraidNoFrameskip-v4",
     "MsPacmanNoFrameskip-v4",
+    "CentipedeNoFrameskip-v4",
+    "QbertNoFrameskip-v4",
+    "DefenderNoFrameskip-v4",
+    "KrullNoFrameskip-v4",
+    "AtlantisNoFrameskip-v4",
+    "UpNDownNoFrameskip-v4",
+    "BattleZoneNoFrameskip-v4",
 )
 
 # Default number of cycles through all games

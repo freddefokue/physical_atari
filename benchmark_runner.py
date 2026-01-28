@@ -268,6 +268,19 @@ class BenchmarkRunner:
                 raise ValueError(
                     f'Action set size {len(action_set)} for game {spec.name} does not match agent.num_actions {expected_actions}'
                 )
+        elif handle.backend == 'gym' and handle.gym is not None:
+            expected_actions = getattr(self.agent, 'num_actions', None)
+            action_space = getattr(handle.gym, 'action_space', None)
+            action_space_n = getattr(action_space, 'n', None)
+            if expected_actions is not None and action_space_n is not None:
+                if action_space_n != expected_actions:
+                    raise ValueError(
+                        f'Action space size {action_space_n} for game {spec.name} does not match agent.num_actions {expected_actions}'
+                    )
+        if handle.frames_per_step > 1 and spec.frame_budget % handle.frames_per_step != 0:
+            raise ValueError(
+                f"Frame budget {spec.frame_budget} for game {spec.name} is not divisible by frames_per_step {handle.frames_per_step}"
+            )
         run_name = self._make_run_name(cycle_index, game_index, spec)
 
         context = FrameRunnerContext(
