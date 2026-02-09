@@ -705,6 +705,9 @@ class AgentConfig:
     eval_epsilon: float = 0.001
     eval_sticky_prob: float = 0.0
     eval_clip_rewards: bool = False
+    eval_select_interval: int = 25_000
+    eval_select_start: int = 25_000
+    eval_select_episodes: int = 2
 
     @property
     def device(self) -> torch.device:
@@ -867,6 +870,28 @@ class Agent:
                 return False
         return True
 
+    def _apply_periodic_reset_if_needed(
+        self,
+        *,
+        allow_resets: bool,
+        reset_message: str,
+        warmup_message: str,
+    ) -> bool:
+        """Apply periodic reset + warmup and return whether a reset occurred."""
+        if not self._should_periodic_reset(allow_resets=allow_resets):
+            return False
+
+        print(reset_message.format(grad_step=self.grad_step, env_step=self.global_step))
+        self._hard_reset()
+        self.steps_since_reset = 0
+
+        print(warmup_message.format(steps=self.config.reset_warmup_steps))
+        for _ in range(self.config.reset_warmup_steps):
+            self.grad_step += 1
+            self._train_batch(self.config.initial_gamma, self.config.initial_n_step)
+            self._step_profiler()
+        return True
+
     def _hard_reset(self):
         """
         BBF Reset Strategy (from official implementation):
@@ -983,23 +1008,19 @@ class Agent:
             if self.grad_step == 0:
                 print(f"[TRAINING STARTED] step={self.global_step} buffer_size={self.replay_buffer.size}")
 
-            # Check for reset interval (BBF periodic resets)
-            # Reset based on GRADIENT STEPS (paper: "reset every 40k gradient steps")
             allow_resets = not (self.config.continual and not self.config.allow_resets_in_continual)
-            if self._should_periodic_reset(allow_resets=allow_resets):
-                print(f"  [Agent] Hard Reset at grad step {self.grad_step} (env step {self.global_step})")
-                self._hard_reset()
-                self.steps_since_reset = 0
-                
-                # Offline warmup after reset
-                print(f"  [Agent] Offline Warmup ({self.config.reset_warmup_steps} steps)...")
-                for _ in range(self.config.reset_warmup_steps):
-                    self.grad_step += 1
-                    self._train_batch(self.config.initial_gamma, self.config.initial_n_step)
-                    self._step_profiler()
 
             # Replay ratio loop
             for _ in range(self.config.replay_ratio):
+                # Reset based on GRADIENT STEPS (paper: every 40k grad steps).
+                # Check inside the gradient loop so intervals are never skipped
+                # when replay_ratio does not divide reset_interval exactly.
+                self._apply_periodic_reset_if_needed(
+                    allow_resets=allow_resets,
+                    reset_message="  [Agent] Hard Reset at grad step {grad_step} (env step {env_step})",
+                    warmup_message="  [Agent] Offline Warmup ({steps} steps)...",
+                )
+
                 self.grad_step += 1
                 self.steps_since_reset += 1
 
@@ -1553,6 +1574,7 @@ def evaluate_policy(
     if episodes <= 0:
         return None
 
+    rng = random.Random(seed)
     env = make_eval_env(
         config.env_id,
         seed=seed,
@@ -1561,6 +1583,7 @@ def evaluate_policy(
         clip_rewards=config.eval_clip_rewards,
     )
 
+    was_training = policy_network.training
     policy_network.eval()
     returns: List[float] = []
     lengths: List[int] = []
@@ -1574,7 +1597,7 @@ def evaluate_policy(
         f"clip_rewards={config.eval_clip_rewards}"
     )
     while len(returns) < episodes:
-        if random.random() < epsilon:
+        if rng.random() < epsilon:
             action = env.action_space.sample()
         else:
             obs_np = np.array(obs, copy=False)
@@ -1604,6 +1627,8 @@ def evaluate_policy(
             ep_length = 0
 
     env.close()
+    if was_training:
+        policy_network.train()
 
     returns_np = np.asarray(returns, dtype=np.float32)
     lengths_np = np.asarray(lengths, dtype=np.float32)
@@ -1968,6 +1993,24 @@ def parse_args() -> AgentConfig:
         default=False,
         help="Whether to clip rewards during post-training evaluation.",
     )
+    parser.add_argument(
+        "--eval-select-interval",
+        type=int,
+        default=25_000,
+        help="Run eval-based checkpoint selection every N env steps in single-game mode. Set 0 to disable.",
+    )
+    parser.add_argument(
+        "--eval-select-start",
+        type=int,
+        default=25_000,
+        help="First env step at which eval-based checkpoint selection can run.",
+    )
+    parser.add_argument(
+        "--eval-select-episodes",
+        type=int,
+        default=2,
+        help="Episodes per eval-selection pass.",
+    )
     
     args = parser.parse_args()
     return AgentConfig(**vars(args))
@@ -2044,6 +2087,9 @@ def main():
         print(f"  Eval Episodes:  {config.eval_episodes}")
         print(f"  Eval Epsilon:   {config.eval_epsilon}")
         print(f"  Eval Sticky:    {config.eval_sticky_prob}")
+        print(f"  Eval Sel Every: {config.eval_select_interval}")
+        print(f"  Eval Sel Start: {config.eval_select_start}")
+        print(f"  Eval Sel Eps:   {config.eval_select_episodes}")
     print(f"{'='*60}\n")
 
     if config.continual:
@@ -2110,9 +2156,44 @@ def main():
         
         print("Starting Training Loop...")
 
-        # Best model checkpointing
-        best_return = float('-inf')
+        # Checkpoint tracking:
+        # - train_best_return: best training episodic-life return (diagnostic only)
+        # - best_eval_score: best checkpoint score on the eval protocol (used for model selection)
+        train_best_return = float('-inf')
+        train_best_step = -1
+        best_eval_score = float("-inf")
+        best_eval_step = -1
         best_model_path = os.path.join(run_dir, "best_model.pt")
+        next_eval_select_step = None
+        if config.eval_select_interval > 0 and config.eval_select_episodes > 0:
+            next_eval_select_step = config.eval_select_start if config.eval_select_start > 0 else config.eval_select_interval
+
+        def run_eval_checkpoint_selection(current_step: int, tag_suffix: str):
+            nonlocal best_eval_score, best_eval_step
+            if config.eval_select_episodes <= 0:
+                return
+            eval_summary = evaluate_policy(
+                agent,
+                agent.q_network,
+                config,
+                episodes=config.eval_select_episodes,
+                epsilon=config.eval_epsilon,
+                seed=config.seed + 30_000 + current_step,
+                tag=f"select_{tag_suffix}",
+            )
+            if eval_summary is None:
+                return
+            score = eval_summary["mean_return"]
+            writer.add_scalar("eval/select_mean_return", score, current_step)
+            if score > best_eval_score:
+                best_eval_score = score
+                best_eval_step = current_step
+                agent.save_model(best_model_path)
+                print(
+                    f"    ★ New eval-best checkpoint at step {current_step}: "
+                    f"mean return {best_eval_score:.2f}"
+                )
+                writer.add_scalar("eval/select_best_mean_return", best_eval_score, current_step)
 
         # Setup torch.profiler if enabled (uses agent's profiler attributes)
         if config.torch_profile:
@@ -2171,26 +2252,24 @@ def main():
                         print(f"--> Episode Done. Step={global_step}, Return={ep_return:.0f}, Length={info['episode']['l']}")
                         writer.add_scalar("charts/episodic_return", ep_return, global_step)
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
-                        
-                        # Save best model
-                        if ep_return > best_return:
-                            best_return = ep_return
-                            agent.save_model(best_model_path)
-                            print(f"    ★ New best! Saved model with return {best_return:.0f}")
-                            writer.add_scalar("charts/best_return", best_return, global_step)
+
+                        # Track best training episodic return (diagnostic only).
+                        if ep_return > train_best_return:
+                            train_best_return = ep_return
+                            train_best_step = global_step
+                            writer.add_scalar("charts/train_best_return", train_best_return, global_step)
             elif "episode" in infos:
                 ep_return = float(infos['episode']['r'])
                 all_returns.append(ep_return)
                 print(f"--> Episode Done. Step={global_step}, Return={ep_return:.0f}, Length={infos['episode']['l']}")
                 writer.add_scalar("charts/episodic_return", ep_return, global_step)
                 writer.add_scalar("charts/episodic_length", infos["episode"]["l"], global_step)
-                
-                # Save best model
-                if ep_return > best_return:
-                    best_return = ep_return
-                    agent.save_model(best_model_path)
-                    print(f"    ★ New best! Saved model with return {best_return:.0f}")
-                    writer.add_scalar("charts/best_return", best_return, global_step)
+
+                # Track best training episodic return (diagnostic only).
+                if ep_return > train_best_return:
+                    train_best_return = ep_return
+                    train_best_step = global_step
+                    writer.add_scalar("charts/train_best_return", train_best_return, global_step)
             
             # --- BUFFER ADD (vectorized) ---
             # Use terminated OR truncated as boundary to avoid bootstrapping across auto-resets.
@@ -2206,22 +2285,16 @@ def main():
             min_samples = agent.seq_req + 1
             
             if agent.replay_buffer.size > min_samples and agent.global_step >= agent.learning_ready_step:
-                # Check for reset interval (BBF periodic resets)
-                # Reset based on GRADIENT STEPS (paper: "reset every 40k gradient steps")
-                if agent._should_periodic_reset(allow_resets=True):
-                    print(f"*** HARD RESET at grad step {agent.grad_step} (env step {agent.global_step}) ***")
-                    agent._hard_reset()
-                    agent.steps_since_reset = 0
-                    
-                    # Offline warmup after reset
-                    print(f"*** Offline Warmup ({config.reset_warmup_steps} steps) ***")
-                    for _ in range(config.reset_warmup_steps):
-                        agent.grad_step += 1
-                        agent._train_batch(config.initial_gamma, config.initial_n_step)
-                        agent._step_profiler()
-
                 # Replay ratio loop
                 for _ in range(config.replay_ratio):
+                    # Reset based on GRADIENT STEPS (paper: every 40k grad steps).
+                    # Check inside gradient loop so intervals are never skipped.
+                    agent._apply_periodic_reset_if_needed(
+                        allow_resets=True,
+                        reset_message="*** HARD RESET at grad step {grad_step} (env step {env_step}) ***",
+                        warmup_message="*** Offline Warmup ({steps} steps) ***",
+                    )
+
                     agent.grad_step += 1
                     agent.steps_since_reset += 1
                     
@@ -2269,8 +2342,21 @@ def main():
                 sps = int(env_steps / (env_elapsed + 1e-5))
                 print(f"Step: {global_step} | SPS: {sps} (env-only)")
                 writer.add_scalar("charts/SPS", sps, global_step)
+
+            # Periodic eval-based checkpoint selection (same protocol as final eval).
+            if (
+                next_eval_select_step is not None
+                and global_step >= next_eval_select_step
+                and global_step >= config.eval_select_start
+            ):
+                run_eval_checkpoint_selection(global_step, f"step{global_step}")
+                next_eval_select_step += config.eval_select_interval
         
         envs.close()
+
+        # Ensure we always have at least one eval-based checkpoint candidate.
+        if config.eval_select_episodes > 0 and best_eval_score == float("-inf"):
+            run_eval_checkpoint_selection(config.total_steps, "final")
 
         # Mark profiler as inactive if still running (it will auto-cleanup)
         if agent.profiler_active and agent.profiler is not None:
@@ -2296,9 +2382,11 @@ def main():
             print(f"  Max Return:     {max(all_returns):.0f}")
             print(f"  Mean Return:    {np.mean(all_returns):.1f}")
             print(f"  Last 5:         {[int(r) for r in all_returns[-5:]]}")
-        if best_return > float('-inf'):
+        if train_best_return > float("-inf"):
+            print(f"  Train Best:     {train_best_return:.0f} @ step {train_best_step}")
+        if best_eval_score > float("-inf"):
+            print(f"  Eval Best:      {best_eval_score:.2f} @ step {best_eval_step}")
             print(f"  Best Model:     {best_model_path}")
-            print(f"  Best Return:    {best_return:.0f}")
         print(f"{'='*60}\n")
         
         # Log final metrics
@@ -2324,7 +2412,7 @@ def main():
                 writer.add_scalar("eval/final_median_return", final_eval["median_return"], config.total_steps)
                 writer.add_scalar("eval/final_max_return", final_eval["max_return"], config.total_steps)
 
-            if best_return > float("-inf") and os.path.exists(best_model_path):
+            if os.path.exists(best_model_path):
                 best_eval_net = BBFNetwork(agent.in_channels, agent.num_actions, config).to(agent.device)
                 best_eval_net.load_state_dict(torch.load(best_model_path, map_location=agent.device))
                 best_eval = evaluate_policy(
