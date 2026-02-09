@@ -118,6 +118,37 @@ def make_env(env_id, seed, idx, capture_video=False, run_name="", full_action_sp
     return thunk
 
 
+def make_eval_env(
+    env_id: str,
+    seed: int,
+    *,
+    full_action_space: bool = False,
+    sticky_prob: float = 0.0,
+    clip_rewards: bool = False,
+):
+    """Evaluation environment with true episodic returns (no EpisodicLife)."""
+    env = gym.make(
+        env_id,
+        frameskip=1,
+        repeat_action_probability=sticky_prob,
+        full_action_space=full_action_space,
+    )
+    env = NoopResetEnv(env, noop_max=30)
+    env = MaxAndSkipEnv(env, skip=4)
+
+    if "FIRE" in env.unwrapped.get_action_meanings():
+        env = FireResetEnv(env)
+
+    if clip_rewards:
+        env = ClipRewardEnv(env)
+
+    env = gym.wrappers.ResizeObservation(env, (84, 84))
+    env = gym.wrappers.GrayscaleObservation(env)
+    env = gym.wrappers.FrameStackObservation(env, 4)
+    env.action_space.seed(seed)
+    return env
+
+
 # =============================================================================
 # NETWORK ARCHITECTURE (from CleanRL BBF)
 # =============================================================================
@@ -632,6 +663,7 @@ class AgentConfig:
     reset_interval: int = 40_000
     shrink_factor: float = 0.5
     reset_warmup_steps: int = 2000
+    reset_disable_last_steps: int = 5_000
     
     # Official paper value for SPR weight
     spr_weight: float = 5.0
@@ -667,6 +699,12 @@ class AgentConfig:
     continual_cycles: int = DEFAULT_CONTINUAL_CYCLES
     continual_cycle_frames: int = DEFAULT_CONTINUAL_CYCLE_FRAMES
     per_game_learning_starts: int = 2000
+
+    # Post-training evaluation
+    eval_episodes: int = 10
+    eval_epsilon: float = 0.001
+    eval_sticky_prob: float = 0.0
+    eval_clip_rewards: bool = False
 
     @property
     def device(self) -> torch.device:
@@ -809,6 +847,26 @@ class Agent:
             return self.config.end_e
         return self.config.start_e + (self.config.end_e - self.config.start_e) * (self.global_step / duration)
 
+    def _should_periodic_reset(self, *, allow_resets: bool = True) -> bool:
+        """Check whether a periodic reset should trigger at the current point."""
+        if not allow_resets:
+            return False
+        if self.config.reset_interval <= 0 or self.grad_step <= 0:
+            return False
+        if self.grad_step % self.config.reset_interval != 0:
+            return False
+
+        if self.config.reset_disable_last_steps > 0:
+            tail_start = max(0, self.config.total_steps - self.config.reset_disable_last_steps)
+            if self.global_step >= tail_start:
+                print(
+                    f"  [Agent] Skipping periodic reset at grad step {self.grad_step} "
+                    f"(env step {self.global_step}) because within final "
+                    f"{self.config.reset_disable_last_steps} env steps."
+                )
+                return False
+        return True
+
     def _hard_reset(self):
         """
         BBF Reset Strategy (from official implementation):
@@ -928,7 +986,7 @@ class Agent:
             # Check for reset interval (BBF periodic resets)
             # Reset based on GRADIENT STEPS (paper: "reset every 40k gradient steps")
             allow_resets = not (self.config.continual and not self.config.allow_resets_in_continual)
-            if allow_resets and self.config.reset_interval > 0 and self.grad_step > 0 and self.grad_step % self.config.reset_interval == 0:
+            if self._should_periodic_reset(allow_resets=allow_resets):
                 print(f"  [Agent] Hard Reset at grad step {self.grad_step} (env step {self.global_step})")
                 self._hard_reset()
                 self.steps_since_reset = 0
@@ -1477,6 +1535,95 @@ class Agent:
 
 
 # =============================================================================
+# EVALUATION
+# =============================================================================
+
+@torch.no_grad()
+def evaluate_policy(
+    agent: Agent,
+    policy_network: BBFNetwork,
+    config: AgentConfig,
+    *,
+    episodes: int,
+    epsilon: float,
+    seed: int,
+    tag: str,
+):
+    """Run no-learning evaluation and return summary metrics."""
+    if episodes <= 0:
+        return None
+
+    env = make_eval_env(
+        config.env_id,
+        seed=seed,
+        full_action_space=config.full_action_space,
+        sticky_prob=config.eval_sticky_prob,
+        clip_rewards=config.eval_clip_rewards,
+    )
+
+    policy_network.eval()
+    returns: List[float] = []
+    lengths: List[int] = []
+    obs, _ = env.reset(seed=seed)
+    ep_return = 0.0
+    ep_length = 0
+
+    print(
+        f"\n[EVAL:{tag}] Starting evaluation: episodes={episodes}, "
+        f"epsilon={epsilon:.4f}, sticky_prob={config.eval_sticky_prob:.3f}, "
+        f"clip_rewards={config.eval_clip_rewards}"
+    )
+    while len(returns) < episodes:
+        if random.random() < epsilon:
+            action = env.action_space.sample()
+        else:
+            obs_np = np.array(obs, copy=False)
+            obs_t = torch.as_tensor(obs_np, device=agent.device, dtype=torch.uint8).unsqueeze(0)
+            if agent.channels_last:
+                obs_t = obs_t.permute(0, 3, 1, 2)
+            if config.channels_last_memory and agent.device.type == "cuda":
+                obs_t = obs_t.contiguous(memory_format=torch.channels_last)
+
+            q_dist = policy_network(obs_t)
+            q_values = torch.sum(q_dist * policy_network.support, dim=2)
+            action = int(torch.argmax(q_values, dim=1).item())
+
+        obs, reward, terminated, truncated, _ = env.step(action)
+        ep_return += float(reward)
+        ep_length += 1
+
+        if terminated or truncated:
+            returns.append(ep_return)
+            lengths.append(ep_length)
+            print(
+                f"[EVAL:{tag}] Episode {len(returns)}/{episodes} "
+                f"Return={ep_return:.0f} Length={ep_length}"
+            )
+            obs, _ = env.reset()
+            ep_return = 0.0
+            ep_length = 0
+
+    env.close()
+
+    returns_np = np.asarray(returns, dtype=np.float32)
+    lengths_np = np.asarray(lengths, dtype=np.float32)
+    summary = {
+        "episodes": int(episodes),
+        "mean_return": float(np.mean(returns_np)),
+        "median_return": float(np.median(returns_np)),
+        "max_return": float(np.max(returns_np)),
+        "min_return": float(np.min(returns_np)),
+        "mean_length": float(np.mean(lengths_np)),
+    }
+    print(
+        f"[EVAL:{tag}] Summary: mean={summary['mean_return']:.2f}, "
+        f"median={summary['median_return']:.2f}, min={summary['min_return']:.2f}, "
+        f"max={summary['max_return']:.2f}, mean_len={summary['mean_length']:.1f}"
+    )
+    return summary
+
+
+# =============================================================================
 # FRAME RUNNER FOR BENCHMARK
 # =============================================================================
 
@@ -1770,6 +1917,12 @@ def parse_args() -> AgentConfig:
     parser.add_argument("--reset-interval", type=int, default=40_000, help="Gradient steps between periodic resets (paper: 40k)")
     parser.add_argument("--shrink-factor", type=float, default=0.5)
     parser.add_argument("--reset-warmup-steps", type=int, default=2000)
+    parser.add_argument(
+        "--reset-disable-last-steps",
+        type=int,
+        default=5_000,
+        help="Disable periodic hard resets in the final N env steps to avoid end-of-run collapse.",
+    )
     parser.add_argument("--spr-weight", type=float, default=5.0)
     parser.add_argument("--jumps", type=int, default=5, help="Number of SPR prediction jumps")
     parser.add_argument("--n-atoms", type=int, default=51)
@@ -1795,6 +1948,26 @@ def parse_args() -> AgentConfig:
     parser.add_argument("--continual-cycles", type=int, default=DEFAULT_CONTINUAL_CYCLES)
     parser.add_argument("--continual-cycle-frames", type=int, default=DEFAULT_CONTINUAL_CYCLE_FRAMES)
     parser.add_argument("--per-game-learning-starts", type=int, default=2000)
+
+    parser.add_argument(
+        "--eval-episodes",
+        type=int,
+        default=10,
+        help="Number of post-training evaluation episodes (single-game mode only). Set 0 to disable.",
+    )
+    parser.add_argument("--eval-epsilon", type=float, default=0.001, help="Epsilon for post-training evaluation.")
+    parser.add_argument(
+        "--eval-sticky-prob",
+        type=float,
+        default=0.0,
+        help="Sticky action probability used in post-training evaluation.",
+    )
+    parser.add_argument(
+        "--eval-clip-rewards",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Whether to clip rewards during post-training evaluation.",
+    )
     
     args = parser.parse_args()
     return AgentConfig(**vars(args))
@@ -1853,6 +2026,7 @@ def main():
     print(f"  Environment:    {config.env_id}")
     print(f"  Replay Ratio:   {config.replay_ratio}")
     print(f"  Reset Interval: {config.reset_interval} (grad steps)")
+    print(f"  Reset Tail Off: {config.reset_disable_last_steps} (env steps)")
     print(f"  Total Steps:    {config.total_steps}")
     print(f"  Seed:           {config.seed}")
     print(f"  Learning Rate:  {config.learning_rate}")
@@ -1866,6 +2040,10 @@ def main():
         print(f"  Delay Frames:   {config.continual_delay_frames}")
         print(f"  Reset on Switch:{config.continual_reset_on_game_switch}")
         print(f"  Allow Resets:   {config.allow_resets_in_continual}")
+    else:
+        print(f"  Eval Episodes:  {config.eval_episodes}")
+        print(f"  Eval Epsilon:   {config.eval_epsilon}")
+        print(f"  Eval Sticky:    {config.eval_sticky_prob}")
     print(f"{'='*60}\n")
 
     if config.continual:
@@ -2030,7 +2208,7 @@ def main():
             if agent.replay_buffer.size > min_samples and agent.global_step >= agent.learning_ready_step:
                 # Check for reset interval (BBF periodic resets)
                 # Reset based on GRADIENT STEPS (paper: "reset every 40k gradient steps")
-                if agent.grad_step > 0 and agent.grad_step % config.reset_interval == 0:
+                if agent._should_periodic_reset(allow_resets=True):
                     print(f"*** HARD RESET at grad step {agent.grad_step} (env step {agent.global_step}) ***")
                     agent._hard_reset()
                     agent.steps_since_reset = 0
@@ -2129,6 +2307,39 @@ def main():
             writer.add_scalar("final/mean_return", np.mean(all_returns), 0)
             writer.add_scalar("final/episodes", len(all_returns), 0)
             writer.add_scalar("final/total_time_minutes", total_time/60, 0)
+
+        # Separate no-learning evaluation to avoid conflating training noise/resets with final performance.
+        if config.eval_episodes > 0:
+            final_eval = evaluate_policy(
+                agent,
+                agent.q_network,
+                config,
+                episodes=config.eval_episodes,
+                epsilon=config.eval_epsilon,
+                seed=config.seed + 10_000,
+                tag="final",
+            )
+            if final_eval is not None:
+                writer.add_scalar("eval/final_mean_return", final_eval["mean_return"], config.total_steps)
+                writer.add_scalar("eval/final_median_return", final_eval["median_return"], config.total_steps)
+                writer.add_scalar("eval/final_max_return", final_eval["max_return"], config.total_steps)
+
+            if best_return > float("-inf") and os.path.exists(best_model_path):
+                best_eval_net = BBFNetwork(agent.in_channels, agent.num_actions, config).to(agent.device)
+                best_eval_net.load_state_dict(torch.load(best_model_path, map_location=agent.device))
+                best_eval = evaluate_policy(
+                    agent,
+                    best_eval_net,
+                    config,
+                    episodes=config.eval_episodes,
+                    epsilon=config.eval_epsilon,
+                    seed=config.seed + 20_000,
+                    tag="best",
+                )
+                if best_eval is not None:
+                    writer.add_scalar("eval/best_mean_return", best_eval["mean_return"], config.total_steps)
+                    writer.add_scalar("eval/best_median_return", best_eval["median_return"], config.total_steps)
+                    writer.add_scalar("eval/best_max_return", best_eval["max_return"], config.total_steps)
 
     if config.save_model:
         final_model_path = os.path.join(run_dir, f"{config.exp_name}_final.pt")
