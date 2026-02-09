@@ -15,14 +15,11 @@
 # agent_delay_target.py
 #
 # Use the last evaluations for target calculation instead of a target model evaluation
-import argparse
 import copy
-import json
 import math
 import os
 import sys
 import time
-from typing import List, Optional
 
 import numpy as np
 import torch
@@ -30,16 +27,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from ale_py import Action, ALEInterface, LoggerMode, roms
 from pynvml import *
-
-from benchmark_runner import (
-    BenchmarkConfig,
-    BenchmarkRunner,
-    CycleConfig,
-    EnvironmentHandle,
-    FrameRunnerContext,
-    FrameRunnerResult,
-    GameSpec,
-)
 
 
 def train_function(
@@ -79,8 +66,6 @@ def train_function(
     train_loss_ema,
     avg_error_ema,
     max_error_ema,
-    # game boundary tracking for continual learning
-    game_start_u,
     # updated models
     optimizer,
     linear_optimizer,
@@ -186,14 +171,6 @@ def train_function(
         distribution_factors = distribution_factor_buffer[buffer_indexes]
         # the online samples aren't trained
         distribution_factors[:online_batch].zero_()
-        
-        # --- FIX: Cross-game sampling protection ---
-        # Zero out any samples that come from before the current game started.
-        # This prevents training on "ghost" observations from previous games
-        # that haven't been overwritten in the ring buffer yet.
-        old_game_mask = (buffer_indexes < game_start_u).unsqueeze(1).expand_as(distribution_factors)
-        distribution_factors = distribution_factors * (~old_game_mask).float()
-        # ---------------------------------------------
 
         # assert(distribution_factors.min() >= 0.0)
         # all QV will use the same target, so let it broadcast
@@ -442,13 +419,7 @@ class Agent:
         # The model
         self.load_file = None
         self.seed = seed
-        
-        # --- FIX: Force 18 Actions for Continual Learning ---
-        # This ensures compatibility with the CanonicalActionWrapper
-        # regardless of what the game ROM supports naturally.
-        self.num_actions = 18
-        # ----------------------------------------------------
-        
+        self.num_actions = num_actions  # many games can use a reduced action set for faster learning
         self.use_model = 3
         self.kernel_size = 3
         self.base_width = 80
@@ -483,7 +454,7 @@ class Agent:
         self.total_frames = total_frames
 
         # should be strictly a performance optimization, with no behavior change
-        self.use_cuda_graphs = False  # disable graphs by default; current ring-buffer update uses capture-unsafe ops
+        self.use_cuda_graphs = True  # faster with graphs, but you can't debug them
 
         # dynamically override configuration
         for key, value in kwargs.items():
@@ -552,11 +523,6 @@ class Agent:
         # start at 3 so the previous four steps can be referenced without going negative
         self.u = self.frame_skip - 1
         self.tensor_u = torch.tensor(3, dtype=torch.int64)
-        
-        # --- FIX: Track game boundaries for continual learning ---
-        # This marks the frame index where the current game started.
-        # Used to mask out samples from previous games during training.
-        self.game_start_u = torch.tensor(0, dtype=torch.int64)
 
         # buffer frame_skip frames for train
         self.frame_count = 0
@@ -741,8 +707,6 @@ class Agent:
                 self.train_loss_ema,
                 self.avg_error_ema,
                 self.max_error_ema,
-                # game boundary tracking for continual learning
-                self.game_start_u,
                 # updated models
                 self.optimizer,
                 self.linear_optimizer,
@@ -750,41 +714,6 @@ class Agent:
                 self.anchor_model,
             ],
         )
-
-    # --------------------------------
-    # Start New Game (Added for Continual Learning)
-    # --------------------------------
-    def start_new_game(self):
-        """
-        Prepares the agent for the next game in the cycle.
-        1. Updates the Anchor Model to current weights (Elastic Weight Transfer).
-        2. Marks the game boundary to prevent cross-game sampling.
-        3. Clears reward/episode buffers.
-        """
-        print(f"[Agent] Performing new game setup at frame {self.u}: Updating anchor model and marking game boundary.")
-        
-        # 1. Update Anchor Model
-        # Instead of anchoring to random init (which weight decay does), we anchor to 
-        # the weights learned at the end of the previous game.
-        with torch.no_grad():
-            for anchor_param, train_param in zip(self.anchor_model.parameters(), self.training_model.parameters()):
-                anchor_param.data.copy_(train_param.data)
-        
-        # 2. Mark the game boundary
-        # This tells train_function to ignore any samples from before this point.
-        # This is more efficient than zeroing the entire observation_ring (which is ~10GB).
-        self.game_start_u.fill_(self.u)
-        
-        # 3. Clear reward/episode buffers to be safe
-        # These are small, so zeroing is fine.
-        self.reward_buffer.fill_(-999.0)
-        self.episode_buffer.fill_(-999)
-        self.loss_buffer.fill_(-999.0)
-        
-        # Note: We do NOT reset self.u or self.tensor_u because train_indexes are global 
-        # and pre-calculated for the entire benchmark duration. We assume the benchmark 
-        # runner continues increasing the frame count linearly.
-        # Note: We no longer zero observation_ring - the game_start_u mask handles this more efficiently.
 
     # --------------------------------
     # Returns the selected action index
@@ -859,81 +788,174 @@ class Agent:
 #
 # This file can be run directly to experiment in simulator, or imported by the physical harness.
 # --------------------------------
-def run_training_frames(
-    agent,
-    handle: EnvironmentHandle,
-    *,
-    context: FrameRunnerContext,
-) -> FrameRunnerResult:
-    
-    # --- Continual Learning Hook ---
-    # Trigger cleanup/anchoring before the game loop starts
-    agent.start_new_game()
-    # -------------------------------
+def main():
+    data_dir = './results'
+    os.makedirs(data_dir, exist_ok=True)
 
-    if handle.ale is None or handle.action_set is None:
-        raise ValueError("ALE handle with populated action_set is required for this frame runner.")
+    save_model = False
+    save_incremental_models = False
+    last_model_save = -1
 
-    ale = handle.ale
-    action_set = handle.action_set
-    name = context.name
-    data_dir = context.data_dir
-    rank = context.rank
-    delay_frames = context.delay_frames
-    average_frames = context.average_frames
-    max_frames_without_reward = context.max_frames_without_reward
-    lives_as_episodes = context.lives_as_episodes
-    save_incremental_models = context.save_incremental_models
-    last_model_save = context.last_model_save
-    frame_budget = context.frame_budget
-    frame_offset = context.frame_offset
-    graph_total_frames = context.graph_total_frames
+    # phoenix in particular has the opportunity to hide in a corner from the boss fight and never collect any rewards, so
+    # restarting after a certain number of steps keeps learning going.
+    #
+    # "Revisiting the ALE" recommends a max episode frames (60fps) of 18_000, which is only five minutes, which would cut short many
+    # valid high performing games.
+    # "Is Deep Reinforcement Learning Really Superhuman on Atari?" https://arxiv.org/pdf/1908.04683 recommends 18k limit without a reward.
+    max_frames_without_reward = 18_000
+
+    ale = ALEInterface()
+    ale.setLoggerMode(LoggerMode.Error)
+    ale.setInt('random_seed', 0)
+
+    lives_as_episodes = 1
+
+    # if there is a command line parameter, take it as the cuda gpu
+    # The rank can be used to try different hyperparameters on each gpu
+    if len(sys.argv) >= 2:
+        rank = int(sys.argv[1])
+    else:
+        rank = 0
+
+    parms = {}
+    parms['gpu'] = rank % 8
+
+    frame_skip = 4  # number of times an action is repeated in the environment
+    parms['frame_skip'] = frame_skip
+
+    if sys.argv[-1] == 'atari100k':
+        atari100k_list = [
+            'assault',
+            'asterix',
+            'bank_heist',
+            'battle_zone',
+            'boxing',
+            'breakout',
+            'chopper_command',
+            'crazy_climber',
+            'demon_attack',
+            'freeway',
+            'frostbite',
+            'gopher',
+            'hero',
+            'jamesbond',
+            'kangaroo',
+            'krull',
+            'kung_fu_master',
+            'ms_pacman',
+            'pong',
+            'private_eye',
+            'qbert',
+            'road_runner',
+            'seaquest',
+            'up_n_down',
+        ]
+        game = atari100k_list[rank % 24]
+        seed = rank // 24
+        total_frames = 1_000_000  # real atari100k is only 400_000, but training longer is helpful
+
+        # run without sticky actions, which should give slightly better scores, because the models don't need to deal with any randomness
+        ale.setFloat('repeat_action_probability', 0.0)
+        reduce_action_set = 1
+        delay_frames = 0
+    elif sys.argv[-1] == 'physical':
+        physical_list = ['centipede', 'up_n_down', 'qbert', 'battle_zone', 'krull', 'defender', 'ms_pacman', 'atlantis']
+        game = physical_list[rank % 8]
+        total_frames = 20_000_000
+        parms['ring_buffer_size'] = 1_500_000
+        parms['multisteps_max'] = 64
+        parms['td_lambda'] = 0.95
+        parms['online_loss_scale'] = 2
+        parms['train_batch'] = 32
+        parms['lr_log2'] = -18
+        parms['base_lr_log2'] = -16
+        seed = (rank // 8) % 4
+
+        reduce_action_set = (
+            2  # 0 = always 18, 1 = ALE minimum action set, 2 = restricted even more for ms_pacman and qbert
+        )
+        delay_frames = 6  # 60 fps frames to delay commands to simulate real world latency
+    else:
+        reduce_action_set = (
+            2  # 0 = always 18, 1 = ALE minimum action set, 2 = restricted even more for ms_pacman and qbert
+        )
+        total_frames = 2_000_000
+        parms['lr_log2'] = -17  # -18 + rank//4
+        parms['base_lr_log2'] = -15  # -18 + rank%4
+        seed = 0
+        game = 'ms_pacman'
+        #        game = 'up_n_down'
+        #        game = 'atlantis'
+        #        game = 'qbert'
+        #        game = 'centipede'
+        #        game = 'battle_zone'
+
+        delay_frames = 6  # 60 fps frames to delay commands to simulate real world latency
+        if game == 'breakout':
+            delay_frames = 0
+
+    # use the ale_py installation path
+    rom_path = roms.get_rom_path(game)
+    ale.loadROM(rom_path)
+    ale.reset_game()
+
+    if reduce_action_set == 0:
+        action_set = ale.getLegalActionSet()
+    else:
+        # optionally apply more restrictions to the action set, since the ALE minimal action set isn't really minimal
+        if reduce_action_set == 2 and (game == 'ms_pacman' or game == 'qbert'):
+            action_set = [Action.UP, Action.DOWN, Action.LEFT, Action.RIGHT]
+        else:
+            action_set = ale.getMinimalActionSet()
+    num_actions = len(action_set)
+    print(f'{num_actions} actions: {action_set}')
+
+    name = f'delay_{game}{delay_frames}'
+    for k, v in parms.items():
+        if k != 'gpu':
+            name += '_'
+            name += str(v)
+    print(name)
+
+    agent = Agent(data_dir, seed, num_actions, total_frames, **parms)
+
+    avg = 0
 
     episode_scores = []
     episode_end = []
-
-    environment_start = frame_offset
+    environment_start = 0
     running_episode_score = 0
     environment_start_time = time.time()
 
+    # put the average of 100 episodes in each slot, evenly divided by the total number of learning steps
     episode_graph = torch.zeros(1000, device='cpu')
     parms_graph = torch.zeros(1000, len(list(agent.training_model.parameters())))
 
     episode_number = 0
     frames_without_reward = 0
     previous_lives = ale.lives()
-    delayed_actions = [0] * delay_frames
+    delayed_actions = [0] * delay_frames  # allow the commands to be delayed by this many 60 fps frames
 
-    taken_action = 0
-    avg = 0
+    taken_action = 0  # until a policy can be evaluated on observations
 
-    if graph_total_frames is None:
-        graph_total_frames = frame_offset + frame_budget
-    else:
-        graph_total_frames = max(graph_total_frames, frame_offset + frame_budget)
+    # note that atlantis can learn to play indefinitely, so there may be no completed episodes in the window
+    average_frames = 100_000  # frames to average episode scores over for episode_graph
 
-    for local_frame in range(frame_budget):
-        global_frame = frame_offset + local_frame
-        global_next = global_frame + 1
-
-        if save_incremental_models and global_next // 500_000 != last_model_save:
-            last_model_save = global_next // 500_000
-            filename = f'{data_dir}/{name}_{global_next}.model'
+    for u in range(agent.total_frames):
+        if save_incremental_models and (u + 1) // 500_000 != last_model_save:
+            last_model_save = (u + 1) // 500_000
+            filename = f'{data_dir}/{name}_{u + 1}.model'
             print('writing ' + filename)
             agent.save_model(filename)
 
-        points = episode_graph.shape[0]
-        if (
-            global_frame * points // graph_total_frames
-            != global_next * points // graph_total_frames
-        ):
+        # fill in our average score graph so we get exactly 1000 points on it
+        if u * episode_graph.shape[0] // agent.total_frames != (u + 1) * episode_graph.shape[0] // agent.total_frames:
             torch.cuda.synchronize()
-            i = global_frame * points // graph_total_frames
-            i = min(i, points - 1)
+            i = u * episode_graph.shape[0] // agent.total_frames
             count = 0
             total = 0
             for j in range(len(episode_scores) - 1, -1, -1):
-                if episode_end[j] < global_frame - average_frames:
+                if episode_end[j] < u - average_frames:
                     break
                 count += 1
                 total += episode_scores[j]
@@ -941,12 +963,14 @@ def run_training_frames(
                 avg = -999
             else:
                 avg = total / count
+                # if no episodes were completed in the previous window, backfill with the current value
                 for j in range(i - 1, -1, -1):
                     if episode_graph[j] != -999:
                         break
                     episode_graph[j] = avg
             episode_graph[i] = avg
 
+            # write the graph out so it can be viewed incrementally
             filename = data_dir + '/' + name + '.score'
             episode_graph.cpu().numpy().tofile(filename)
 
@@ -982,379 +1006,24 @@ def run_training_frames(
             previous_lives = ale.lives()
             frames_without_reward = 0
 
-            frames = global_frame - environment_start
-            episode_end.append(global_frame)
-            environment_start = global_frame
+            frames = u - environment_start
+            episode_end.append(u)
+            environment_start = u
             episode_scores.append(running_episode_score)
             running_episode_score = 0
 
+            # calculate step speed
             now = time.time()
             frames_per_second = frames / (now - environment_start_time)
             environment_start_time = now
 
             print(
-                f'{rank}:{name} frame:{global_frame:7} {frames_per_second:4.0f}/s '
-                f'eps {len(episode_scores) - 1:3},{frames:5}={int(episode_scores[-1]):5} '
-                f'err {agent.avg_error_ema:.1f} {agent.max_error_ema:.1f} '
-                f'loss {agent.train_loss_ema:.1f} targ {agent.target_ema:.1f} avg {avg:4.1f}'
+                f'{rank}:{name} frame:{u:7} {frames_per_second:4.0f}/s eps {len(episode_scores) - 1:3},{frames:5}={int(episode_scores[-1]):5} err {agent.avg_error_ema:.1f} {agent.max_error_ema:.1f} loss {agent.train_loss_ema:.1f} targ {agent.target_ema:.1f} avg {avg:4.1f}'
             )
 
             torch.cuda.nvtx.range_pop()
 
         taken_action = agent.frame(ale.getScreenRGB(), reward, end_of_episode)
-
-    return FrameRunnerResult(
-        last_model_save,
-        episode_scores,
-        episode_end,
-        episode_graph,
-        parms_graph,
-    )
-
-
-def main():
-    data_dir = './results/my_atd_continual_123'
-    os.makedirs(data_dir, exist_ok=True)
-
-    save_model = False
-    save_incremental_models = False
-    max_frames_without_reward = 18_000
-    lives_as_episodes = 1
-
-    allowed_modes = {'atari100k', 'physical', 'continual'}
-
-    parser = argparse.ArgumentParser(
-        description='Run the Physical Atari agent in simulator or continual benchmark modes.',
-        allow_abbrev=False,
-    )
-    parser.add_argument(
-        '--cycle_frames',
-        type=int,
-        default=150_000,
-        help='Number of frames to allocate per game per cycle when running the continual benchmark.',
-    )
-    parser.add_argument(
-        '--game_frame_budgets',
-        type=str,
-        help='Comma-separated per-game frame budgets for continual mode. Must sum to --cycle_frames.',
-    )
-    parser.add_argument(
-        '--seed',
-        type=int,
-        help='Override the base random seed used for the agent and environment.',
-    )
-    args, positional = parser.parse_known_args()
-
-    positional_args = list(positional)
-    mode = None
-    if positional_args and positional_args[-1] in allowed_modes:
-        mode = positional_args.pop()
-
-    rank = 0
-    if positional_args:
-        try:
-            rank = int(positional_args.pop(0))
-        except ValueError as exc:
-            raise ValueError(
-                f"Could not parse rank from arguments: {' '.join(positional)}"
-            ) from exc
-
-    if positional_args:
-        raise ValueError(f"Unrecognized positional arguments: {' '.join(positional_args)}")
-
-    parms = {'gpu': rank % 8}
-    frame_skip = 4
-    parms['frame_skip'] = frame_skip
-    seed_override = args.seed
-
-    if mode == 'continual':
-        average_frames = 100_000
-        seed = seed_override if seed_override is not None else rank
-
-        game_order = [
-            'ms_pacman'
-        ]
-        reduce_action_setting = 2
-        cycle_frames = 200_000
-        if cycle_frames <= 0:
-            raise ValueError('--cycle_frames must be a positive integer')
-
-        provided_budgets: Optional[List[int]] = None
-        if args.game_frame_budgets is not None:
-            try:
-                provided_budgets = [int(value.strip()) for value in args.game_frame_budgets.split(',') if value.strip()]
-            except ValueError as exc:
-                raise ValueError('--game_frame_budgets must be a comma-separated list of integers') from exc
-
-            if len(provided_budgets) != len(game_order):
-                raise ValueError(
-                    f'--game_frame_budgets expected {len(game_order)} values, received {len(provided_budgets)}'
-                )
-            if any(budget < 0 for budget in provided_budgets):
-                raise ValueError('--game_frame_budgets values must be non-negative integers')
-            
-            # Check if budgets are generally consistent with cycle_frames, but don't enforce sum equality
-            # if cycle_frames is interpreted as a default per-game value.
-
-        if provided_budgets is None:
-            frame_budget = cycle_frames
-            game_frame_budgets = [frame_budget] * len(game_order)
-        else:
-            game_frame_budgets = provided_budgets
-
-        cycles = []
-        for cycle_index in range(1):
-            cycle_games = []
-            for game_index, game_name in enumerate(game_order):
-                cycle_games.append(
-                    GameSpec(
-                        name=game_name,
-                        frame_budget=game_frame_budgets[game_index],
-                        sticky_prob=0.0,
-                        delay_frames=6,
-                        seed=seed + cycle_index,
-                        params={
-                            'reduce_action_set': reduce_action_setting,
-                            'use_canonical_full_actions': True,
-                        },
-                    )
-                )
-            cycles.append(CycleConfig(cycle_index=cycle_index, games=cycle_games))
-
-        # --- FIX: Hardcode 18 actions for Continual Learning ---
-        # The agent expects 18 outputs to map to the canonical action wrapper.
-        num_actions = 18
-        # -------------------------------------------------------
-
-        benchmark_config = BenchmarkConfig(
-            cycles=cycles,
-            description=(
-                f'Continual benchmark: {len(cycles)} cycle(s) x {len(game_order)} game(s) '
-                f'(frames per game per cycle={cycle_frames})'
-            ),
-        )
-
-        parms.update(
-            lr_log2=-17,
-            base_lr_log2=-15,
-        )
-
-        total_frames = benchmark_config.total_frames
-
-        agent = Agent(data_dir, seed, num_actions, total_frames, **parms)
-
-        runner = BenchmarkRunner(
-            agent,
-            benchmark_config,
-            frame_runner=run_training_frames,
-            data_dir=data_dir,
-            rank=rank,
-            default_seed=seed,
-            reduce_action_set=reduce_action_setting,
-            # --- FIX: Enable Canonical Action Wrapper ---
-            use_canonical_full_actions=True,
-            # ------------------------------------------
-            average_frames=average_frames,
-            max_frames_without_reward=max_frames_without_reward,
-            lives_as_episodes=lives_as_episodes,
-            save_incremental_models=save_incremental_models,
-        )
-        results = runner.run()
-
-        summary_records = []
-        for result in results:
-            total_score = float(sum(result.episode_scores))
-            mean_score = float(np.mean(result.episode_scores)) if result.episode_scores else 0.0
-            summary_records.append(
-                {
-                    'cycle_index': result.cycle_index,
-                    'game_index': result.game_index,
-                    'game': result.spec.name,
-                    'frame_offset': result.frame_offset,
-                    'frame_budget': result.frame_budget,
-                    'episodes': len(result.episode_scores),
-                    'total_episode_score': total_score,
-                    'mean_episode_score': mean_score,
-                }
-            )
-
-        final_cycle_index = benchmark_config.cycles[-1].cycle_index if benchmark_config.cycles else -1
-        final_cycle_total = sum(
-            record['total_episode_score']
-            for record in summary_records
-            if record['cycle_index'] == final_cycle_index
-        )
-
-        summary_path = os.path.join(data_dir, 'continual_summary.json')
-        with open(summary_path, 'w', encoding='utf-8') as f:
-            json.dump(
-                {
-                    'description': benchmark_config.description,
-                    'final_cycle_index': final_cycle_index,
-                    'final_cycle_total_episode_score': final_cycle_total,
-                    'records': summary_records,
-                },
-                f,
-                indent=2,
-            )
-
-        wrote_loss = False
-        for result in results:
-            base = os.path.join(data_dir, result.name)
-
-            score_path = base + '.score'
-            result.episode_graph.cpu().numpy().tofile(score_path)
-
-            parms_path = base + '.parms'
-            result.parms_graph.cpu().numpy().tofile(parms_path)
-
-            if result.episode_scores:
-                plots = torch.zeros(len(result.episode_scores), 2)
-                for i, (frame_idx, score) in enumerate(zip(result.episode_end, result.episode_scores)):
-                    plots[i][0] = frame_idx
-                    plots[i][1] = score
-                scatter_path = base + '.scatter'
-                plots.cpu().numpy().tofile(scatter_path)
-
-            start = result.frame_offset
-            end = start + result.frame_budget
-            if hasattr(agent, 'policy_actions_buffer'):
-                policy_slice = agent.policy_actions_buffer[start:end]
-                policy_path = base + '.policy_actions'
-                policy_slice.cpu().numpy().tofile(policy_path)
-
-            if agent.train_losses and not wrote_loss:
-                loss_path = base + '.loss'
-                torch.tensor(agent.train_losses, dtype=torch.float32).cpu().numpy().tofile(loss_path)
-                wrote_loss = True
-
-        print(f'Final cycle ({final_cycle_index}) total episode score: {final_cycle_total:.1f}')
-        print(f'Wrote summary to {summary_path}')
-
-        if save_model:
-            filename = f'{data_dir}/continual_final.model'
-            print('writing ' + filename)
-            agent.save_model(filename)
-
-        print('done')
-        return
-
-    # fallback to legacy single-game runs
-    last_model_save = -1
-
-    ale = ALEInterface()
-    ale.setLoggerMode(LoggerMode.Error)
-
-    if mode == 'atari100k':
-        atari100k_list = [
-            'assault',
-            'asterix',
-            'bank_heist',
-            'battle_zone',
-            'boxing',
-            'breakout',
-            'chopper_command',
-            'crazy_climber',
-            'demon_attack',
-            'freeway',
-            'frostbite',
-            'gopher',
-            'hero',
-            'jamesbond',
-            'kangaroo',
-            'krull',
-            'kung_fu_master',
-            'ms_pacman',
-            'pong',
-            'private_eye',
-            'qbert',
-            'road_runner',
-            'seaquest',
-            'up_n_down',
-        ]
-        game = atari100k_list[rank % 24]
-        seed = seed_override if seed_override is not None else rank // 24
-        total_frames = 1_000_000
-
-        ale.setFloat('repeat_action_probability', 0.0)
-        reduce_action_set = 1
-        delay_frames = 0
-    elif mode == 'physical':
-        physical_list = ['centipede', 'up_n_down', 'qbert', 'battle_zone', 'krull', 'defender', 'ms_pacman', 'atlantis']
-        game = physical_list[rank % 8]
-        total_frames = 20_000_000
-        parms['ring_buffer_size'] = 1_500_000
-        parms['multisteps_max'] = 64
-        parms['td_lambda'] = 0.95
-        parms['online_loss_scale'] = 2
-        parms['train_batch'] = 32
-        parms['lr_log2'] = -18
-        parms['base_lr_log2'] = -16
-        seed = seed_override if seed_override is not None else (rank // 8) % 4
-
-        reduce_action_set = 2
-        delay_frames = 6
-    else:
-        reduce_action_set = 2
-        total_frames = 200_000
-        parms['lr_log2'] = -17
-        parms['base_lr_log2'] = -15
-        seed = seed_override if seed_override is not None else 0
-        game = 'ms_pacman'
-
-        delay_frames = 6
-        if game == 'breakout':
-            delay_frames = 0
-
-    ale.setInt('random_seed', seed)
-    rom_path = roms.get_rom_path(game)
-    ale.loadROM(rom_path)
-    ale.reset_game()
-
-    if reduce_action_set == 0:
-        action_set = ale.getLegalActionSet()
-    else:
-        if reduce_action_set == 2 and (game == 'ms_pacman' or game == 'qbert'):
-            action_set = [Action.UP, Action.DOWN, Action.LEFT, Action.RIGHT]
-        else:
-            action_set = ale.getMinimalActionSet()
-    num_actions = len(action_set)
-    print(f'{num_actions} actions: {action_set}')
-
-    name = f'delay_{game}{delay_frames}'
-    for k, v in parms.items():
-        if k != 'gpu':
-            name += '_'
-            name += str(v)
-    print(name)
-
-    agent = Agent(data_dir, seed, num_actions, total_frames, **parms)
-
-    average_frames = 100_000
-
-    (
-        last_model_save,
-        episode_scores,
-        episode_end,
-        episode_graph,
-        parms_graph,
-    ) = run_training_frames(
-        agent,
-        ale,
-        action_set,
-        name=name,
-        data_dir=data_dir,
-        rank=rank,
-        delay_frames=delay_frames,
-        average_frames=average_frames,
-        max_frames_without_reward=max_frames_without_reward,
-        lives_as_episodes=lives_as_episodes,
-        save_incremental_models=save_incremental_models,
-        last_model_save=last_model_save,
-        frame_budget=agent.total_frames,
-        frame_offset=0,
-        graph_total_frames=agent.total_frames,
-    )
 
     filename = data_dir + '/' + name + '.policy_actions'
     print('writing ' + filename)
