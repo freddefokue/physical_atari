@@ -201,14 +201,13 @@ The v1 runner extends v0 into a single continual stream over scheduled game visi
 - runner enforces decision interval (`--decision-interval`, action repeat) and delay queue (action latency)
 - game switches are logged as `truncated=True` on the final frame of each visit
 - environment terminals remain `terminated=True` (distinct from truncation)
-- `episode_id` increments on any boundary (`terminated` or `truncated`) so per-episode returns reset cleanly across visits
-- `true_terminal_episodes` is tracked separately for death-only metrics
+- `episode_id` increments only on true terminals (`terminated=True`)
 - `segment_id` increments on any boundary (`terminated` or `truncated`)
 - delay queue and decision phase are reset at environment boundaries
 - anti-leak scheduling: per-seed randomized cycle order + jittered visit lengths; schedule identity is not passed in agent `info`
 
 The action policy is global-to-local mapped:
-- agent outputs an index in a fixed global ALE action space (0..17)
+- agent outputs an index in a fixed global ALE action space (typically standard 0..17)
 - runner maps that ALE action to the current game's local action set
 - if action is illegal for current game, runner falls back to the configured default action (or local index 0)
 
@@ -232,7 +231,7 @@ python -m benchmark.run_multigame \
 Outputs are written to a timestamped run directory:
 - `config.json` (full config, software versions, realized schedule, per-game action sets, mapping policy)
 - `events.jsonl` (one row per frame, including game/visit/cycle indices, `episode_id`, `segment_id`, and both terminal signals)
-- `episodes.jsonl` (one row per boundary, `ended_by in {\"terminated\",\"truncated\"}`)
+- `episodes.jsonl` (one row per true terminal only, `ended_by=\"terminated\"`)
 - `segments.jsonl` (one row per reset boundary, `ended_by in {\"terminated\",\"truncated\"}`)
 
 ### How to validate multi-game mechanics
@@ -244,12 +243,55 @@ pytest -q benchmark/tests/test_mechanics.py benchmark/tests/test_multigame.py
 The v1 tests verify:
 - deterministic schedule materialization from seed/config
 - truncation only at visit boundaries
-- cross-game episode return resets at visit switches
-- `episode_id` increments on terminals and truncations
+- anti-leak agent info payload (no schedule/boundary counters)
+- `episode_id` increments only on terminated frames
 - `segment_id` increments on terminals and truncations
+- `episodes.jsonl` contains only terminated episodes
+- `segments.jsonl` contains both truncation and termination boundaries
 - delay queue reset on switches
-- anti-leak agent info payload
 - decision-interval cadence behavior
+
+## Run Scoring and Analysis
+
+Use `benchmark.score_run` to compute benchmark metrics from an existing run directory (no ALE/ROM dependency):
+
+```bash
+python -m benchmark.score_run \
+  --run-dir ./runs/v1/<run_dir> \
+  --window-episodes 20 \
+  --bottom-k-frac 0.25 \
+  --revisit-episodes 5
+```
+
+This writes `score.json` into the run directory and prints the same JSON to stdout.
+
+### Metric Definitions
+
+- Online deployment score (primary):
+  - per game, compute mean return over recent episodes in the last cycle
+  - aggregate with both average-game performance and bottom-k robustness:
+    - `mean_score = mean(per_game_scores)`
+    - `bottom_k_score = mean(worst ceil(k_frac * N) per_game_scores)`
+    - default `final_score = 0.5 * mean_score + 0.5 * bottom_k_score`
+- Forgetting index (diagnostic):
+  - for revisits of each game, compare end of previous visit vs start of next revisit
+  - drop = pre - post; higher positive values indicate more forgetting
+- Plasticity index (diagnostic):
+  - compares early vs late performance inside the first cycle
+  - higher values indicate faster early adaptation
+- Runtime stats:
+  - FPS from `events.jsonl` wallclock timestamps when available
+  - `notes.fps_source` indicates whether frame count came from events or config fallback
+
+### Terminated vs Truncated
+
+- `terminated` means a true environment terminal (e.g., game over / life-loss policy).
+- `truncated` means an external benchmark boundary (time budget / scheduled game switch), not an MDP terminal.
+
+Scoring uses this distinction directly:
+- `episodes.jsonl` contributes true-episode metrics (`terminated` only).
+- `segments.jsonl` contributes boundary-aware metrics (both terminated and truncated).
+- `notes.unassigned_episode_count` reports episodes that could not be safely placed into any visit window.
 
 
 ---

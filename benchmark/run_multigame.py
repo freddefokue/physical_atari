@@ -140,6 +140,23 @@ def get_version_metadata() -> Dict[str, str]:
     return versions
 
 
+def resolve_global_action_set() -> Sequence[int]:
+    """
+    Resolve canonical global Atari action vocabulary.
+
+    Prefer ale_py.Action enum values when available; fallback to standard 18-action ids.
+    """
+    try:
+        from ale_py import Action  # pylint: disable=import-outside-toplevel
+
+        values = [int(action) for action in Action]
+        if values:
+            return tuple(values)
+    except Exception:  # pragma: no cover - optional runtime path
+        pass
+    return tuple(range(18))
+
+
 def build_config_payload(
     args: argparse.Namespace,
     games: Sequence[str],
@@ -210,7 +227,7 @@ def main() -> None:
     )
     env = ALEAtariEnv(env_config)
 
-    global_action_set = tuple(range(18))
+    global_action_set = tuple(resolve_global_action_set())
     if args.default_action_idx < 0 or args.default_action_idx >= len(global_action_set):
         raise ValueError(f"--default-action-idx must be in [0, {len(global_action_set) - 1}]")
 

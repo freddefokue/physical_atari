@@ -95,7 +95,6 @@ class MultiGameRunner:
         self._episode_start_global_frame_idx = 0
         self._episode_return = 0.0
         self._episode_length = 0
-        self._true_terminal_episodes = 0
 
         self._segment_id = 0
         self._segment_start_global_frame_idx = 0
@@ -151,21 +150,17 @@ class MultiGameRunner:
 
         return {
             "lives": int(self._lives),
-            "decision_interval": int(self.config.decision_interval),
-            "delay_frames": int(self.config.delay_frames),
             "action_space_n": int(self._num_global_actions),
-            "episode_id": int(self._episode_id),
-            "segment_id": int(self._segment_id),
             "is_decision_frame": bool(self._decision_phase == 0),
             "global_frame_idx": int(global_frame_idx),
         }
 
     @staticmethod
     def _segment_ended_by(terminated: bool, truncated: bool) -> Optional[str]:
-        if truncated:
-            return "truncated"
         if terminated:
             return "terminated"
+        if truncated:
+            return "truncated"
         return None
 
     def _write_episode(self, game_id: str, end_global_frame_idx: int, ended_by: str) -> None:
@@ -211,11 +206,9 @@ class MultiGameRunner:
         global_frame_idx = 0
         segments_completed = 0
         episodes_completed = 0
-        true_terminal_episodes_completed = 0
 
         self._episode_id = 0
         self._segment_id = 0
-        self._true_terminal_episodes = 0
 
         for visit in self.schedule:
             local_actions = self.env.load_game(visit.game_id)
@@ -224,7 +217,8 @@ class MultiGameRunner:
             self._obs_rgb = self.env.reset()
             self._lives = int(self.env.lives())
             self._reset_control_state()
-            self._start_episode(global_frame_idx)
+            if global_frame_idx == 0 or prev_terminated:
+                self._start_episode(global_frame_idx)
             self._start_segment(global_frame_idx)
 
             for visit_frame_idx in range(visit.visit_frames):
@@ -279,7 +273,6 @@ class MultiGameRunner:
                     "lives": int(self._lives),
                     "episode_return_so_far": float(self._episode_return),
                     "segment_return_so_far": float(self._segment_return),
-                    "true_terminal_episodes_so_far": int(self._true_terminal_episodes),
                 }
                 if self.config.include_timestamps:
                     event["wallclock_time"] = float(self.time_fn())
@@ -293,22 +286,21 @@ class MultiGameRunner:
                 if terminated or truncated:
                     ended_by = self._segment_ended_by(terminated, truncated)
                     assert ended_by is not None
-                    self._write_episode(visit.game_id, global_frame_idx, ended_by)
                     self._write_segment(visit.game_id, global_frame_idx, ended_by)
-                    episodes_completed += 1
                     segments_completed += 1
-                    self._episode_id += 1
                     self._segment_id += 1
 
                     if terminated:
-                        true_terminal_episodes_completed += 1
-                        self._true_terminal_episodes += 1
+                        self._write_episode(visit.game_id, global_frame_idx, "terminated")
+                        episodes_completed += 1
+                        self._episode_id += 1
 
                     if not is_visit_last_frame:
                         self._obs_rgb = self.env.reset()
                         self._lives = int(self.env.lives())
                         self._reset_control_state()
-                        self._start_episode(global_frame_idx + 1)
+                        if terminated:
+                            self._start_episode(global_frame_idx + 1)
                         self._start_segment(global_frame_idx + 1)
 
                 global_frame_idx += 1
@@ -317,7 +309,6 @@ class MultiGameRunner:
             "frames": int(global_frame_idx),
             "episodes_completed": int(episodes_completed),
             "segments_completed": int(segments_completed),
-            "true_terminal_episodes": int(true_terminal_episodes_completed),
             "last_episode_id": int(self._episode_id),
             "last_segment_id": int(self._segment_id),
             "visits_completed": int(len(self.schedule)),

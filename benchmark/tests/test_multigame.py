@@ -156,8 +156,7 @@ def test_visit_boundary_truncation_occurs_only_on_last_frame():
 
     assert len(segments) == 2
     assert [row["ended_by"] for row in segments] == ["truncated", "truncated"]
-    assert len(episodes) == 2
-    assert [row["ended_by"] for row in episodes] == ["truncated", "truncated"]
+    assert len(episodes) == 0
 
 
 
@@ -178,19 +177,18 @@ def test_episode_and_segment_counters_follow_spec():
     assert [row["episode_id"] for row in events] == [0, 0, 1, 1, 2]
     assert [row["segment_id"] for row in events] == [0, 0, 1, 1, 2]
 
-    assert len(episodes) == 3
-    assert [row["episode_id"] for row in episodes] == [0, 1, 2]
-    assert [row["ended_by"] for row in episodes] == ["terminated", "terminated", "truncated"]
+    assert len(episodes) == 2
+    assert [row["episode_id"] for row in episodes] == [0, 1]
+    assert [row["ended_by"] for row in episodes] == ["terminated", "terminated"]
 
     assert len(segments) == 3
     assert [row["ended_by"] for row in segments] == ["terminated", "terminated", "truncated"]
 
-    assert summary["episodes_completed"] == 3
+    assert summary["episodes_completed"] == 2
     assert summary["segments_completed"] == 3
-    assert summary["true_terminal_episodes"] == 2
 
 
-def test_episode_return_resets_across_game_visit_switches():
+def test_episode_return_carries_across_visit_switches_without_termination():
     schedule = Schedule(
         ScheduleConfig(games=["a", "b"], base_visit_frames=3, num_cycles=1, seed=0, jitter_pct=0.0, min_visit_frames=1)
     )
@@ -204,10 +202,9 @@ def test_episode_return_resets_across_game_visit_switches():
 
     _, events, episodes, _ = run_multigame(env, agent, schedule, config)
 
-    assert [row["episode_id"] for row in events] == [0, 0, 0, 1, 1, 1]
-    assert [row["episode_return_so_far"] for row in events] == [1.0, 2.0, 3.0, 1.0, 2.0, 3.0]
-    assert [row["game_id"] for row in episodes] == ["a", "b"]
-    assert [row["ended_by"] for row in episodes] == ["truncated", "truncated"]
+    assert [row["episode_id"] for row in events] == [0, 0, 0, 0, 0, 0]
+    assert [row["episode_return_so_far"] for row in events] == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+    assert episodes == []
 
 
 
@@ -252,10 +249,13 @@ def test_forbidden_info_keys_not_passed_to_agent():
         "visit_frame_idx",
         "frames_remaining",
         "visit_frames",
+        "episode_id",
+        "segment_id",
     }
     assert agent.seen_infos
     for info in agent.seen_infos:
         assert forbidden.isdisjoint(set(info.keys()))
+        assert {"lives", "is_decision_frame", "action_space_n"}.issubset(set(info.keys()))
 
 
 
