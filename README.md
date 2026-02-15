@@ -151,6 +151,106 @@ python3 harness_physical.py \
  --total_frames=1_000_000
 ```
 
+## Single-Game Streaming Benchmark Runner (v0)
+
+This repository also includes a minimal Atari benchmark harness that uses `ale_py` directly (no Gym wrappers), with:
+- streaming agent calls every frame
+- runner-enforced frame skip
+- runner-enforced action latency queue
+- ALE sticky actions (`repeat_action_probability`)
+- per-frame JSONL logging for reproducibility
+
+### How to run
+
+```
+python -m benchmark.run_single_game \
+  --game ms_pacman \
+  --seed 0 \
+  --frames 200000 \
+  --frame-skip 4 \
+  --delay 6 \
+  --sticky 0.25 \
+  --full-action-space 1 \
+  --logdir ./runs
+```
+
+Outputs are written to a timestamped run directory:
+- `config.json`
+- `events.jsonl` (one row per frame)
+- `episodes.jsonl` (one row per episode end)
+
+### How to validate delay/frame-skip mechanics
+
+Run the mechanics tests:
+
+```
+pytest -q benchmark/tests/test_mechanics.py
+```
+
+These tests verify:
+- delay queue correctness
+- frame-skip decision boundaries
+- combined delay + frame-skip behavior
+- logging completeness
+- queue reinitialization and episode counter behavior across resets
+
+## Multi-Game Continual Benchmark Runner (v1)
+
+The v1 runner extends v0 into a single continual stream over scheduled game visits, still using direct `ale_py` / `ALEInterface` calls (no Gym wrappers). Key semantics:
+- agent is called every frame (streaming)
+- runner enforces decision interval (`--decision-interval`, action repeat) and delay queue (action latency)
+- game switches are logged as `truncated=True` on the final frame of each visit
+- environment terminals remain `terminated=True` (distinct from truncation)
+- `episode_id` increments on any boundary (`terminated` or `truncated`) so per-episode returns reset cleanly across visits
+- `true_terminal_episodes` is tracked separately for death-only metrics
+- `segment_id` increments on any boundary (`terminated` or `truncated`)
+- delay queue and decision phase are reset at environment boundaries
+- anti-leak scheduling: per-seed randomized cycle order + jittered visit lengths; schedule identity is not passed in agent `info`
+
+The action policy is global-to-local mapped:
+- agent outputs an index in a fixed global ALE action space (0..17)
+- runner maps that ALE action to the current game's local action set
+- if action is illegal for current game, runner falls back to the configured default action (or local index 0)
+
+### How to run (v1)
+
+```bash
+python -m benchmark.run_multigame \
+  --games ms_pacman,centipede,qbert,defender,krull,atlantis,up_n_down,battle_zone \
+  --num-cycles 3 \
+  --base-visit-frames 200000 \
+  --jitter-pct 0.07 \
+  --min-visit-frames 1 \
+  --seed 0 \
+  --decision-interval 4 \
+  --delay 6 \
+  --sticky 0.25 \
+  --full-action-space 1 \
+  --logdir ./runs/v1
+```
+
+Outputs are written to a timestamped run directory:
+- `config.json` (full config, software versions, realized schedule, per-game action sets, mapping policy)
+- `events.jsonl` (one row per frame, including game/visit/cycle indices, `episode_id`, `segment_id`, and both terminal signals)
+- `episodes.jsonl` (one row per boundary, `ended_by in {\"terminated\",\"truncated\"}`)
+- `segments.jsonl` (one row per reset boundary, `ended_by in {\"terminated\",\"truncated\"}`)
+
+### How to validate multi-game mechanics
+
+```bash
+pytest -q benchmark/tests/test_mechanics.py benchmark/tests/test_multigame.py
+```
+
+The v1 tests verify:
+- deterministic schedule materialization from seed/config
+- truncation only at visit boundaries
+- cross-game episode return resets at visit switches
+- `episode_id` increments on terminals and truncations
+- `segment_id` increments on terminals and truncations
+- delay queue reset on switches
+- anti-leak agent info payload
+- decision-interval cadence behavior
+
 
 ---
 
