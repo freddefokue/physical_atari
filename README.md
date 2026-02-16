@@ -234,6 +234,46 @@ Outputs are written to a timestamped run directory:
 - `episodes.jsonl` (one row per true terminal only, `ended_by=\"terminated\"`)
 - `segments.jsonl` (one row per reset boundary, `ended_by in {\"terminated\",\"truncated\"}`)
 
+### TinyDQN baseline agent
+
+`--agent tinydqn` enables a compact online-learning baseline (streaming DQN):
+- called every frame, but only chooses new actions on decision frames
+- trains from a small replay buffer on decision frames
+- treats both `terminated` and `truncated` as bootstrap-done for replay targets
+- intended for calibration and sanity checks, not SOTA performance
+
+Example:
+
+```bash
+python -m benchmark.run_multigame \
+  --games pong,breakout,ms_pacman,centipede \
+  --num-cycles 3 \
+  --base-visit-frames 10000 \
+  --jitter-pct 0.05 \
+  --min-visit-frames 600 \
+  --seed 0 \
+  --decision-interval 4 \
+  --delay 2 \
+  --sticky 0.25 \
+  --full-action-space 1 \
+  --life-loss-termination 1 \
+  --agent tinydqn \
+  --dqn-gamma 0.99 \
+  --dqn-lr 1e-4 \
+  --dqn-buffer-size 10000 \
+  --dqn-batch-size 32 \
+  --dqn-train-every 4 \
+  --dqn-target-update 250 \
+  --dqn-eps-start 1.0 \
+  --dqn-eps-end 0.05 \
+  --dqn-eps-decay-frames 200000 \
+  --dqn-replay-min 1000 \
+  --dqn-device cpu \
+  --logdir ./runs/baseline_tinydqn
+```
+
+TinyDQN hyperparameters are saved under `agent_config` in the run `config.json`.
+
 ### How to validate multi-game mechanics
 
 ```bash

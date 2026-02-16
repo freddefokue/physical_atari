@@ -255,7 +255,14 @@ def test_forbidden_info_keys_not_passed_to_agent():
     assert agent.seen_infos
     for info in agent.seen_infos:
         assert forbidden.isdisjoint(set(info.keys()))
-        assert {"lives", "is_decision_frame", "action_space_n"}.issubset(set(info.keys()))
+        assert {
+            "lives",
+            "is_decision_frame",
+            "action_space_n",
+            "default_action_idx",
+            "prev_applied_action_idx",
+            "has_prev_applied_action",
+        }.issubset(set(info.keys()))
 
 
 

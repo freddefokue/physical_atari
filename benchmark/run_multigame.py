@@ -65,11 +65,55 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--agent",
         type=str,
-        choices=["random", "repeat"],
+        choices=["random", "repeat", "tinydqn"],
         default="random",
         help="Agent type.",
     )
     parser.add_argument("--repeat-action-idx", type=int, default=0, help="Action index for RepeatActionAgent.")
+    parser.add_argument("--dqn-gamma", type=float, default=0.99, help="TinyDQN discount factor.")
+    parser.add_argument("--dqn-lr", type=float, default=1e-4, help="TinyDQN Adam learning rate.")
+    parser.add_argument("--dqn-buffer-size", type=int, default=10000, help="TinyDQN replay buffer size.")
+    parser.add_argument("--dqn-batch-size", type=int, default=32, help="TinyDQN batch size.")
+    parser.add_argument(
+        "--dqn-train-every",
+        type=int,
+        default=4,
+        help="Train TinyDQN every N decision frames.",
+    )
+    parser.add_argument(
+        "--dqn-target-update",
+        type=int,
+        default=250,
+        help="Hard target-network sync interval in decision frames.",
+    )
+    parser.add_argument("--dqn-eps-start", type=float, default=1.0, help="TinyDQN epsilon at frame 0.")
+    parser.add_argument("--dqn-eps-end", type=float, default=0.05, help="TinyDQN final epsilon.")
+    parser.add_argument(
+        "--dqn-eps-decay-frames",
+        type=int,
+        default=200000,
+        help="Frames for linear epsilon decay.",
+    )
+    parser.add_argument(
+        "--dqn-replay-min",
+        type=int,
+        default=1000,
+        help="Minimum replay size before training starts.",
+    )
+    parser.add_argument(
+        "--dqn-use-replay",
+        type=int,
+        choices=[0, 1],
+        default=1,
+        help="Enable replay buffer for TinyDQN (1=yes, 0=no).",
+    )
+    parser.add_argument(
+        "--dqn-device",
+        type=str,
+        choices=["cpu", "cuda"],
+        default="cpu",
+        help="TinyDQN device.",
+    )
     parser.add_argument(
         "--default-action-idx",
         type=int,
@@ -94,10 +138,29 @@ def seed_everything(seed: int) -> None:
 
 def build_agent(args: argparse.Namespace, num_actions: int):
     if args.agent == "random":
-        return RandomAgent(num_actions=num_actions, seed=args.seed)
-    if args.repeat_action_idx < 0 or args.repeat_action_idx >= num_actions:
-        raise ValueError(f"--repeat-action-idx must be in [0, {num_actions - 1}]")
-    return RepeatActionAgent(action_idx=args.repeat_action_idx)
+        return RandomAgent(num_actions=num_actions, seed=args.seed), {}
+    if args.agent == "repeat":
+        if args.repeat_action_idx < 0 or args.repeat_action_idx >= num_actions:
+            raise ValueError(f"--repeat-action-idx must be in [0, {num_actions - 1}]")
+        return RepeatActionAgent(action_idx=args.repeat_action_idx), {"action_idx": int(args.repeat_action_idx)}
+    from benchmark.agents_tinydqn import TinyDQNAgent, TinyDQNConfig  # pylint: disable=import-outside-toplevel
+
+    dqn_config = TinyDQNConfig(
+        gamma=float(args.dqn_gamma),
+        lr=float(args.dqn_lr),
+        buffer_size=int(args.dqn_buffer_size),
+        batch_size=int(args.dqn_batch_size),
+        train_every_decisions=int(args.dqn_train_every),
+        target_update_decisions=int(args.dqn_target_update),
+        replay_min_size=int(args.dqn_replay_min),
+        eps_start=float(args.dqn_eps_start),
+        eps_end=float(args.dqn_eps_end),
+        eps_decay_frames=int(args.dqn_eps_decay_frames),
+        use_replay=bool(args.dqn_use_replay),
+        device=str(args.dqn_device),
+    )
+    agent = TinyDQNAgent(action_space_n=num_actions, seed=int(args.seed), config=dqn_config)
+    return agent, dqn_config.as_dict()
 
 
 def resolve_action_sets(env: ALEAtariEnv, games: Sequence[str]) -> Dict[str, List[int]]:
@@ -164,6 +227,7 @@ def build_config_payload(
     schedule: Schedule,
     runner_config: MultiGameRunnerConfig,
     resolved_action_sets: Dict[str, List[int]],
+    agent_config: Dict[str, object],
 ) -> Dict:
     return {
         "games": [str(game) for game in games],
@@ -178,6 +242,7 @@ def build_config_payload(
         "full_action_space": bool(args.full_action_space),
         "life_loss_termination": bool(args.life_loss_termination),
         "agent": str(args.agent),
+        "agent_config": dict(agent_config),
         "repeat_action_idx": int(args.repeat_action_idx),
         "default_action_idx": int(args.default_action_idx),
         "timestamps": bool(args.timestamps),
@@ -238,7 +303,7 @@ def main() -> None:
         include_timestamps=bool(args.timestamps),
         global_action_set=global_action_set,
     )
-    agent = build_agent(args, num_actions=len(global_action_set))
+    agent, agent_config = build_agent(args, num_actions=len(global_action_set))
 
     resolved_action_sets = resolve_action_sets(env, games)
     action_mappings = build_action_mappings(resolved_action_sets, global_action_set, args.default_action_idx)
@@ -248,7 +313,15 @@ def main() -> None:
     episode_writer = JsonlWriter(run_dir / "episodes.jsonl")
     segment_writer = JsonlWriter(run_dir / "segments.jsonl")
 
-    config_payload = build_config_payload(args, games, run_dir, schedule, runner_config, resolved_action_sets)
+    config_payload = build_config_payload(
+        args,
+        games,
+        run_dir,
+        schedule,
+        runner_config,
+        resolved_action_sets,
+        agent_config,
+    )
     config_payload["resolved_action_mappings"] = action_mappings
     dump_json(run_dir / "config.json", config_payload)
 

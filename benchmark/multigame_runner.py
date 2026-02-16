@@ -145,7 +145,12 @@ class MultiGameRunner:
         local_idx = self._local_action_to_idx.get(ale_action, self._local_default_idx)
         return int(local_idx), int(self._local_action_set[local_idx])
 
-    def _build_agent_info(self, global_frame_idx: int) -> Dict[str, Any]:
+    def _build_agent_info(
+        self,
+        global_frame_idx: int,
+        prev_applied_action_idx: int,
+        has_prev_applied_action: bool,
+    ) -> Dict[str, Any]:
         """Agent-facing info intentionally excludes schedule/task identity fields."""
 
         return {
@@ -153,6 +158,9 @@ class MultiGameRunner:
             "action_space_n": int(self._num_global_actions),
             "is_decision_frame": bool(self._decision_phase == 0),
             "global_frame_idx": int(global_frame_idx),
+            "default_action_idx": int(self.config.default_action_idx),
+            "prev_applied_action_idx": int(prev_applied_action_idx),
+            "has_prev_applied_action": bool(has_prev_applied_action),
         }
 
     @staticmethod
@@ -202,6 +210,8 @@ class MultiGameRunner:
         prev_reward = 0.0
         prev_terminated = False
         prev_truncated = False
+        prev_applied_action_idx = int(self.config.default_action_idx)
+        has_prev_applied_action = False
 
         global_frame_idx = 0
         segments_completed = 0
@@ -229,7 +239,11 @@ class MultiGameRunner:
                     prev_reward,
                     prev_terminated,
                     prev_truncated,
-                    self._build_agent_info(global_frame_idx),
+                    self._build_agent_info(
+                        global_frame_idx,
+                        prev_applied_action_idx,
+                        has_prev_applied_action,
+                    ),
                 )
 
                 if is_decision_frame:
@@ -282,6 +296,8 @@ class MultiGameRunner:
                 prev_reward = float(step.reward)
                 prev_terminated = terminated
                 prev_truncated = truncated
+                prev_applied_action_idx = int(applied_action_idx)
+                has_prev_applied_action = True
 
                 if terminated or truncated:
                     ended_by = self._segment_ended_by(terminated, truncated)
