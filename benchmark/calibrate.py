@@ -449,7 +449,7 @@ def _run_streaming(cmd: Sequence[str]) -> Tuple[int, str]:
         for line in proc.stdout:
             lines.append(line)
             if _should_stream_line(line):
-                print(line, end="")
+                print(line, end="", flush=True)
         proc.stdout.close()
     returncode = proc.wait()
     return int(returncode), "".join(lines)
