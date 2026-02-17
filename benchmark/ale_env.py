@@ -11,9 +11,10 @@ import numpy as np
 from benchmark.runner import EnvStep
 
 try:
-    from ale_py import ALEInterface, roms
+    from ale_py import ALEInterface, LoggerMode, roms
 except ImportError:  # pragma: no cover - exercised only when ale_py is missing
     ALEInterface = None
+    LoggerMode = None
     roms = None
 
 
@@ -44,6 +45,11 @@ class ALEAtariEnv:
             raise ImportError("ale_py is required. Install `ale-py` to use ALEAtariEnv.")
 
         self.config = config
+        if LoggerMode is not None and hasattr(ALEInterface, "setLoggerMode"):
+            try:
+                ALEInterface.setLoggerMode(LoggerMode.Error)
+            except Exception:  # pragma: no cover - optional runtime path
+                pass
         self.ale = ALEInterface()
         self.ale.setInt("random_seed", int(config.seed))
         self.ale.setFloat("repeat_action_probability", float(config.sticky_action_prob))
