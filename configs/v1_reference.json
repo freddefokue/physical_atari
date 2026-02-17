@@ -1,0 +1,30 @@
+{
+  "games": [
+    "ms_pacman",
+    "centipede",
+    "qbert",
+    "defender",
+    "krull",
+    "atlantis",
+    "up_n_down",
+    "battle_zone"
+  ],
+  "num_cycles": 3,
+  "base_visit_frames": 200000,
+  "jitter_pct": 0.07,
+  "min_visit_frames": 20000,
+  "decision_interval": 4,
+  "delay": 6,
+  "sticky": 0.25,
+  "full_action_space": 1,
+  "life_loss_termination": 1,
+  "default_action_idx": 0,
+  "timestamps": 1,
+  "agent": "random",
+  "scoring_defaults": {
+    "window_episodes": 20,
+    "bottom_k_frac": 0.25,
+    "revisit_episodes": 5,
+    "final_score_weights": [0.5, 0.5]
+  }
+}

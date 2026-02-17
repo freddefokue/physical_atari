@@ -11,6 +11,8 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tupl
 
 import numpy as np
 
+from benchmark.contract import BENCHMARK_CONTRACT_VERSION, compute_contract_hash
+
 
 @dataclass
 class EpisodeRecord:
@@ -382,6 +384,11 @@ def score_run(
         raise ValueError("bottom_k_frac must be in (0.0, 1.0]")
 
     config = _read_json(run_dir / "config.json")
+    contract_version = str(config.get("benchmark_contract_version", BENCHMARK_CONTRACT_VERSION))
+    contract_hash = config.get("benchmark_contract_hash")
+    if not isinstance(contract_hash, str) or not contract_hash:
+        contract_hash = compute_contract_hash(config)
+
     segments_rows = _read_jsonl(run_dir / "segments.jsonl")
     segments = _parse_segments(segments_rows)
     episodes_rows = _read_jsonl(run_dir / "episodes.jsonl")
@@ -566,6 +573,8 @@ def score_run(
         "per_game_plasticity": per_game_plasticity,
         "fps": fps,
         "frames": int(frames),
+        "benchmark_contract_version": contract_version,
+        "benchmark_contract_hash": str(contract_hash),
         "notes": notes,
     }
     return result

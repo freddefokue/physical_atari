@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import json
 import platform
 import random
 import sys
 from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
 from benchmark.agents import RandomAgent, RepeatActionAgent
 from benchmark.ale_env import ALEAtariEnv, ALEEnvConfig
+from benchmark.contract import BENCHMARK_CONTRACT_VERSION, compute_contract_hash, resolve_scoring_defaults
 from benchmark.logging_utils import JsonlWriter, dump_json, make_run_dir
 from benchmark.multigame_runner import MultiGameRunner, MultiGameRunnerConfig
 from benchmark.schedule import Schedule, ScheduleConfig
@@ -25,12 +27,139 @@ def parse_games_csv(value: str) -> List[str]:
     return games
 
 
-def parse_args() -> argparse.Namespace:
+def _load_config_file(path: Optional[str]) -> Dict[str, Any]:
+    if path is None:
+        return {}
+    config_path = Path(path)
+    with config_path.open("r", encoding="utf-8") as fh:
+        payload = json.load(fh)
+    if not isinstance(payload, dict):
+        raise ValueError("--config must contain a JSON object")
+    return payload
+
+
+def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
+    defaults: Dict[str, Any] = {}
+
+    def set_if_present(dst: str, src_keys: Sequence[str], cast=None) -> None:
+        for key in src_keys:
+            if key in config_data and config_data[key] is not None:
+                value = config_data[key]
+                defaults[dst] = cast(value) if cast is not None else value
+                return
+
+    games = config_data.get("games")
+    if isinstance(games, list):
+        defaults["games"] = ",".join(str(game) for game in games)
+    elif isinstance(games, str):
+        defaults["games"] = games
+
+    set_if_present("num_cycles", ["num_cycles"], int)
+    set_if_present("base_visit_frames", ["base_visit_frames"], int)
+    set_if_present("jitter_pct", ["jitter_pct"], float)
+    set_if_present("min_visit_frames", ["min_visit_frames"], int)
+    set_if_present("seed", ["seed"], int)
+    set_if_present("decision_interval", ["decision_interval", "frame_skip"], int)
+    set_if_present("delay", ["delay", "delay_frames"], int)
+    set_if_present("sticky", ["sticky", "sticky_prob"], float)
+    set_if_present("full_action_space", ["full_action_space"], int)
+    set_if_present("life_loss_termination", ["life_loss_termination"], int)
+    set_if_present("agent", ["agent"], str)
+    set_if_present("repeat_action_idx", ["repeat_action_idx"], int)
+    set_if_present("default_action_idx", ["default_action_idx"], int)
+    set_if_present("timestamps", ["timestamps", "include_timestamps"], int)
+    set_if_present("logdir", ["logdir"], str)
+
+    # TinyDQN keys can be top-level or nested under agent_config.
+    agent_cfg = config_data.get("agent_config")
+    if isinstance(agent_cfg, dict):
+        merged_cfg = dict(agent_cfg)
+    else:
+        merged_cfg = {}
+    for key in [
+        "dqn_gamma",
+        "dqn_lr",
+        "dqn_buffer_size",
+        "dqn_batch_size",
+        "dqn_train_every",
+        "dqn_target_update",
+        "dqn_eps_start",
+        "dqn_eps_end",
+        "dqn_eps_decay_frames",
+        "dqn_replay_min",
+        "dqn_use_replay",
+        "dqn_device",
+    ]:
+        if key in config_data and config_data[key] is not None:
+            merged_cfg[key] = config_data[key]
+    # Direct argparse-style TinyDQN keys.
+    arg_cast = {
+        "dqn_gamma": float,
+        "dqn_lr": float,
+        "dqn_buffer_size": int,
+        "dqn_batch_size": int,
+        "dqn_train_every": int,
+        "dqn_target_update": int,
+        "dqn_eps_start": float,
+        "dqn_eps_end": float,
+        "dqn_eps_decay_frames": int,
+        "dqn_replay_min": int,
+        "dqn_use_replay": int,
+        "dqn_device": str,
+    }
+    for arg_name in [
+        "dqn_gamma",
+        "dqn_lr",
+        "dqn_buffer_size",
+        "dqn_batch_size",
+        "dqn_train_every",
+        "dqn_target_update",
+        "dqn_eps_start",
+        "dqn_eps_end",
+        "dqn_eps_decay_frames",
+        "dqn_replay_min",
+        "dqn_use_replay",
+        "dqn_device",
+    ]:
+        if arg_name in merged_cfg and merged_cfg[arg_name] is not None:
+            defaults[arg_name] = arg_cast[arg_name](merged_cfg[arg_name])
+
+    # Backward-compatible mapping from TinyDQNConfig field names.
+    field_to_arg = {
+        "gamma": "dqn_gamma",
+        "lr": "dqn_lr",
+        "buffer_size": "dqn_buffer_size",
+        "batch_size": "dqn_batch_size",
+        "train_every_decisions": "dqn_train_every",
+        "target_update_decisions": "dqn_target_update",
+        "eps_start": "dqn_eps_start",
+        "eps_end": "dqn_eps_end",
+        "eps_decay_frames": "dqn_eps_decay_frames",
+        "replay_min_size": "dqn_replay_min",
+        "use_replay": "dqn_use_replay",
+        "device": "dqn_device",
+    }
+    for field_name, arg_name in field_to_arg.items():
+        if field_name in merged_cfg and merged_cfg[field_name] is not None:
+            value = merged_cfg[field_name]
+            if arg_name == "dqn_use_replay":
+                defaults[arg_name] = int(value)
+            else:
+                defaults[arg_name] = value
+
+    return defaults
+
+
+def _build_parser(defaults: Optional[Dict[str, Any]] = None) -> argparse.ArgumentParser:
+    defaults = defaults or {}
+    has_games_default = "games" in defaults and str(defaults["games"]).strip() != ""
+
     parser = argparse.ArgumentParser(description="Multi-game continual Atari benchmark runner (ALE direct).")
+    parser.add_argument("--config", type=str, default=None, help="Path to JSON config file.")
     parser.add_argument(
         "--games",
         type=str,
-        required=True,
+        required=not has_games_default,
         help="Comma-separated ALE ROM keys, e.g. ms_pacman,centipede,qbert.",
     )
     parser.add_argument("--num-cycles", type=int, default=3, help="Number of schedule cycles.")
@@ -128,7 +257,21 @@ def parse_args() -> argparse.Namespace:
         help="Include wallclock timestamps in per-frame events.",
     )
     parser.add_argument("--logdir", type=str, default="./runs/v1", help="Base output directory.")
-    return parser.parse_args()
+    if defaults:
+        parser.set_defaults(**defaults)
+    return parser
+
+
+def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("--config", type=str, default=None)
+    pre_args, _ = pre_parser.parse_known_args(args=argv)
+    config_data = _load_config_file(pre_args.config)
+    defaults = _coerce_config_defaults(config_data)
+    parser = _build_parser(defaults=defaults)
+    args = parser.parse_args(args=argv)
+    setattr(args, "_config_data", config_data)
+    return args
 
 
 def seed_everything(seed: int) -> None:
@@ -143,7 +286,12 @@ def build_agent(args: argparse.Namespace, num_actions: int):
         if args.repeat_action_idx < 0 or args.repeat_action_idx >= num_actions:
             raise ValueError(f"--repeat-action-idx must be in [0, {num_actions - 1}]")
         return RepeatActionAgent(action_idx=args.repeat_action_idx), {"action_idx": int(args.repeat_action_idx)}
-    from benchmark.agents_tinydqn import TinyDQNAgent, TinyDQNConfig  # pylint: disable=import-outside-toplevel
+    try:
+        from benchmark.agents_tinydqn import TinyDQNAgent, TinyDQNConfig  # pylint: disable=import-outside-toplevel
+    except ImportError as exc:  # pragma: no cover - depends on optional torch dependency
+        raise ImportError(
+            "agent=tinydqn requires torch. Install torch or use --agent random/--agent repeat."
+        ) from exc
 
     dqn_config = TinyDQNConfig(
         gamma=float(args.dqn_gamma),
@@ -156,7 +304,7 @@ def build_agent(args: argparse.Namespace, num_actions: int):
         eps_start=float(args.dqn_eps_start),
         eps_end=float(args.dqn_eps_end),
         eps_decay_frames=int(args.dqn_eps_decay_frames),
-        use_replay=bool(args.dqn_use_replay),
+        use_replay=bool(int(args.dqn_use_replay)),
         device=str(args.dqn_device),
     )
     agent = TinyDQNAgent(action_space_n=num_actions, seed=int(args.seed), config=dqn_config)
@@ -228,8 +376,10 @@ def build_config_payload(
     runner_config: MultiGameRunnerConfig,
     resolved_action_sets: Dict[str, List[int]],
     agent_config: Dict[str, object],
+    config_file_data: Dict[str, Any],
 ) -> Dict:
-    return {
+    scoring_defaults = resolve_scoring_defaults(config_file_data)
+    payload = {
         "games": [str(game) for game in games],
         "num_cycles": int(args.num_cycles),
         "base_visit_frames": int(args.base_visit_frames),
@@ -264,11 +414,20 @@ def build_config_payload(
             "include_timestamps": bool(runner_config.include_timestamps),
         },
         "versions": get_version_metadata(),
+        "scoring_defaults": scoring_defaults,
     }
+    if args.config is not None:
+        payload["config_path"] = str(args.config)
+    if config_file_data:
+        payload["config_file"] = dict(config_file_data)
+    payload["benchmark_contract_version"] = BENCHMARK_CONTRACT_VERSION
+    payload["benchmark_contract_hash"] = compute_contract_hash(payload, scoring_defaults=scoring_defaults)
+    return payload
 
 
 def main() -> None:
     args = parse_args()
+    config_file_data = dict(getattr(args, "_config_data", {}))
     games = parse_games_csv(args.games)
     seed_everything(args.seed)
 
@@ -321,6 +480,7 @@ def main() -> None:
         runner_config,
         resolved_action_sets,
         agent_config,
+        config_file_data,
     )
     config_payload["resolved_action_mappings"] = action_mappings
     dump_json(run_dir / "config.json", config_payload)

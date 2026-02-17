@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+import torch
 
 from benchmark.agents_tinydqn import ReplayBuffer, TinyDQNAgent, TinyDQNConfig
 
@@ -252,7 +253,7 @@ def test_transition_action_comes_from_prev_applied_action_info():
     assert int(agent._replay._actions[idx]) == 4  # pylint: disable=protected-access
 
 
-def test_transition_action_uses_last_seen_applied_action_within_interval():
+def test_transition_action_uses_first_seen_applied_action_within_interval():
     agent = TinyDQNAgent(
         action_space_n=6,
         seed=8,
@@ -293,7 +294,7 @@ def test_transition_action_uses_last_seen_applied_action_within_interval():
             "prev_applied_action_idx": 2,
         },
     )
-    # Interval frame 2 sees applied action 5 (should overwrite to last seen).
+    # Interval frame 2 sees a different applied action (should NOT overwrite).
     agent.step(
         make_obs(3),
         reward=0.2,
@@ -324,7 +325,7 @@ def test_transition_action_uses_last_seen_applied_action_within_interval():
 
     assert agent.replay_size == 1
     idx = (agent._replay._ptr - 1) % agent._replay.capacity  # pylint: disable=protected-access
-    assert int(agent._replay._actions[idx]) == 5  # pylint: disable=protected-access
+    assert int(agent._replay._actions[idx]) == 2  # pylint: disable=protected-access
 
 
 def test_replay_disabled_keeps_buffer_empty():
@@ -372,7 +373,7 @@ def test_requires_applied_action_feedback_keys_in_info():
         )
 
 
-def test_first_interval_falls_back_to_default_action_idx_when_label_missing():
+def test_first_interval_without_action_label_is_skipped():
     agent = TinyDQNAgent(
         action_space_n=5,
         seed=2,
@@ -393,7 +394,6 @@ def test_first_interval_falls_back_to_default_action_idx_when_label_missing():
         info={
             "is_decision_frame": True,
             "global_frame_idx": 0,
-            "default_action_idx": 3,
             "has_prev_applied_action": False,
             "prev_applied_action_idx": 0,
         },
@@ -406,14 +406,11 @@ def test_first_interval_falls_back_to_default_action_idx_when_label_missing():
         info={
             "is_decision_frame": True,
             "global_frame_idx": 1,
-            "default_action_idx": 3,
             "has_prev_applied_action": False,
             "prev_applied_action_idx": 0,
         },
     )
-    assert agent.replay_size == 1
-    idx = (agent._replay._ptr - 1) % agent._replay.capacity  # pylint: disable=protected-access
-    assert int(agent._replay._actions[idx]) == 3  # pylint: disable=protected-access
+    assert agent.replay_size == 0
 
 
 def test_no_double_train_on_single_decision_boundary():
@@ -498,8 +495,8 @@ def test_train_every_decisions_uses_boundary_aligned_counter():
     )
 
     # Six decision frames (every frame is a decision frame). A transition is
-    # finalized on steps 2..6. With boundary-aligned counting, only the
-    # decision-4 boundary should trigger one training step in this window.
+    # finalized on steps 2..6. With train cadence driven by finalized
+    # transitions, only finalized transition #4 should trigger a train step.
     for frame_idx in range(6):
         agent.step(
             make_obs(100 + frame_idx),
@@ -517,3 +514,92 @@ def test_train_every_decisions_uses_boundary_aligned_counter():
 
     assert agent.replay_size == 5
     assert agent._train_steps == 1  # pylint: disable=protected-access
+
+
+def test_target_sync_uses_decision_counter_even_without_training():
+    agent = TinyDQNAgent(
+        action_space_n=4,
+        seed=6,
+        config=TinyDQNConfig(
+            eps_start=0.0,
+            eps_end=0.0,
+            replay_min_size=10_000,
+            train_every_decisions=1000,
+            target_update_decisions=2,
+            use_replay=False,
+            device="cpu",
+        ),
+    )
+
+    def first_weight(module):
+        return next(module.parameters()).detach().clone()
+
+    with torch.no_grad():
+        next(agent._online.parameters()).fill_(1.0)  # pylint: disable=protected-access
+
+    # Decision 1: no sync yet (counter=1).
+    agent.step(
+        make_obs(1),
+        reward=0.0,
+        terminated=False,
+        truncated=False,
+        info={
+            "is_decision_frame": True,
+            "global_frame_idx": 0,
+            "default_action_idx": 0,
+            "has_prev_applied_action": False,
+            "prev_applied_action_idx": 0,
+        },
+    )
+    assert not torch.allclose(first_weight(agent._online), first_weight(agent._target))  # pylint: disable=protected-access
+
+    # Decision 2: sync should happen (counter=2), even with replay/training disabled.
+    agent.step(
+        make_obs(2),
+        reward=0.0,
+        terminated=False,
+        truncated=False,
+        info={
+            "is_decision_frame": True,
+            "global_frame_idx": 1,
+            "default_action_idx": 0,
+            "has_prev_applied_action": True,
+            "prev_applied_action_idx": 0,
+        },
+    )
+    assert torch.allclose(first_weight(agent._online), first_weight(agent._target))  # pylint: disable=protected-access
+
+    with torch.no_grad():
+        next(agent._online.parameters()).fill_(2.0)  # pylint: disable=protected-access
+
+    # Decision 3: no sync (counter=3).
+    agent.step(
+        make_obs(3),
+        reward=0.0,
+        terminated=False,
+        truncated=False,
+        info={
+            "is_decision_frame": True,
+            "global_frame_idx": 2,
+            "default_action_idx": 0,
+            "has_prev_applied_action": True,
+            "prev_applied_action_idx": 0,
+        },
+    )
+    assert not torch.allclose(first_weight(agent._online), first_weight(agent._target))  # pylint: disable=protected-access
+
+    # Decision 4: sync again (counter=4).
+    agent.step(
+        make_obs(4),
+        reward=0.0,
+        terminated=False,
+        truncated=False,
+        info={
+            "is_decision_frame": True,
+            "global_frame_idx": 3,
+            "default_action_idx": 0,
+            "has_prev_applied_action": True,
+            "prev_applied_action_idx": 0,
+        },
+    )
+    assert torch.allclose(first_weight(agent._online), first_weight(agent._target))  # pylint: disable=protected-access

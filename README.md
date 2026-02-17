@@ -228,6 +228,25 @@ python -m benchmark.run_multigame \
   --logdir ./runs/v1
 ```
 
+You can also run from a committed JSON config (recommended for reproducibility):
+
+```bash
+python -m benchmark.run_multigame \
+  --config configs/v1_reference.json \
+  --seed 0 \
+  --logdir ./runs/v1_ref
+```
+
+CLI flags still override config file values, for example:
+
+```bash
+python -m benchmark.run_multigame \
+  --config configs/v1_smoke.json \
+  --seed 3 \
+  --delay 4 \
+  --logdir ./runs/v1_smoke_override
+```
+
 Outputs are written to a timestamped run directory:
 - `config.json` (full config, software versions, realized schedule, per-game action sets, mapping policy)
 - `events.jsonl` (one row per frame, including game/visit/cycle indices, `episode_id`, `segment_id`, and both terminal signals)
@@ -332,6 +351,38 @@ Scoring uses this distinction directly:
 - `episodes.jsonl` contributes true-episode metrics (`terminated` only).
 - `segments.jsonl` contributes boundary-aware metrics (both terminated and truncated).
 - `notes.unassigned_episode_count` reports episodes that could not be safely placed into any visit window.
+
+## Reference Config and Calibration Suite
+
+The repository includes canonical benchmark configs:
+- `configs/v1_reference.json`: long-form reference setup (8 games, 3 cycles, sticky actions, delay, decision interval).
+- `configs/v1_smoke.json`: fast validation setup for mechanics and scoring smoke checks.
+
+Why these defaults matter:
+- `sticky=0.25` keeps ALE stochastic and avoids determinism exploits.
+- `decision_interval=4` models repeated actions between control updates.
+- `delay>0` enforces explicit actuation latency in the runner.
+- visit-end `truncated` flags keep benchmark switches distinct from true environment `terminated` events.
+
+Run the calibration suite:
+
+```bash
+python -m benchmark.calibrate --suite smoke --out runs/calib_smoke
+python -m benchmark.calibrate --suite calib --out runs/calib_medium
+python -m benchmark.calibrate --suite paper --out runs/calib_paper
+```
+
+Suite behavior:
+- Runs `RepeatActionAgent`, `RandomAgent`, and `TinyDQNAgent` (TinyDQN skipped if `torch` is unavailable).
+- Scores each run with `benchmark.score_run`, writing per-run `score.json`.
+- Writes aggregate `summary.json` under the suite output directory with per-agent stats.
+- `smoke` enforces lightweight expectations and exits non-zero on failures (mechanics/logging checks + robust ordering checks).
+
+`summary.json` reports:
+- per-agent score stats (`final_score`, `mean_score`, `bottom_k_score`: mean/median/std/min/max/CV),
+- runtime (`fps` and `frames` means),
+- forgetting/plasticity aggregates when available,
+- skipped/failed run counts and smoke expectation results.
 
 
 ---

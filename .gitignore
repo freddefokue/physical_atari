@@ -25,3 +25,14 @@ pip-delete-this-directory.txt
 results/
 local/
 train_data/
+runs/
+training_logs.txt
+training_logs_allow_resets.txt
+training_logs_potential_collapse.txt
+training_logs_seed2_25kskip.txt
+training_logs_seed2_40kskip.txt
+training_logs_seed2_rr8.txt
+training_logs_single.txt
+training_logs_single2.txt
+training_logs_single_skip_final_resets_withOUT_per.txt
+training_logs_single_skip_final_resets_with_per.txt

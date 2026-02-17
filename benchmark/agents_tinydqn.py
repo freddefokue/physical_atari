@@ -126,9 +126,11 @@ class TinyDQNAgent:
     """
     Minimal online DQN baseline for streaming runners.
 
-    The agent is called every frame. It only selects new actions and trains on
-    decision frames (`info["is_decision_frame"] == True`), and returns the last
-    selected action on non-decision frames.
+    The agent is called every frame but learns on decision-interval transitions:
+    it accumulates reward between decision boundaries and assigns that transition
+    to the runner-provided `prev_applied_action_idx` so credit remains aligned
+    with delayed, actually-executed actions. Intervals that never receive a
+    valid applied-action label are skipped.
     """
 
     def __init__(
@@ -166,6 +168,7 @@ class TinyDQNAgent:
         self._last_action_idx = 0
         self._frame_counter = 0
         self._decision_counter = 0
+        self._finalized_transition_counter = 0
         self._train_steps = 0
 
         self._pending_decision_obs_u8: Optional[np.ndarray] = None
@@ -225,7 +228,7 @@ class TinyDQNAgent:
             return
         if self.replay_size < max(self.config.replay_min_size, self.config.batch_size):
             return
-        if self._decision_counter % self.config.train_every_decisions != 0:
+        if self._finalized_transition_counter % self.config.train_every_decisions != 0:
             return
 
         obs_u8, actions, rewards, next_obs_u8, dones = self._replay.sample(self.config.batch_size)
@@ -249,8 +252,14 @@ class TinyDQNAgent:
         self._optim.step()
         self._train_steps += 1
 
-        if self._decision_counter % self.config.target_update_decisions == 0:
-            self._target.load_state_dict(self._online.state_dict())
+    def _maybe_sync_target(self) -> None:
+        """Sync target network on decision cadence, independent of training cadence."""
+
+        if self._decision_counter <= 0:
+            return
+        if self._decision_counter % self.config.target_update_decisions != 0:
+            return
+        self._target.load_state_dict(self._online.state_dict())
 
     def step(self, obs_rgb: np.ndarray, reward: float, terminated: bool, truncated: bool, info: Dict[str, object]) -> int:
         done = bool(terminated or truncated)
@@ -272,32 +281,31 @@ class TinyDQNAgent:
 
         if self._pending_decision_obs_u8 is not None:
             self._pending_interval_reward += float(reward)
-            if has_prev_applied_action and 0 <= prev_applied_action_idx < self.action_space_n:
+            if (
+                has_prev_applied_action
+                and self._pending_interval_action_idx is None
+                and 0 <= prev_applied_action_idx < self.action_space_n
+            ):
                 self._pending_interval_action_idx = int(prev_applied_action_idx)
             if done:
                 self._pending_interval_done = True
 
             if is_decision_frame or done:
                 obs_u8 = self._preprocess_obs(obs_rgb)
-                if self._pending_interval_action_idx is None:
-                    default_action_idx = int(info.get("default_action_idx", 0))
-                    if 0 <= default_action_idx < self.action_space_n:
-                        transition_action = int(default_action_idx)
-                    else:
-                        raise RuntimeError(
-                            "Missing applied-action label for pending decision interval and "
-                            "no valid default_action_idx fallback."
-                        )
-                else:
-                    transition_action = int(self._pending_interval_action_idx)
-                if self.config.use_replay and 0 <= transition_action < self.action_space_n:
+                transition_action = (
+                    int(self._pending_interval_action_idx)
+                    if self._pending_interval_action_idx is not None
+                    else None
+                )
+                if self.config.use_replay and transition_action is not None and 0 <= transition_action < self.action_space_n:
                     self._replay.add(
                         obs=self._pending_decision_obs_u8,
-                        action=int(transition_action),
+                        action=transition_action,
                         reward=float(self._pending_interval_reward),
                         next_obs=obs_u8,
                         done=bool(self._pending_interval_done),
                     )
+                    self._finalized_transition_counter += 1
                     self._maybe_train()
                 self._pending_decision_obs_u8 = None
                 self._pending_interval_reward = 0.0
@@ -321,5 +329,6 @@ class TinyDQNAgent:
         self._pending_interval_action_idx = None
         self._pending_interval_done = False
 
+        self._maybe_sync_target()
         self._frame_counter += 1
         return int(self._last_action_idx)

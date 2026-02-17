@@ -87,6 +87,7 @@ class MultiGameRunner:
         self._delay_queue = deque()
         self._decided_action_idx = int(self.config.default_action_idx)
         self._decision_phase = 0
+        self._last_applied_action_idx_global: Optional[int] = None
 
         self._obs_rgb: Optional[np.ndarray] = None
         self._lives = 0
@@ -113,6 +114,7 @@ class MultiGameRunner:
         self._decided_action_idx = int(self.config.default_action_idx)
         self._delay_queue = deque([self.config.default_action_idx] * self.config.delay_frames)
         self._decision_phase = 0
+        self._last_applied_action_idx_global = None
 
     def _start_segment(self, global_frame_idx: int) -> None:
         self._segment_start_global_frame_idx = int(global_frame_idx)
@@ -145,14 +147,15 @@ class MultiGameRunner:
         local_idx = self._local_action_to_idx.get(ale_action, self._local_default_idx)
         return int(local_idx), int(self._local_action_set[local_idx])
 
-    def _build_agent_info(
-        self,
-        global_frame_idx: int,
-        prev_applied_action_idx: int,
-        has_prev_applied_action: bool,
-    ) -> Dict[str, Any]:
+    def _build_agent_info(self, global_frame_idx: int) -> Dict[str, Any]:
         """Agent-facing info intentionally excludes schedule/task identity fields."""
 
+        has_prev_applied_action = self._last_applied_action_idx_global is not None
+        prev_applied_action_idx = (
+            int(self._last_applied_action_idx_global)
+            if has_prev_applied_action
+            else int(self.config.default_action_idx)
+        )
         return {
             "lives": int(self._lives),
             "action_space_n": int(self._num_global_actions),
@@ -165,10 +168,10 @@ class MultiGameRunner:
 
     @staticmethod
     def _segment_ended_by(terminated: bool, truncated: bool) -> Optional[str]:
-        if terminated:
-            return "terminated"
         if truncated:
             return "truncated"
+        if terminated:
+            return "terminated"
         return None
 
     def _write_episode(self, game_id: str, end_global_frame_idx: int, ended_by: str) -> None:
@@ -210,9 +213,6 @@ class MultiGameRunner:
         prev_reward = 0.0
         prev_terminated = False
         prev_truncated = False
-        prev_applied_action_idx = int(self.config.default_action_idx)
-        has_prev_applied_action = False
-
         global_frame_idx = 0
         segments_completed = 0
         episodes_completed = 0
@@ -227,8 +227,7 @@ class MultiGameRunner:
             self._obs_rgb = self.env.reset()
             self._lives = int(self.env.lives())
             self._reset_control_state()
-            if global_frame_idx == 0 or prev_terminated:
-                self._start_episode(global_frame_idx)
+            self._start_episode(global_frame_idx)
             self._start_segment(global_frame_idx)
 
             for visit_frame_idx in range(visit.visit_frames):
@@ -239,11 +238,7 @@ class MultiGameRunner:
                     prev_reward,
                     prev_terminated,
                     prev_truncated,
-                    self._build_agent_info(
-                        global_frame_idx,
-                        prev_applied_action_idx,
-                        has_prev_applied_action,
-                    ),
+                    self._build_agent_info(global_frame_idx),
                 )
 
                 if is_decision_frame:
@@ -259,8 +254,10 @@ class MultiGameRunner:
                 self._lives = int(step.lives)
 
                 is_visit_last_frame = visit_frame_idx == (visit.visit_frames - 1)
-                terminated = bool(step.terminated)
-                truncated = bool(step.truncated or is_visit_last_frame)
+                # v1 contract: truncated marks visit-end boundary only.
+                # Environment truncations are treated as terminated boundaries.
+                terminated = bool(step.terminated or step.truncated)
+                truncated = bool(is_visit_last_frame)
 
                 self._episode_return += float(step.reward)
                 self._episode_length += 1
@@ -268,6 +265,7 @@ class MultiGameRunner:
                 self._segment_length += 1
 
                 event = {
+                    # TODO(v2): remove `frame_idx` once downstream tooling only relies on `global_frame_idx`.
                     "frame_idx": int(global_frame_idx),
                     "global_frame_idx": int(global_frame_idx),
                     "game_id": str(visit.game_id),
@@ -296,8 +294,7 @@ class MultiGameRunner:
                 prev_reward = float(step.reward)
                 prev_terminated = terminated
                 prev_truncated = truncated
-                prev_applied_action_idx = int(applied_action_idx)
-                has_prev_applied_action = True
+                self._last_applied_action_idx_global = int(applied_action_idx)
 
                 if terminated or truncated:
                     ended_by = self._segment_ended_by(terminated, truncated)
@@ -306,17 +303,16 @@ class MultiGameRunner:
                     segments_completed += 1
                     self._segment_id += 1
 
-                    if terminated:
-                        self._write_episode(visit.game_id, global_frame_idx, "terminated")
-                        episodes_completed += 1
-                        self._episode_id += 1
+                    episode_ended_by = "terminated" if terminated else "truncated"
+                    self._write_episode(visit.game_id, global_frame_idx, episode_ended_by)
+                    episodes_completed += 1
+                    self._episode_id += 1
 
                     if not is_visit_last_frame:
                         self._obs_rgb = self.env.reset()
                         self._lives = int(self.env.lives())
                         self._reset_control_state()
-                        if terminated:
-                            self._start_episode(global_frame_idx + 1)
+                        self._start_episode(global_frame_idx + 1)
                         self._start_segment(global_frame_idx + 1)
 
                 global_frame_idx += 1
