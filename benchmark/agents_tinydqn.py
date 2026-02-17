@@ -188,6 +188,18 @@ class TinyDQNAgent:
     def decision_steps(self) -> int:
         return int(self._decision_counter)
 
+    @property
+    def finalized_transition_counter(self) -> int:
+        return int(self._finalized_transition_counter)
+
+    @property
+    def train_steps(self) -> int:
+        return int(self._train_steps)
+
+    @property
+    def replay_min_size(self) -> int:
+        return int(self.config.replay_min_size)
+
     def get_config(self) -> Dict[str, object]:
         return self.config.as_dict()
 

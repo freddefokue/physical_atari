@@ -5,7 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from benchmark.calibrate import aggregate_summary, evaluate_smoke_expectations, merge_config, resolve_config_path
+from benchmark.calibrate import (
+    aggregate_summary,
+    evaluate_calib_expectations,
+    evaluate_smoke_expectations,
+    merge_config,
+    resolve_config_path,
+)
 
 
 def _write_json(path: Path, payload) -> None:
@@ -161,6 +167,210 @@ def test_smoke_expectations_fail_when_random_underperforms_repeat(tmp_path):
     expectations = evaluate_smoke_expectations([repeat_run, random_run])
     assert expectations["passed"] is False
     assert any("RandomAgent mean final_score" in msg for msg in expectations["errors"])
+
+
+def test_smoke_expectations_fail_on_linecount_mismatch(tmp_path):
+    run = _fake_success_run(tmp_path, "random_seed0", frames=6, final=2.0, mean=3.0, bottom=1.5)
+    run.update({"agent": "random", "seed": 0})
+    with (Path(run["run_dir"]) / "events.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"global_frame_idx": 999, "reward": 0.0}))
+        fh.write("\n")
+
+    expectations = evaluate_smoke_expectations([run])
+    assert expectations["passed"] is False
+    assert any("line count mismatch" in msg for msg in expectations["errors"])
+
+
+def test_smoke_expectations_fail_on_missing_score_keys(tmp_path):
+    run = _fake_success_run(tmp_path, "random_seed0", frames=6, final=2.0, mean=3.0, bottom=1.5)
+    run.update({"agent": "random", "seed": 0})
+    score_path = Path(run["run_dir"]) / "score.json"
+    score = json.loads(score_path.read_text(encoding="utf-8"))
+    del score["fps"]
+    _write_json(score_path, score)
+
+    expectations = evaluate_smoke_expectations([run])
+    assert expectations["passed"] is False
+    assert any("missing 'fps'" in msg for msg in expectations["errors"])
+
+
+def test_smoke_expectations_fail_on_non_finite_metric(tmp_path):
+    run = _fake_success_run(tmp_path, "random_seed0", frames=6, final=2.0, mean=3.0, bottom=1.5)
+    run.update({"agent": "random", "seed": 0})
+    score_path = Path(run["run_dir"]) / "score.json"
+    score = json.loads(score_path.read_text(encoding="utf-8"))
+    score["fps"] = float("inf")
+    _write_json(score_path, score)
+
+    expectations = evaluate_smoke_expectations([run])
+    assert expectations["passed"] is False
+    assert any("non-finite 'fps'" in msg for msg in expectations["errors"])
+
+
+def test_smoke_expectations_fail_on_non_finite_optional_metric(tmp_path):
+    run = _fake_success_run(tmp_path, "random_seed0", frames=6, final=2.0, mean=3.0, bottom=1.5)
+    run.update({"agent": "random", "seed": 0})
+    score_path = Path(run["run_dir"]) / "score.json"
+    score = json.loads(score_path.read_text(encoding="utf-8"))
+    score["forgetting_index_mean"] = float("nan")
+    _write_json(score_path, score)
+
+    expectations = evaluate_smoke_expectations([run])
+    assert expectations["passed"] is False
+    assert any("contains non-finite numeric value" in msg for msg in expectations["errors"])
+
+
+def test_calib_expectations_pass_with_metric_health_and_training_signal():
+    run_results = [
+        {
+            "agent": "random",
+            "seed": 0,
+            "status": "success",
+            "score": {
+                "mean_score": 3.0,
+                "bottom_k_score": 2.0,
+                "forgetting_index_mean": 0.2,
+                "plasticity_mean": None,
+            },
+            "agent_stats": None,
+        },
+        {
+            "agent": "random",
+            "seed": 1,
+            "status": "success",
+            "score": {
+                "mean_score": 4.0,
+                "bottom_k_score": 4.0,
+                "forgetting_index_mean": None,
+                "plasticity_mean": 0.1,
+            },
+            "agent_stats": None,
+        },
+        {
+            "agent": "tinydqn",
+            "seed": 0,
+            "status": "success",
+            "score": {
+                "mean_score": 2.0,
+                "bottom_k_score": 1.5,
+                "forgetting_index_mean": None,
+                "plasticity_mean": None,
+            },
+            "agent_stats": {
+                "train_steps": 12,
+                "replay_size": 1500,
+                "replay_min_size": 1000,
+                "finalized_transition_counter": 2000,
+            },
+        },
+    ]
+
+    expectations = evaluate_calib_expectations(run_results)
+    assert expectations["passed"] is True
+    assert expectations["errors"] == []
+
+
+def test_calib_expectations_fail_when_tinydqn_training_gate_not_met():
+    run_results = [
+        {
+            "agent": "random",
+            "seed": 0,
+            "status": "success",
+            "score": {
+                "mean_score": 3.0,
+                "bottom_k_score": 2.0,
+                "forgetting_index_mean": 0.2,
+                "plasticity_mean": 0.1,
+            },
+            "agent_stats": None,
+        },
+        {
+            "agent": "tinydqn",
+            "seed": 0,
+            "status": "success",
+            "score": {
+                "mean_score": 2.0,
+                "bottom_k_score": 1.5,
+                "forgetting_index_mean": None,
+                "plasticity_mean": None,
+            },
+            "agent_stats": {
+                "train_steps": 0,
+                "replay_size": 900,
+                "replay_min_size": 1000,
+                "finalized_transition_counter": 1000,
+            },
+        },
+    ]
+
+    expectations = evaluate_calib_expectations(run_results)
+    assert expectations["passed"] is False
+    assert any("TinyDQN training gate failed" in msg for msg in expectations["errors"])
+
+
+def test_calib_expectations_fail_when_no_successful_tinydqn_runs():
+    run_results = [
+        {
+            "agent": "random",
+            "seed": 0,
+            "status": "success",
+            "score": {
+                "mean_score": 3.0,
+                "bottom_k_score": 2.0,
+                "forgetting_index_mean": 0.2,
+                "plasticity_mean": 0.1,
+            },
+            "agent_stats": None,
+        },
+        {
+            "agent": "tinydqn",
+            "seed": 0,
+            "status": "failed",
+            "score": None,
+            "agent_stats": None,
+        },
+    ]
+
+    expectations = evaluate_calib_expectations(run_results)
+    assert expectations["passed"] is False
+    assert any("at least one successful tinydqn run" in msg for msg in expectations["errors"])
+
+
+def test_calib_expectations_fail_on_malformed_tinydqn_agent_stats():
+    run_results = [
+        {
+            "agent": "random",
+            "seed": 0,
+            "status": "success",
+            "score": {
+                "mean_score": 3.0,
+                "bottom_k_score": 2.0,
+                "forgetting_index_mean": 0.2,
+                "plasticity_mean": 0.1,
+            },
+            "agent_stats": None,
+        },
+        {
+            "agent": "tinydqn",
+            "seed": 0,
+            "status": "success",
+            "score": {
+                "mean_score": 2.0,
+                "bottom_k_score": 1.5,
+                "forgetting_index_mean": None,
+                "plasticity_mean": None,
+            },
+            "agent_stats": {
+                "train_steps": "bad",
+                "replay_size": 1500,
+                "replay_min_size": 1000,
+            },
+        },
+    ]
+
+    expectations = evaluate_calib_expectations(run_results)
+    assert expectations["passed"] is False
+    assert any("Malformed agent_stats" in msg for msg in expectations["errors"])
 
 
 def test_resolve_config_path_is_repo_relative_when_no_override():

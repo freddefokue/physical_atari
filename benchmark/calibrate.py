@@ -17,6 +17,8 @@ import numpy as np
 
 from benchmark.score_run import score_run
 
+EPS = 1e-9
+
 
 @dataclass(frozen=True)
 class SuiteSpec:
@@ -202,6 +204,47 @@ def _expected_total_frames(config: Dict[str, Any]) -> Optional[int]:
     return None
 
 
+def _finite_or_none(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed):
+        return None
+    return float(parsed)
+
+
+def _collect_non_finite_numeric_paths(payload: Any, prefix: str = "") -> List[str]:
+    paths: List[str] = []
+    if isinstance(payload, bool) or payload is None:
+        return paths
+    if isinstance(payload, (int, float)):
+        if not math.isfinite(float(payload)):
+            paths.append(prefix or "<root>")
+        return paths
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            key_str = str(key)
+            child_prefix = f"{prefix}.{key_str}" if prefix else key_str
+            paths.extend(_collect_non_finite_numeric_paths(value, child_prefix))
+        return paths
+    if isinstance(payload, (list, tuple)):
+        for idx, value in enumerate(payload):
+            child_prefix = f"{prefix}[{idx}]" if prefix else f"[{idx}]"
+            paths.extend(_collect_non_finite_numeric_paths(value, child_prefix))
+        return paths
+    return paths
+
+
+def _parse_int_or_none(value: Any) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def evaluate_smoke_expectations(run_results: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     errors: List[str] = []
     warnings: List[str] = []
@@ -227,7 +270,9 @@ def evaluate_smoke_expectations(run_results: Sequence[Dict[str, Any]]) -> Dict[s
 
         config = load_json(config_path)
         expected_frames = _expected_total_frames(config)
-        if expected_frames is not None:
+        if expected_frames is None:
+            errors.append(f"Unable to compute expected scheduled frames in {run_dir}")
+        else:
             observed_frames = _line_count(events_path)
             if observed_frames != expected_frames:
                 errors.append(
@@ -241,9 +286,18 @@ def evaluate_smoke_expectations(run_results: Sequence[Dict[str, Any]]) -> Dict[s
             errors.append(f"score.json missing in {run_dir}")
         else:
             score = load_json(score_path)
-            for key in ("final_score", "mean_score", "bottom_k_score"):
+            required_keys = ("final_score", "mean_score", "bottom_k_score", "fps", "frames")
+            for key in required_keys:
                 if key not in score:
                     errors.append(f"score.json missing '{key}' in {run_dir}")
+            for key in required_keys:
+                if key not in score:
+                    continue
+                if _finite_or_none(score.get(key)) is None:
+                    errors.append(f"score.json non-finite '{key}' in {run_dir}")
+            non_finite_paths = _collect_non_finite_numeric_paths(score)
+            for path in non_finite_paths:
+                errors.append(f"score.json contains non-finite numeric value at '{path}' in {run_dir}")
 
     # Aggregate outcome checks.
     def _agent_mean_final(agent: str) -> Optional[float]:
@@ -254,11 +308,8 @@ def evaluate_smoke_expectations(run_results: Sequence[Dict[str, Any]]) -> Dict[s
             score = row.get("score")
             if not isinstance(score, dict):
                 continue
-            raw = score.get("final_score")
-            if raw is None:
-                continue
-            value = float(raw)
-            if math.isfinite(value):
+            value = _finite_or_none(score.get("final_score"))
+            if value is not None:
                 values.append(value)
         if not values:
             return None
@@ -268,54 +319,80 @@ def evaluate_smoke_expectations(run_results: Sequence[Dict[str, Any]]) -> Dict[s
     repeat_mean = _agent_mean_final("repeat")
     if random_mean is None or repeat_mean is None:
         errors.append("Missing random or repeat successful scores needed for ordering expectation.")
-    elif random_mean < repeat_mean:
+    elif random_mean + EPS < repeat_mean:
         errors.append(
             f"Expected RandomAgent mean final_score >= RepeatActionAgent, got random={random_mean:.6f} repeat={repeat_mean:.6f}."
         )
 
-    aggregate_mean_values: List[float] = []
-    aggregate_bottom_values: List[float] = []
+    return {
+        "passed": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+    }
+
+
+def evaluate_calib_expectations(run_results: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    errors: List[str] = []
+    warnings: List[str] = []
+
+    successful = [row for row in run_results if row.get("status") == "success"]
+    if not successful:
+        return {"passed": False, "errors": ["No successful runs found."], "warnings": warnings}
+
     for row in successful:
         score = row.get("score")
         if not isinstance(score, dict):
             continue
-        mean_val = score.get("mean_score")
-        bottom_val = score.get("bottom_k_score")
+        mean_val = _finite_or_none(score.get("mean_score"))
+        bottom_val = _finite_or_none(score.get("bottom_k_score"))
         if mean_val is None or bottom_val is None:
             continue
-        mean_val = float(mean_val)
-        bottom_val = float(bottom_val)
-        if math.isfinite(mean_val) and math.isfinite(bottom_val):
-            aggregate_mean_values.append(mean_val)
-            aggregate_bottom_values.append(bottom_val)
-
-    if aggregate_mean_values and aggregate_bottom_values:
-        agg_mean = float(np.mean(aggregate_mean_values))
-        agg_bottom = float(np.mean(aggregate_bottom_values))
-        if agg_bottom > agg_mean:
+        if bottom_val > mean_val + EPS:
             errors.append(
-                f"Expected aggregate bottom_k_score <= aggregate mean_score, got bottom_k={agg_bottom:.6f} mean={agg_mean:.6f}."
+                f"Expected bottom_k_score <= mean_score for agent={row.get('agent')} seed={row.get('seed')}, "
+                f"got bottom_k={bottom_val:.6f} mean={mean_val:.6f}."
             )
-    else:
-        warnings.append("Insufficient finite mean/bottom_k scores for aggregate ordering check.")
 
-    tiny_runs = [row for row in run_results if row.get("agent") == "tinydqn"]
-    tiny_success = [row for row in tiny_runs if row.get("status") == "success"]
-    tiny_skipped = [row for row in tiny_runs if row.get("status") == "skipped"]
-    tiny_failed = [row for row in tiny_runs if row.get("status") == "failed"]
+    random_success = [row for row in successful if row.get("agent") == "random" and isinstance(row.get("score"), dict)]
+    random_has_forgetting = any(
+        _finite_or_none(row["score"].get("forgetting_index_mean")) is not None for row in random_success
+    )
+    random_has_plasticity = any(
+        _finite_or_none(row["score"].get("plasticity_mean")) is not None for row in random_success
+    )
+    if not random_has_forgetting:
+        errors.append("Expected at least one random successful run with finite forgetting_index_mean.")
+    if not random_has_plasticity:
+        errors.append("Expected at least one random successful run with finite plasticity_mean.")
 
-    if tiny_runs and not tiny_skipped:
-        if tiny_failed:
-            errors.append(f"TinyDQN had failed runs: {len(tiny_failed)}")
+    tiny_requested = [row for row in run_results if row.get("agent") == "tinydqn"]
+    tiny_success = [row for row in successful if row.get("agent") == "tinydqn"]
+    if tiny_requested and not tiny_success:
+        errors.append("Expected at least one successful tinydqn run in calib suite.")
+    elif tiny_success:
+        has_training_signal = False
         for row in tiny_success:
-            score = row.get("score")
-            if not isinstance(score, dict):
-                errors.append(f"TinyDQN missing score dict for seed={row.get('seed')}")
+            stats = row.get("agent_stats")
+            if not isinstance(stats, dict):
+                warnings.append(f"Missing agent_stats for tinydqn seed={row.get('seed')}")
                 continue
-            for metric in ("final_score", "mean_score", "bottom_k_score"):
-                value = score.get(metric)
-                if value is None or not math.isfinite(float(value)):
-                    errors.append(f"TinyDQN non-finite {metric} for seed={row.get('seed')}")
+
+            train_steps = _parse_int_or_none(stats.get("train_steps"))
+            replay_size = _parse_int_or_none(stats.get("replay_size"))
+            replay_min_size = _parse_int_or_none(stats.get("replay_min_size"))
+            if train_steps is None or replay_size is None or replay_min_size is None:
+                errors.append(f"Malformed agent_stats for tinydqn seed={row.get('seed')}")
+                continue
+
+            if train_steps > 0 and replay_size >= replay_min_size:
+                has_training_signal = True
+                break
+
+        if not has_training_signal:
+            errors.append(
+                "TinyDQN training gate failed: require at least one successful tinydqn run with "
+                "train_steps > 0 and replay_size >= replay_min_size."
+            )
 
     return {
         "passed": len(errors) == 0,
@@ -504,6 +581,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 continue
 
             print(f"[ok] agent={agent} seed={seed} final_score={score.get('final_score')}")
+            agent_stats_path = run_dir / "agent_stats.json"
+            agent_stats = None
+            if agent_stats_path.exists():
+                try:
+                    payload = load_json(agent_stats_path)
+                    if isinstance(payload, dict):
+                        agent_stats = payload
+                except Exception:  # pragma: no cover - defensive
+                    agent_stats = None
             run_results.append(
                 {
                     "agent": str(agent),
@@ -512,6 +598,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     "run_dir": str(run_dir),
                     "score_path": str(run_dir / "score.json"),
                     "score": score,
+                    "agent_stats": agent_stats,
                 }
             )
 
@@ -538,6 +625,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if suite.enforce_smoke_expectations:
         expectations = evaluate_smoke_expectations(run_results)
         summary["smoke_expectations"] = expectations
+    if suite.name == "calib":
+        summary["calib_expectations"] = evaluate_calib_expectations(run_results)
 
     summary_path = out_dir / "summary.json"
     _write_json(summary_path, summary)
@@ -545,6 +634,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     if suite.enforce_smoke_expectations:
         passed = bool(summary["smoke_expectations"].get("passed", False))
+        return 0 if passed else 1
+    if suite.name == "calib":
+        passed = bool(summary["calib_expectations"].get("passed", False))
         return 0 if passed else 1
 
     return 0

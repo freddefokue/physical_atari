@@ -425,6 +425,20 @@ def build_config_payload(
     return payload
 
 
+def collect_agent_stats(agent: object) -> Dict[str, Any]:
+    stats: Dict[str, Any] = {}
+    for key in ("replay_size", "finalized_transition_counter", "train_steps", "replay_min_size", "decision_steps"):
+        if hasattr(agent, key):
+            value = getattr(agent, key)
+            if callable(value):
+                continue
+            if isinstance(value, (int, float, bool, str)) or value is None:
+                stats[key] = value
+            else:
+                stats[key] = str(value)
+    return stats
+
+
 def main() -> None:
     args = parse_args()
     config_file_data = dict(getattr(args, "_config_data", {}))
@@ -500,6 +514,7 @@ def main() -> None:
         episode_writer.close()
         segment_writer.close()
 
+    dump_json(run_dir / "agent_stats.json", collect_agent_stats(agent))
     print(f"Run complete: {run_dir}")
     print(f"Summary: {summary}")
 
