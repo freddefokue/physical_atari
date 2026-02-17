@@ -26,6 +26,7 @@ def test_run_multigame_config_defaults_and_cli_override(tmp_path):
             "gamma": 0.95,
             "lr": 0.0003,
             "batch_size": 64,
+            "train_log_interval": 42,
         },
     }
     with config_path.open("w", encoding="utf-8") as fh:
@@ -52,4 +53,5 @@ def test_run_multigame_config_defaults_and_cli_override(tmp_path):
     assert args.dqn_gamma == 0.95
     assert args.dqn_lr == 0.0003
     assert args.dqn_batch_size == 64
+    assert args.dqn_log_train_every == 42
     assert getattr(args, "_config_data") == payload

@@ -29,6 +29,7 @@ class TinyDQNConfig:
     use_replay: bool = True
     device: str = "cpu"
     grad_clip_norm: float = 10.0
+    train_log_interval: int = 500
 
     def __post_init__(self) -> None:
         if not (0.0 <= self.gamma <= 1.0):
@@ -51,6 +52,8 @@ class TinyDQNConfig:
             raise ValueError("eps_decay_frames must be > 0")
         if self.device not in {"cpu", "cuda"}:
             raise ValueError("device must be 'cpu' or 'cuda'")
+        if self.train_log_interval < 0:
+            raise ValueError("train_log_interval must be >= 0")
 
     def as_dict(self) -> Dict[str, object]:
         return asdict(self)
@@ -263,6 +266,14 @@ class TinyDQNAgent:
             nn.utils.clip_grad_norm_(self._online.parameters(), float(self.config.grad_clip_norm))
         self._optim.step()
         self._train_steps += 1
+        if self.config.train_log_interval > 0 and (self._train_steps % self.config.train_log_interval == 0):
+            print(
+                "[tinydqn] "
+                f"train_step={self._train_steps} "
+                f"replay_size={self.replay_size} "
+                f"finalized_transitions={self._finalized_transition_counter} "
+                f"loss={float(loss.detach().item()):.6f}"
+            )
 
     def _maybe_sync_target(self) -> None:
         """Sync target network on decision cadence, independent of training cadence."""

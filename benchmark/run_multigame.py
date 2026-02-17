@@ -82,6 +82,7 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "dqn_buffer_size",
         "dqn_batch_size",
         "dqn_train_every",
+        "dqn_log_train_every",
         "dqn_target_update",
         "dqn_eps_start",
         "dqn_eps_end",
@@ -99,6 +100,7 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "dqn_buffer_size": int,
         "dqn_batch_size": int,
         "dqn_train_every": int,
+        "dqn_log_train_every": int,
         "dqn_target_update": int,
         "dqn_eps_start": float,
         "dqn_eps_end": float,
@@ -113,6 +115,7 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "dqn_buffer_size",
         "dqn_batch_size",
         "dqn_train_every",
+        "dqn_log_train_every",
         "dqn_target_update",
         "dqn_eps_start",
         "dqn_eps_end",
@@ -131,6 +134,7 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "buffer_size": "dqn_buffer_size",
         "batch_size": "dqn_batch_size",
         "train_every_decisions": "dqn_train_every",
+        "train_log_interval": "dqn_log_train_every",
         "target_update_decisions": "dqn_target_update",
         "eps_start": "dqn_eps_start",
         "eps_end": "dqn_eps_end",
@@ -208,6 +212,12 @@ def _build_parser(defaults: Optional[Dict[str, Any]] = None) -> argparse.Argumen
         type=int,
         default=4,
         help="Train TinyDQN every N decision frames.",
+    )
+    parser.add_argument(
+        "--dqn-log-train-every",
+        type=int,
+        default=500,
+        help="Emit TinyDQN training log every N train steps (0 disables).",
     )
     parser.add_argument(
         "--dqn-target-update",
@@ -299,6 +309,7 @@ def build_agent(args: argparse.Namespace, num_actions: int):
         buffer_size=int(args.dqn_buffer_size),
         batch_size=int(args.dqn_batch_size),
         train_every_decisions=int(args.dqn_train_every),
+        train_log_interval=int(args.dqn_log_train_every),
         target_update_decisions=int(args.dqn_target_update),
         replay_min_size=int(args.dqn_replay_min),
         eps_start=float(args.dqn_eps_start),

@@ -479,6 +479,43 @@ def test_no_double_train_on_single_decision_boundary():
     assert agent._train_steps == 2  # pylint: disable=protected-access
 
 
+def test_train_logging_emits_on_configured_interval(capsys):
+    agent = TinyDQNAgent(
+        action_space_n=4,
+        seed=9,
+        config=TinyDQNConfig(
+            eps_start=0.0,
+            eps_end=0.0,
+            replay_min_size=1,
+            batch_size=1,
+            train_every_decisions=1,
+            train_log_interval=2,
+            use_replay=True,
+            device="cpu",
+        ),
+    )
+
+    for frame_idx in range(3):
+        agent.step(
+            make_obs(200 + frame_idx),
+            reward=1.0,
+            terminated=False,
+            truncated=False,
+            info={
+                "is_decision_frame": True,
+                "global_frame_idx": frame_idx,
+                "default_action_idx": 0,
+                "has_prev_applied_action": frame_idx > 0,
+                "prev_applied_action_idx": frame_idx % 4,
+            },
+        )
+
+    captured = capsys.readouterr()
+    assert "[tinydqn]" in captured.out
+    assert "train_step=2" in captured.out
+    assert "train_step=1" not in captured.out
+
+
 def test_train_every_decisions_uses_boundary_aligned_counter():
     agent = TinyDQNAgent(
         action_space_n=4,
