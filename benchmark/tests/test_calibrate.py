@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from benchmark.calibrate import (
+    _should_stream_line,
     aggregate_summary,
     evaluate_calib_expectations,
     evaluate_smoke_expectations,
@@ -377,3 +378,10 @@ def test_resolve_config_path_is_repo_relative_when_no_override():
     path = resolve_config_path(None, "configs/v1_smoke.json")
     assert path.exists()
     assert path.name == "v1_smoke.json"
+
+
+def test_should_stream_line_filters_reset_spam_only():
+    assert _should_stream_line("Sending Reset...\n") is False
+    assert _should_stream_line("  Sending Reset...   ") is False
+    assert _should_stream_line("[tinydqn] train_step=1000 replay_size=4996 loss=0.002520\n") is True
+    assert _should_stream_line("Run complete: /tmp/run\n") is True

@@ -425,6 +425,11 @@ def _write_json(path: Path, payload: Dict[str, Any]) -> None:
         fh.write("\n")
 
 
+def _should_stream_line(line: str) -> bool:
+    stripped = str(line).strip()
+    return stripped != "Sending Reset..."
+
+
 def _run_streaming(cmd: Sequence[str]) -> Tuple[int, str]:
     """
     Run a subprocess while streaming combined stdout/stderr to the parent stdout.
@@ -442,8 +447,9 @@ def _run_streaming(cmd: Sequence[str]) -> Tuple[int, str]:
     lines: List[str] = []
     if proc.stdout is not None:
         for line in proc.stdout:
-            print(line, end="")
             lines.append(line)
+            if _should_stream_line(line):
+                print(line, end="")
         proc.stdout.close()
     returncode = proc.wait()
     return int(returncode), "".join(lines)
