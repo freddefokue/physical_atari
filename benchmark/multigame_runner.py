@@ -40,6 +40,7 @@ class MultiGameRunnerConfig:
     default_action_idx: int = 0
     include_timestamps: bool = True
     global_action_set: Sequence[int] = field(default_factory=lambda: tuple(range(18)))
+    episode_log_interval: int = 0
 
     def __post_init__(self) -> None:
         if self.decision_interval <= 0:
@@ -52,6 +53,8 @@ class MultiGameRunnerConfig:
             raise ValueError("global_action_set must not be empty")
         if self.default_action_idx >= len(self.global_action_set):
             raise ValueError("default_action_idx must be within global_action_set bounds")
+        if self.episode_log_interval < 0:
+            raise ValueError("episode_log_interval must be >= 0")
 
 
 class MultiGameRunner:
@@ -175,6 +178,17 @@ class MultiGameRunner:
         return None
 
     def _write_episode(self, game_id: str, end_global_frame_idx: int, ended_by: str) -> None:
+        if self.config.episode_log_interval > 0 and (self._episode_id % self.config.episode_log_interval == 0):
+            print(
+                "[episode] "
+                f"episode_id={self._episode_id} "
+                f"game={game_id} "
+                f"return={self._episode_return:.6f} "
+                f"length={self._episode_length} "
+                f"ended_by={ended_by} "
+                f"end_global_frame_idx={end_global_frame_idx}",
+                flush=True,
+            )
         if self.episode_writer is None:
             return
         self.episode_writer.write(

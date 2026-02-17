@@ -406,3 +406,25 @@ def test_env_truncation_mid_visit_is_treated_as_terminated_only():
     assert segments[-1]["ended_by"] == "truncated"
     assert all(row["ended_by"] == "terminated" for row in episodes[:-1])
     assert all(row["ended_by"] == "terminated" for row in segments[:-1])
+
+
+def test_episode_return_logging_emits_at_configured_interval(capsys):
+    schedule = Schedule(
+        ScheduleConfig(games=["a"], base_visit_frames=5, num_cycles=1, seed=0, jitter_pct=0.0, min_visit_frames=1)
+    )
+    env = MockMultiGameEnv(action_sets={"a": list(range(8))}, episode_lengths={"a": 2}, reward_per_step=1.0)
+    agent = CountingAgent()
+    config = MultiGameRunnerConfig(
+        decision_interval=1,
+        delay_frames=0,
+        default_action_idx=0,
+        include_timestamps=False,
+        global_action_set=tuple(range(8)),
+        episode_log_interval=2,
+    )
+
+    run_multigame(env, agent, schedule, config)
+    captured = capsys.readouterr()
+    assert "[episode] episode_id=0 game=a return=2.000000" in captured.out
+    assert "[episode] episode_id=1 " not in captured.out
+    assert "[episode] episode_id=2 game=a return=1.000000" in captured.out

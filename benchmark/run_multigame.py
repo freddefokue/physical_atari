@@ -67,8 +67,12 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
     set_if_present("agent", ["agent"], str)
     set_if_present("repeat_action_idx", ["repeat_action_idx"], int)
     set_if_present("default_action_idx", ["default_action_idx"], int)
+    set_if_present("log_episode_every", ["log_episode_every", "episode_log_interval"], int)
     set_if_present("timestamps", ["timestamps", "include_timestamps"], int)
     set_if_present("logdir", ["logdir"], str)
+    runner_cfg = config_data.get("runner_config")
+    if isinstance(runner_cfg, dict) and "episode_log_interval" in runner_cfg and runner_cfg["episode_log_interval"] is not None:
+        defaults["log_episode_every"] = int(runner_cfg["episode_log_interval"])
 
     # TinyDQN keys can be top-level or nested under agent_config.
     agent_cfg = config_data.get("agent_config")
@@ -260,6 +264,12 @@ def _build_parser(defaults: Optional[Dict[str, Any]] = None) -> argparse.Argumen
         help="Global action index used for delay-queue initialization and illegal-action fallback.",
     )
     parser.add_argument(
+        "--log-episode-every",
+        type=int,
+        default=0,
+        help="Emit episode-end return logs every N episodes (0 disables).",
+    )
+    parser.add_argument(
         "--timestamps",
         type=int,
         choices=[0, 1],
@@ -406,6 +416,7 @@ def build_config_payload(
         "agent_config": dict(agent_config),
         "repeat_action_idx": int(args.repeat_action_idx),
         "default_action_idx": int(args.default_action_idx),
+        "log_episode_every": int(args.log_episode_every),
         "timestamps": bool(args.timestamps),
         "logdir": str(Path(args.logdir)),
         "run_dir": str(run_dir),
@@ -422,6 +433,7 @@ def build_config_payload(
             "decision_interval": int(runner_config.decision_interval),
             "delay_frames": int(runner_config.delay_frames),
             "default_action_idx": int(runner_config.default_action_idx),
+            "episode_log_interval": int(runner_config.episode_log_interval),
             "include_timestamps": bool(runner_config.include_timestamps),
         },
         "versions": get_version_metadata(),
@@ -507,6 +519,7 @@ def main() -> None:
         decision_interval=args.decision_interval,
         delay_frames=args.delay,
         default_action_idx=args.default_action_idx,
+        episode_log_interval=int(args.log_episode_every),
         include_timestamps=bool(args.timestamps),
         global_action_set=global_action_set,
     )

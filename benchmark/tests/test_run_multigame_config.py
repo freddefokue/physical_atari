@@ -20,6 +20,7 @@ def test_run_multigame_config_defaults_and_cli_override(tmp_path):
         "full_action_space": 1,
         "life_loss_termination": 1,
         "default_action_idx": 0,
+        "log_episode_every": 7,
         "timestamps": 1,
         "agent": "tinydqn",
         "agent_config": {
@@ -50,6 +51,7 @@ def test_run_multigame_config_defaults_and_cli_override(tmp_path):
     assert args.delay == 2  # CLI override wins
     assert args.seed == 99  # CLI override wins
     assert args.agent == "tinydqn"
+    assert args.log_episode_every == 7
     assert args.dqn_gamma == 0.95
     assert args.dqn_lr == 0.0003
     assert args.dqn_batch_size == 64
@@ -73,3 +75,18 @@ def test_collect_agent_stats_prefers_get_stats_payload():
     assert stats["current_epsilon"] == 0.42
     assert stats["extra"] == "ok"
     assert stats["replay_size"] == 3
+
+
+def test_run_multigame_config_supports_runner_config_episode_log_interval(tmp_path):
+    config_path = tmp_path / "cfg_runner.json"
+    payload = {
+        "games": ["ms_pacman"],
+        "runner_config": {
+            "episode_log_interval": 9,
+        },
+    }
+    with config_path.open("w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
+
+    args = parse_args(["--config", str(config_path)])
+    assert args.log_episode_every == 9
