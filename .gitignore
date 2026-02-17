@@ -36,3 +36,20 @@ training_logs_single.txt
 training_logs_single2.txt
 training_logs_single_skip_final_resets_withOUT_per.txt
 training_logs_single_skip_final_resets_with_per.txt
+
+# experiment outputs and checkpoints
+analyze_experiments.py
+experiment_utils.py
+run_experiment.py
+experiments/
+results_final_bbf/
+results_final_dqn/
+results_random/
+training_logs2.txt
+best_model_ALE_Breakout-v5.pt
+best_model_ALE_Pong-v5.pt
+best_model_ALE_SpaceInvaders-v5.pt
+best_model_BreakoutNoFrameskip-v4.pt
+best_model_MsPacmanNoFrameskip-v4.pt
+best_model_PongNoFrameskip-v4.pt
+best_model_SpaceInvadersNoFrameskip-v4.pt
