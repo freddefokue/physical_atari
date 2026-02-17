@@ -437,13 +437,36 @@ def build_config_payload(
 
 
 def collect_agent_stats(agent: object) -> Dict[str, Any]:
+    def _is_json_scalar(value: object) -> bool:
+        return isinstance(value, (int, float, bool, str)) or value is None
+
     stats: Dict[str, Any] = {}
-    for key in ("replay_size", "finalized_transition_counter", "train_steps", "replay_min_size", "decision_steps"):
+
+    get_stats_fn = getattr(agent, "get_stats", None)
+    if callable(get_stats_fn):
+        try:
+            payload = get_stats_fn()
+            if isinstance(payload, dict):
+                for key, value in payload.items():
+                    stats[str(key)] = value if _is_json_scalar(value) else str(value)
+        except Exception:  # pragma: no cover - defensive
+            pass
+
+    for key in (
+        "replay_size",
+        "finalized_transition_counter",
+        "train_steps",
+        "replay_min_size",
+        "decision_steps",
+        "current_epsilon",
+    ):
         if hasattr(agent, key):
+            if key in stats:
+                continue
             value = getattr(agent, key)
             if callable(value):
                 continue
-            if isinstance(value, (int, float, bool, str)) or value is None:
+            if _is_json_scalar(value):
                 stats[key] = value
             else:
                 stats[key] = str(value)
@@ -525,9 +548,13 @@ def main() -> None:
         episode_writer.close()
         segment_writer.close()
 
-    dump_json(run_dir / "agent_stats.json", collect_agent_stats(agent))
+    agent_stats = collect_agent_stats(agent)
+    dump_json(run_dir / "agent_stats.json", agent_stats)
+    run_summary = dict(summary)
+    run_summary["agent_stats"] = dict(agent_stats)
+    dump_json(run_dir / "run_summary.json", run_summary)
     print(f"Run complete: {run_dir}")
-    print(f"Summary: {summary}")
+    print(f"Summary: {run_summary}")
 
 
 if __name__ == "__main__":
