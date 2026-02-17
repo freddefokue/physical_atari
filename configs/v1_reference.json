@@ -22,7 +22,7 @@
   "timestamps": 1,
   "agent": "random",
   "dqn_device": "cuda",
-  "dqn_log_train_every": 100,
+  "dqn_log_train_every": 500,
   "scoring_defaults": {
     "window_episodes": 20,
     "bottom_k_frac": 0.25,

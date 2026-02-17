@@ -1,17 +1,16 @@
 {
   "games": [
-    "atlantis",
-    "up_n_down"
+    "breakout"
   ],
   "num_cycles": 2,
-  "base_visit_frames": 20000,
+  "base_visit_frames": 1000000,
   "jitter_pct": 0.0,
   "min_visit_frames": 20000,
   "decision_interval": 4,
   "delay": 6,
   "sticky": 0.25,
   "full_action_space": 1,
-  "life_loss_termination": 0,
+  "life_loss_termination": 1,
   "default_action_idx": 0,
   "timestamps": 1,
   "agent": "tinydqn",
@@ -27,7 +26,7 @@
   "dqn_replay_min": 500,
   "dqn_use_replay": 1,
   "dqn_device": "cuda",
-  "dqn_log_train_every": 100,
+  "dqn_log_train_every": 500,
   "scoring_defaults": {
     "window_episodes": 10,
     "bottom_k_frac": 0.25,
