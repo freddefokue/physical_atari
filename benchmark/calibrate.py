@@ -425,6 +425,30 @@ def _write_json(path: Path, payload: Dict[str, Any]) -> None:
         fh.write("\n")
 
 
+def _run_streaming(cmd: Sequence[str]) -> Tuple[int, str]:
+    """
+    Run a subprocess while streaming combined stdout/stderr to the parent stdout.
+
+    Returns the subprocess returncode and combined output text.
+    """
+
+    proc = subprocess.Popen(  # pylint: disable=consider-using-with
+        list(cmd),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    lines: List[str] = []
+    if proc.stdout is not None:
+        for line in proc.stdout:
+            print(line, end="")
+            lines.append(line)
+        proc.stdout.close()
+    returncode = proc.wait()
+    return int(returncode), "".join(lines)
+
+
 def _build_scoring_args(config: Dict[str, Any], cli_args: argparse.Namespace) -> Dict[str, Any]:
     scoring_cfg = config.get("scoring_defaults") if isinstance(config.get("scoring_defaults"), dict) else {}
 
@@ -505,6 +529,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
             cmd = [
                 str(args.python),
+                "-u",
                 "-m",
                 "benchmark.run_multigame",
                 "--config",
@@ -520,10 +545,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 cmd.extend(["--repeat-action-idx", "0"])
 
             print(f"[run] agent={agent} seed={seed}")
-            proc = subprocess.run(cmd, capture_output=True, text=True)
-            if proc.returncode != 0:
-                error_tail = (proc.stderr or proc.stdout or "").strip().splitlines()
-                error_msg = error_tail[-1] if error_tail else f"exit_code={proc.returncode}"
+            returncode, combined_output = _run_streaming(cmd)
+            if returncode != 0:
+                error_tail = (combined_output or "").strip().splitlines()
+                error_msg = error_tail[-1] if error_tail else f"exit_code={returncode}"
                 print(f"[fail] agent={agent} seed={seed}: {error_msg}")
                 run_results.append(
                     {
@@ -531,16 +556,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         "seed": int(seed),
                         "status": "failed",
                         "reason": f"run_multigame_failed: {error_msg}",
-                        "returncode": int(proc.returncode),
+                        "returncode": int(returncode),
                         "run_dir": None,
                         "score": None,
-                        "stdout_tail": "\n".join((proc.stdout or "").splitlines()[-20:]),
-                        "stderr_tail": "\n".join((proc.stderr or "").splitlines()[-20:]),
+                        "stdout_tail": "\n".join((combined_output or "").splitlines()[-20:]),
+                        "stderr_tail": "",
                     }
                 )
                 continue
 
-            run_dir = _parse_run_dir_from_stdout(proc.stdout)
+            run_dir = _parse_run_dir_from_stdout(combined_output)
             if run_dir is None or not run_dir.exists():
                 run_dir = _pick_new_run_dir(run_base, before_dirs)
             if run_dir is None or not run_dir.exists():
