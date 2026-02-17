@@ -13,6 +13,7 @@
   "full_action_space": 1,
   "life_loss_termination": 0,
   "default_action_idx": 0,
+  "log_episode_every": 1,
   "timestamps": 1,
   "agent": "tinydqn",
   "dqn_gamma": 0.99,
