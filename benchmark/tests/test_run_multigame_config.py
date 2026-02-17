@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from benchmark.run_multigame import parse_args
+from benchmark.run_multigame import collect_agent_stats, parse_args
 
 
 def test_run_multigame_config_defaults_and_cli_override(tmp_path):
@@ -55,3 +55,21 @@ def test_run_multigame_config_defaults_and_cli_override(tmp_path):
     assert args.dqn_batch_size == 64
     assert args.dqn_log_train_every == 42
     assert getattr(args, "_config_data") == payload
+
+
+def test_collect_agent_stats_prefers_get_stats_payload():
+    class _DummyAgent:
+        replay_size = 3
+
+        def get_stats(self):
+            return {
+                "decision_steps": 17,
+                "current_epsilon": 0.42,
+                "extra": "ok",
+            }
+
+    stats = collect_agent_stats(_DummyAgent())
+    assert stats["decision_steps"] == 17
+    assert stats["current_epsilon"] == 0.42
+    assert stats["extra"] == "ok"
+    assert stats["replay_size"] == 3

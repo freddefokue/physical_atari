@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import asdict, dataclass
 from typing import Dict, Optional, Tuple
 
@@ -173,6 +174,11 @@ class TinyDQNAgent:
         self._decision_counter = 0
         self._finalized_transition_counter = 0
         self._train_steps = 0
+        self._last_epsilon = float(self.config.eps_start)
+        self._agent_start_time_s = time.monotonic()
+        self._train_start_time_s = self._agent_start_time_s
+        self._last_train_log_time_s = self._agent_start_time_s
+        self._last_train_log_step = 0
 
         self._pending_decision_obs_u8: Optional[np.ndarray] = None
         self._pending_interval_reward = 0.0
@@ -203,8 +209,26 @@ class TinyDQNAgent:
     def replay_min_size(self) -> int:
         return int(self.config.replay_min_size)
 
+    @property
+    def current_epsilon(self) -> float:
+        return float(self._last_epsilon)
+
     def get_config(self) -> Dict[str, object]:
         return self.config.as_dict()
+
+    def get_stats(self) -> Dict[str, object]:
+        now_s = time.monotonic()
+        elapsed_s = max(now_s - self._agent_start_time_s, 1e-9)
+        return {
+            "decision_steps": int(self._decision_counter),
+            "finalized_transition_counter": int(self._finalized_transition_counter),
+            "train_steps": int(self._train_steps),
+            "replay_size": int(self.replay_size),
+            "replay_min_size": int(self.config.replay_min_size),
+            "current_epsilon": float(self.current_epsilon),
+            "decision_steps_per_sec": float(self._decision_counter / elapsed_s),
+            "train_steps_per_sec": float(self._train_steps / elapsed_s),
+        }
 
     def _epsilon_for_frame(self, frame_idx: int) -> float:
         progress = min(1.0, max(0.0, float(frame_idx) / float(self.config.eps_decay_frames)))
@@ -267,13 +291,31 @@ class TinyDQNAgent:
         self._optim.step()
         self._train_steps += 1
         if self.config.train_log_interval > 0 and (self._train_steps % self.config.train_log_interval == 0):
+            q_mean = float(q.detach().mean().item())
+            target_q_mean = float(target_q.detach().mean().item())
+            td_abs_mean = float((q.detach() - target_q.detach()).abs().mean().item())
+            now_s = time.monotonic()
+            delta_time_s = max(now_s - self._last_train_log_time_s, 1e-9)
+            delta_steps = max(self._train_steps - self._last_train_log_step, 1)
+            train_sps_window = float(delta_steps / delta_time_s)
+            total_train_elapsed_s = max(now_s - self._train_start_time_s, 1e-9)
+            train_sps_total = float(self._train_steps / total_train_elapsed_s)
             print(
                 "[tinydqn] "
                 f"train_step={self._train_steps} "
                 f"replay_size={self.replay_size} "
                 f"finalized_transitions={self._finalized_transition_counter} "
-                f"loss={float(loss.detach().item()):.6f}"
+                f"epsilon={self.current_epsilon:.6f} "
+                f"loss={float(loss.detach().item()):.6f} "
+                f"q_mean={q_mean:.6f} "
+                f"target_q_mean={target_q_mean:.6f} "
+                f"td_abs_mean={td_abs_mean:.6f} "
+                f"train_sps={train_sps_window:.2f} "
+                f"train_sps_total={train_sps_total:.2f}",
+                flush=True,
             )
+            self._last_train_log_time_s = now_s
+            self._last_train_log_step = int(self._train_steps)
 
     def _maybe_sync_target(self) -> None:
         """Sync target network on decision cadence, independent of training cadence."""
@@ -344,6 +386,7 @@ class TinyDQNAgent:
 
         frame_idx = int(info.get("global_frame_idx", self._frame_counter))
         epsilon = self._epsilon_for_frame(frame_idx)
+        self._last_epsilon = float(epsilon)
         action_idx = self._select_action(obs_u8, epsilon)
         self._last_action_idx = int(action_idx)
 

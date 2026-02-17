@@ -514,6 +514,54 @@ def test_train_logging_emits_on_configured_interval(capsys):
     assert "[tinydqn]" in captured.out
     assert "train_step=2" in captured.out
     assert "train_step=1" not in captured.out
+    assert "q_mean=" in captured.out
+    assert "target_q_mean=" in captured.out
+    assert "td_abs_mean=" in captured.out
+    assert "train_sps=" in captured.out
+    assert "epsilon=" in captured.out
+
+
+def test_get_stats_includes_runtime_counters_and_epsilon():
+    agent = TinyDQNAgent(
+        action_space_n=4,
+        seed=10,
+        config=TinyDQNConfig(
+            eps_start=1.0,
+            eps_end=0.5,
+            eps_decay_frames=100,
+            replay_min_size=1,
+            batch_size=1,
+            train_every_decisions=1,
+            train_log_interval=0,
+            use_replay=True,
+            device="cpu",
+        ),
+    )
+    agent.step(
+        make_obs(1),
+        reward=0.0,
+        terminated=False,
+        truncated=False,
+        info={
+            "is_decision_frame": True,
+            "global_frame_idx": 20,
+            "has_prev_applied_action": False,
+            "prev_applied_action_idx": 0,
+        },
+    )
+
+    stats = agent.get_stats()
+    assert stats["decision_steps"] == 1
+    assert stats["finalized_transition_counter"] == 0
+    assert stats["train_steps"] == 0
+    assert stats["replay_size"] == 0
+    assert stats["replay_min_size"] == 1
+    assert isinstance(stats["current_epsilon"], float)
+    assert 0.0 <= float(stats["current_epsilon"]) <= 1.0
+    assert isinstance(stats["decision_steps_per_sec"], float)
+    assert float(stats["decision_steps_per_sec"]) >= 0.0
+    assert isinstance(stats["train_steps_per_sec"], float)
+    assert float(stats["train_steps_per_sec"]) >= 0.0
 
 
 def test_train_every_decisions_uses_boundary_aligned_counter():
