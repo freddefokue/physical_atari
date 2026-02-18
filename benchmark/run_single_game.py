@@ -99,6 +99,12 @@ def parse_args() -> argparse.Namespace:
         help="Optional model file path for agent_delay_target.",
     )
     parser.add_argument(
+        "--delay-target-ring-buffer-size",
+        type=int,
+        default=None,
+        help="Optional override for agent_delay_target ring_buffer_size (frames).",
+    )
+    parser.add_argument(
         "--timestamps",
         type=int,
         choices=[0, 1],
@@ -147,6 +153,8 @@ def build_agent(args: argparse.Namespace, num_actions: int, total_frames: int):
         }
         if args.delay_target_load_file:
             kwargs["load_file"] = str(args.delay_target_load_file)
+        if args.delay_target_ring_buffer_size is not None:
+            kwargs["ring_buffer_size"] = int(args.delay_target_ring_buffer_size)
         base = DelayTargetAdapter(
             data_dir=str(Path(args.logdir)),
             seed=int(args.seed),
@@ -184,6 +192,9 @@ def build_config_payload(
         "lives_as_episodes": bool(args.lives_as_episodes),
         "max_frames_without_reward": int(args.max_frames_without_reward),
         "reset_on_life_loss": bool(args.reset_on_life_loss),
+        "delay_target_ring_buffer_size": (
+            None if args.delay_target_ring_buffer_size is None else int(args.delay_target_ring_buffer_size)
+        ),
         "timestamps": bool(args.timestamps),
         "logdir": str(Path(args.logdir)),
         "run_dir": str(run_dir),

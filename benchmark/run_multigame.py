@@ -69,6 +69,7 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
     set_if_present("delay_target_gpu", ["delay_target_gpu"], int)
     set_if_present("delay_target_use_cuda_graphs", ["delay_target_use_cuda_graphs"], int)
     set_if_present("delay_target_load_file", ["delay_target_load_file"], str)
+    set_if_present("delay_target_ring_buffer_size", ["delay_target_ring_buffer_size"], int)
     set_if_present("default_action_idx", ["default_action_idx"], int)
     set_if_present("log_episode_every", ["log_episode_every", "episode_log_interval"], int)
     set_if_present("timestamps", ["timestamps", "include_timestamps"], int)
@@ -100,6 +101,7 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "delay_target_gpu",
         "delay_target_use_cuda_graphs",
         "delay_target_load_file",
+        "delay_target_ring_buffer_size",
     ]:
         if key in config_data and config_data[key] is not None:
             merged_cfg[key] = config_data[key]
@@ -121,6 +123,7 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "delay_target_gpu": int,
         "delay_target_use_cuda_graphs": int,
         "delay_target_load_file": str,
+        "delay_target_ring_buffer_size": int,
     }
     for arg_name in [
         "dqn_gamma",
@@ -139,6 +142,7 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "delay_target_gpu",
         "delay_target_use_cuda_graphs",
         "delay_target_load_file",
+        "delay_target_ring_buffer_size",
     ]:
         if arg_name in merged_cfg and merged_cfg[arg_name] is not None:
             defaults[arg_name] = arg_cast[arg_name](merged_cfg[arg_name])
@@ -161,6 +165,7 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "gpu": "delay_target_gpu",
         "use_cuda_graphs": "delay_target_use_cuda_graphs",
         "load_file": "delay_target_load_file",
+        "ring_buffer_size": "delay_target_ring_buffer_size",
     }
     for field_name, arg_name in field_to_arg.items():
         if field_name in merged_cfg and merged_cfg[field_name] is not None:
@@ -235,6 +240,12 @@ def _build_parser(defaults: Optional[Dict[str, Any]] = None) -> argparse.Argumen
         type=str,
         default=None,
         help="Optional model file path to load into agent_delay_target.",
+    )
+    parser.add_argument(
+        "--delay-target-ring-buffer-size",
+        type=int,
+        default=None,
+        help="Optional override for agent_delay_target ring_buffer_size (frames).",
     )
     parser.add_argument("--dqn-gamma", type=float, default=0.99, help="TinyDQN discount factor.")
     parser.add_argument("--dqn-lr", type=float, default=1e-4, help="TinyDQN Adam learning rate.")
@@ -351,6 +362,8 @@ def build_agent(args: argparse.Namespace, num_actions: int, total_frames: int):
         }
         if args.delay_target_load_file:
             adapter_kwargs["load_file"] = str(args.delay_target_load_file)
+        if args.delay_target_ring_buffer_size is not None:
+            adapter_kwargs["ring_buffer_size"] = int(args.delay_target_ring_buffer_size)
         agent = DelayTargetAdapter(
             data_dir=str(Path(args.logdir)),
             seed=int(args.seed),
