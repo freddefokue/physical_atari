@@ -45,6 +45,9 @@ class CarmackRunnerConfig:
     lives_as_episodes: bool = True
     max_frames_without_reward: int = 18_000
     reset_on_life_loss: bool = False
+    progress_log_interval_frames: int = 2_000
+    pulse_log_interval: int = 20
+    reset_log_interval: int = 1
 
     def __post_init__(self) -> None:
         if self.total_frames <= 0:
@@ -55,6 +58,12 @@ class CarmackRunnerConfig:
             raise ValueError("default_action_idx must be >= 0")
         if self.max_frames_without_reward <= 0:
             raise ValueError("max_frames_without_reward must be > 0")
+        if self.progress_log_interval_frames < 0:
+            raise ValueError("progress_log_interval_frames must be >= 0")
+        if self.pulse_log_interval < 0:
+            raise ValueError("pulse_log_interval must be >= 0")
+        if self.reset_log_interval < 0:
+            raise ValueError("reset_log_interval must be >= 0")
 
 
 class CarmackCompatRunner:
@@ -102,10 +111,26 @@ class CarmackCompatRunner:
         frames_without_reward = 0
 
         life_loss_pulses = 0
+        pulse_count = 0
         reset_count = 0
         game_over_resets = 0
         timeout_resets = 0
         life_loss_resets = 0
+        start_time = float(self.time_fn())
+        last_log_time = float(start_time)
+        last_logged_frame = 0
+        last_train_steps = 0
+
+        def _agent_stats() -> Dict[str, Any]:
+            stats_fn = getattr(self.agent, "get_stats", None)
+            if callable(stats_fn):
+                try:
+                    payload = stats_fn()
+                    if isinstance(payload, dict):
+                        return payload
+                except Exception:  # pragma: no cover - defensive
+                    pass
+            return {}
 
         for frame_idx in range(int(self.config.total_frames)):
             decided_action_idx = int(taken_action)
@@ -149,6 +174,21 @@ class CarmackCompatRunner:
                 end_of_episode = 1
                 pulse_reason = termination_reason or "truncated"
 
+            if end_of_episode:
+                pulse_count += 1
+                if self.config.pulse_log_interval > 0 and (pulse_count % self.config.pulse_log_interval == 0):
+                    print(
+                        "[pulse] "
+                        f"frame={frame_idx} "
+                        f"pulse_idx={pulse_count} "
+                        f"reason={pulse_reason} "
+                        f"reward={reward:.3f} "
+                        f"episode_return={episode_return:.3f} "
+                        f"episode_length={episode_length} "
+                        f"reset={should_reset}",
+                        flush=True,
+                    )
+
             event_episode_idx = int(episode_idx)
             event_episode_return = float(episode_return)
             event_episode_length = int(episode_length)
@@ -181,11 +221,76 @@ class CarmackCompatRunner:
                 frames_without_reward = 0
                 reset_performed = True
                 reset_count += 1
+                if self.config.reset_log_interval > 0 and (episodes_completed % self.config.reset_log_interval == 0):
+                    print(
+                        "[episode] "
+                        f"episode_idx={episodes_completed - 1} "
+                        f"return={event_episode_return:.3f} "
+                        f"length={event_episode_length} "
+                        f"reason={pulse_reason}",
+                        flush=True,
+                    )
             else:
                 obs_for_agent = step.obs_rgb
 
             next_action = self._validate_action_idx(self.agent.frame(obs_for_agent, reward, int(end_of_episode)))
             taken_action = int(next_action)
+
+            if self.config.progress_log_interval_frames > 0 and (
+                (frame_idx + 1) % self.config.progress_log_interval_frames == 0
+                or (frame_idx + 1) == int(self.config.total_frames)
+            ):
+                now = float(self.time_fn())
+                delta_t = max(now - last_log_time, 1e-9)
+                total_t = max(now - start_time, 1e-9)
+                delta_frames = int(frame_idx + 1 - last_logged_frame)
+                fps = float(delta_frames / delta_t)
+                fps_total = float((frame_idx + 1) / total_t)
+                stats = _agent_stats()
+                train_steps = None
+                train_step_fields = (
+                    stats.get("train_steps_estimate"),
+                    stats.get("train_steps"),
+                )
+                for value in train_step_fields:
+                    if isinstance(value, int):
+                        train_steps = int(value)
+                        break
+                if train_steps is None:
+                    frame_count = stats.get("frame_count")
+                    frame_skip = stats.get("frame_skip")
+                    if isinstance(frame_count, int) and isinstance(frame_skip, int) and frame_skip > 0:
+                        train_steps = int(frame_count // frame_skip)
+                if train_steps is None:
+                    train_steps = int(last_train_steps)
+                train_delta = int(max(train_steps - last_train_steps, 0))
+                train_sps = float(train_delta / delta_t)
+                train_sps_total = float(train_steps / total_t)
+                last_train_steps = int(train_steps)
+                last_logged_frame = int(frame_idx + 1)
+                last_log_time = float(now)
+
+                msg = (
+                    "[train] "
+                    f"frame={frame_idx + 1} "
+                    f"fps={fps:.2f} "
+                    f"fps_total={fps_total:.2f} "
+                    f"train_steps={train_steps} "
+                    f"train_sps={train_sps:.2f} "
+                    f"train_sps_total={train_sps_total:.2f} "
+                    f"episode_return={event_episode_return:.3f} "
+                    f"episode_length={event_episode_length} "
+                    f"resets={episodes_completed}"
+                )
+                if "train_loss_ema" in stats:
+                    msg += f" loss={float(stats['train_loss_ema']):.6f}"
+                if "avg_error_ema" in stats:
+                    msg += f" err_avg={float(stats['avg_error_ema']):.6f}"
+                if "max_error_ema" in stats:
+                    msg += f" err_max={float(stats['max_error_ema']):.6f}"
+                if "target_ema" in stats:
+                    msg += f" target={float(stats['target_ema']):.6f}"
+                print(msg, flush=True)
 
             event = {
                 "frame_idx": int(frame_idx),

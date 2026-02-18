@@ -87,6 +87,7 @@ class DelayTargetAdapter:
         }
         for key in (
             "frame_count",
+            "frame_skip",
             "u",
             "episode_number",
             "train_loss_ema",
@@ -96,4 +97,8 @@ class DelayTargetAdapter:
         ):
             if hasattr(self._agent, key):
                 stats[str(key)] = _to_json_scalar(getattr(self._agent, key))
+        frame_count = stats.get("frame_count")
+        frame_skip = stats.get("frame_skip")
+        if isinstance(frame_count, int) and isinstance(frame_skip, int) and frame_skip > 0:
+            stats["train_steps_estimate"] = int(frame_count // frame_skip)
         return stats
