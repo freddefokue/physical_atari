@@ -84,6 +84,24 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Carmack compat mode: reset environment on life-loss pulse.",
     )
+    parser.add_argument(
+        "--compat-log-every-frames",
+        type=int,
+        default=2000,
+        help="Carmack compat mode: print training/progress stats every N frames (0 disables).",
+    )
+    parser.add_argument(
+        "--compat-log-pulses-every",
+        type=int,
+        default=20,
+        help="Carmack compat mode: print pulse logs every N pulses (0 disables).",
+    )
+    parser.add_argument(
+        "--compat-log-resets-every",
+        type=int,
+        default=1,
+        help="Carmack compat mode: print episode reset-return logs every N resets (0 disables).",
+    )
     parser.add_argument("--delay-target-gpu", type=int, default=0, help="GPU index for agent_delay_target.")
     parser.add_argument(
         "--delay-target-use-cuda-graphs",
@@ -192,6 +210,9 @@ def build_config_payload(
         "lives_as_episodes": bool(args.lives_as_episodes),
         "max_frames_without_reward": int(args.max_frames_without_reward),
         "reset_on_life_loss": bool(args.reset_on_life_loss),
+        "compat_log_every_frames": int(args.compat_log_every_frames),
+        "compat_log_pulses_every": int(args.compat_log_pulses_every),
+        "compat_log_resets_every": int(args.compat_log_resets_every),
         "delay_target_ring_buffer_size": (
             None if args.delay_target_ring_buffer_size is None else int(args.delay_target_ring_buffer_size)
         ),
@@ -252,6 +273,9 @@ def main() -> None:
             lives_as_episodes=bool(args.lives_as_episodes),
             max_frames_without_reward=int(args.max_frames_without_reward),
             reset_on_life_loss=bool(args.reset_on_life_loss),
+            progress_log_interval_frames=int(args.compat_log_every_frames),
+            pulse_log_interval=int(args.compat_log_pulses_every),
+            reset_log_interval=int(args.compat_log_resets_every),
         )
     else:
         runner_config = RunnerConfig(
