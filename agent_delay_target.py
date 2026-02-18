@@ -25,8 +25,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from ale_py import Action, ALEInterface, LoggerMode, roms
-from pynvml import *
 
 
 def train_function(
@@ -789,6 +787,8 @@ class Agent:
 # This file can be run directly to experiment in simulator, or imported by the physical harness.
 # --------------------------------
 def main():
+    from ale_py import Action, ALEInterface, LoggerMode, roms
+
     data_dir = './results'
     os.makedirs(data_dir, exist_ok=True)
 

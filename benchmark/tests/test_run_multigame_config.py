@@ -90,3 +90,26 @@ def test_run_multigame_config_supports_runner_config_episode_log_interval(tmp_pa
 
     args = parse_args(["--config", str(config_path)])
     assert args.log_episode_every == 9
+
+
+def test_run_multigame_config_parses_delay_target_agent_config(tmp_path):
+    config_path = tmp_path / "cfg_delay_target.json"
+    payload = {
+        "games": ["ms_pacman"],
+        "agent": "delay_target",
+        "decision_interval": 1,
+        "agent_config": {
+            "gpu": 2,
+            "use_cuda_graphs": 0,
+            "load_file": "/tmp/example.model",
+        },
+    }
+    with config_path.open("w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
+
+    args = parse_args(["--config", str(config_path)])
+    assert args.agent == "delay_target"
+    assert args.decision_interval == 1
+    assert args.delay_target_gpu == 2
+    assert args.delay_target_use_cuda_graphs == 0
+    assert args.delay_target_load_file == "/tmp/example.model"
