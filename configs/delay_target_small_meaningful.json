@@ -1,0 +1,27 @@
+{
+  "games": ["atlantis"],
+  "num_cycles": 1,
+  "base_visit_frames": 300000,
+  "jitter_pct": 0.0,
+  "min_visit_frames": 300000,
+  "seed": 0,
+  "agent": "delay_target",
+  "decision_interval": 1,
+  "delay": 6,
+  "sticky": 0.25,
+  "full_action_space": 0,
+  "life_loss_termination": 1,
+  "default_action_idx": 0,
+  "log_episode_every": 5,
+  "timestamps": 1,
+  "agent_config": {
+    "gpu": 0,
+    "use_cuda_graphs": 1
+  },
+  "scoring_defaults": {
+    "window_episodes": 20,
+    "bottom_k_frac": 0.25,
+    "revisit_episodes": 5,
+    "final_score_weights": [0.5, 0.5]
+  }
+}

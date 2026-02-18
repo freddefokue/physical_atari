@@ -66,6 +66,9 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
     set_if_present("life_loss_termination", ["life_loss_termination"], int)
     set_if_present("agent", ["agent"], str)
     set_if_present("repeat_action_idx", ["repeat_action_idx"], int)
+    set_if_present("delay_target_gpu", ["delay_target_gpu"], int)
+    set_if_present("delay_target_use_cuda_graphs", ["delay_target_use_cuda_graphs"], int)
+    set_if_present("delay_target_load_file", ["delay_target_load_file"], str)
     set_if_present("default_action_idx", ["default_action_idx"], int)
     set_if_present("log_episode_every", ["log_episode_every", "episode_log_interval"], int)
     set_if_present("timestamps", ["timestamps", "include_timestamps"], int)
@@ -94,6 +97,9 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "dqn_replay_min",
         "dqn_use_replay",
         "dqn_device",
+        "delay_target_gpu",
+        "delay_target_use_cuda_graphs",
+        "delay_target_load_file",
     ]:
         if key in config_data and config_data[key] is not None:
             merged_cfg[key] = config_data[key]
@@ -112,6 +118,9 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "dqn_replay_min": int,
         "dqn_use_replay": int,
         "dqn_device": str,
+        "delay_target_gpu": int,
+        "delay_target_use_cuda_graphs": int,
+        "delay_target_load_file": str,
     }
     for arg_name in [
         "dqn_gamma",
@@ -127,6 +136,9 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "dqn_replay_min",
         "dqn_use_replay",
         "dqn_device",
+        "delay_target_gpu",
+        "delay_target_use_cuda_graphs",
+        "delay_target_load_file",
     ]:
         if arg_name in merged_cfg and merged_cfg[arg_name] is not None:
             defaults[arg_name] = arg_cast[arg_name](merged_cfg[arg_name])
@@ -146,11 +158,14 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "replay_min_size": "dqn_replay_min",
         "use_replay": "dqn_use_replay",
         "device": "dqn_device",
+        "gpu": "delay_target_gpu",
+        "use_cuda_graphs": "delay_target_use_cuda_graphs",
+        "load_file": "delay_target_load_file",
     }
     for field_name, arg_name in field_to_arg.items():
         if field_name in merged_cfg and merged_cfg[field_name] is not None:
             value = merged_cfg[field_name]
-            if arg_name == "dqn_use_replay":
+            if arg_name in {"dqn_use_replay", "delay_target_use_cuda_graphs"}:
                 defaults[arg_name] = int(value)
             else:
                 defaults[arg_name] = value
@@ -202,11 +217,25 @@ def _build_parser(defaults: Optional[Dict[str, Any]] = None) -> argparse.Argumen
     parser.add_argument(
         "--agent",
         type=str,
-        choices=["random", "repeat", "tinydqn"],
+        choices=["random", "repeat", "tinydqn", "delay_target"],
         default="random",
         help="Agent type.",
     )
     parser.add_argument("--repeat-action-idx", type=int, default=0, help="Action index for RepeatActionAgent.")
+    parser.add_argument("--delay-target-gpu", type=int, default=0, help="GPU index for agent_delay_target adapter.")
+    parser.add_argument(
+        "--delay-target-use-cuda-graphs",
+        type=int,
+        choices=[0, 1],
+        default=1,
+        help="Enable CUDA graphs for agent_delay_target (1=yes, 0=no).",
+    )
+    parser.add_argument(
+        "--delay-target-load-file",
+        type=str,
+        default=None,
+        help="Optional model file path to load into agent_delay_target.",
+    )
     parser.add_argument("--dqn-gamma", type=float, default=0.99, help="TinyDQN discount factor.")
     parser.add_argument("--dqn-lr", type=float, default=1e-4, help="TinyDQN Adam learning rate.")
     parser.add_argument("--dqn-buffer-size", type=int, default=10000, help="TinyDQN replay buffer size.")
@@ -299,13 +328,37 @@ def seed_everything(seed: int) -> None:
     np.random.seed(seed)
 
 
-def build_agent(args: argparse.Namespace, num_actions: int):
+def build_agent(args: argparse.Namespace, num_actions: int, total_frames: int):
     if args.agent == "random":
         return RandomAgent(num_actions=num_actions, seed=args.seed), {}
     if args.agent == "repeat":
         if args.repeat_action_idx < 0 or args.repeat_action_idx >= num_actions:
             raise ValueError(f"--repeat-action-idx must be in [0, {num_actions - 1}]")
         return RepeatActionAgent(action_idx=args.repeat_action_idx), {"action_idx": int(args.repeat_action_idx)}
+    if args.agent == "delay_target":
+        if int(args.decision_interval) != 1:
+            raise ValueError("agent=delay_target currently requires --decision-interval 1 to avoid double frame-skipping.")
+        try:
+            from benchmark.agents_delay_target import DelayTargetAdapter  # pylint: disable=import-outside-toplevel
+        except ImportError as exc:  # pragma: no cover - optional dependency stack
+            raise ImportError(
+                "agent=delay_target requires root module agent_delay_target.py and torch/CUDA dependencies."
+            ) from exc
+
+        adapter_kwargs: Dict[str, Any] = {
+            "gpu": int(args.delay_target_gpu),
+            "use_cuda_graphs": bool(int(args.delay_target_use_cuda_graphs)),
+        }
+        if args.delay_target_load_file:
+            adapter_kwargs["load_file"] = str(args.delay_target_load_file)
+        agent = DelayTargetAdapter(
+            data_dir=str(Path(args.logdir)),
+            seed=int(args.seed),
+            num_actions=int(num_actions),
+            total_frames=int(total_frames),
+            agent_kwargs=adapter_kwargs,
+        )
+        return agent, agent.get_config()
     try:
         from benchmark.agents_tinydqn import TinyDQNAgent, TinyDQNConfig  # pylint: disable=import-outside-toplevel
     except ImportError as exc:  # pragma: no cover - depends on optional torch dependency
@@ -523,7 +576,7 @@ def main() -> None:
         include_timestamps=bool(args.timestamps),
         global_action_set=global_action_set,
     )
-    agent, agent_config = build_agent(args, num_actions=len(global_action_set))
+    agent, agent_config = build_agent(args, num_actions=len(global_action_set), total_frames=int(schedule.total_frames))
 
     resolved_action_sets = resolve_action_sets(env, games)
     action_mappings = build_action_mappings(resolved_action_sets, global_action_set, args.default_action_idx)
