@@ -102,6 +102,7 @@ def test_run_multigame_config_parses_delay_target_agent_config(tmp_path):
             "gpu": 2,
             "use_cuda_graphs": 0,
             "load_file": "/tmp/example.model",
+            "ring_buffer_size": 32768,
         },
     }
     with config_path.open("w", encoding="utf-8") as fh:
@@ -113,3 +114,4 @@ def test_run_multigame_config_parses_delay_target_agent_config(tmp_path):
     assert args.delay_target_gpu == 2
     assert args.delay_target_use_cuda_graphs == 0
     assert args.delay_target_load_file == "/tmp/example.model"
+    assert args.delay_target_ring_buffer_size == 32768
