@@ -64,15 +64,18 @@ class DelayTargetAdapter:
             **self._agent_kwargs,
         )
 
-    def step(self, obs_rgb, reward, terminated, truncated, info) -> int:
-        del info
-        end_of_episode = int(bool(terminated) or bool(truncated))
+    def frame(self, obs_rgb, reward, end_of_episode) -> int:
         action_idx = int(self._agent.frame(obs_rgb, float(reward), end_of_episode))
         self._decision_steps += 1
         if action_idx < 0 or action_idx >= self._num_actions:
             raise ValueError(f"delay_target produced out-of-bounds action {action_idx} for action_space={self._num_actions}")
         self._last_action_idx = int(action_idx)
         return int(action_idx)
+
+    def step(self, obs_rgb, reward, terminated, truncated, info) -> int:
+        del info
+        end_of_episode = int(bool(terminated) or bool(truncated))
+        return self.frame(obs_rgb, reward, end_of_episode)
 
     def get_config(self) -> Dict[str, Any]:
         return dict(self._config)
@@ -94,4 +97,3 @@ class DelayTargetAdapter:
             if hasattr(self._agent, key):
                 stats[str(key)] = _to_json_scalar(getattr(self._agent, key))
         return stats
-
