@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 import numpy as np
 
@@ -31,6 +32,16 @@ class RecordingFrameAgent:
             }
         )
         return int(self.action_idx)
+
+
+class RecordingFrameAgentWithStats(RecordingFrameAgent):
+    def get_stats(self):
+        return {
+            "avg_error_ema": 1.2,
+            "max_error_ema": 3.4,
+            "train_loss_ema": 0.5,
+            "target_ema": -2.0,
+        }
 
 
 @dataclass
@@ -181,3 +192,32 @@ def test_carmack_runner_consumes_final_transition():
     assert len(agent.calls) == 1
     assert agent.calls[0]["reward"] == 7.0
 
+
+def test_carmack_runner_reset_log_matches_delay_target_style(capsys):
+    env = ScriptedEnv(
+        action_set=list(range(4)),
+        rewards=[1.0, 2.0, 0.0],
+        lives_seq=[3, 3, 3],
+        terminated_at={1},
+        truncated_at=set(),
+    )
+    agent = RecordingFrameAgentWithStats(action_idx=1)
+    config = CarmackRunnerConfig(
+        total_frames=3,
+        delay_frames=0,
+        include_timestamps=False,
+        progress_log_interval_frames=0,
+        pulse_log_interval=0,
+        reset_log_interval=1,
+        log_rank=5,
+        log_name="delay_breakout0_4_16384",
+    )
+    run_with_memory(env, agent, config)
+    out = capsys.readouterr().out
+
+    assert "[train]" not in out
+    assert "[pulse]" not in out
+    assert re.search(r"5:delay_breakout0_4_16384 frame:\s*\d+\s+\d+/s eps\s+\d+,\s*\d+=\s*\d+", out)
+    assert "err 1.2 3.4" in out
+    assert "loss 0.5" in out
+    assert "targ -2.0" in out
