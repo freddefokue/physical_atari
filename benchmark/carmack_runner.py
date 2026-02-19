@@ -125,6 +125,8 @@ class CarmackCompatRunner:
         episode_end = []
         environment_start = 0
         environment_start_time = float(self.time_fn())
+        avg_for_log = 0.0
+        average_bins = 1000
         start_time = float(self.time_fn())
         last_log_time = float(start_time)
         last_logged_frame = 0
@@ -142,6 +144,20 @@ class CarmackCompatRunner:
             return {}
 
         for frame_idx in range(int(self.config.total_frames)):
+            # Mirror agent_delay_target.py cadence: update rolling average only when the
+            # episode graph bucket advances, not at every reset.
+            if (int(frame_idx) * average_bins // int(self.config.total_frames)) != (
+                (int(frame_idx) + 1) * average_bins // int(self.config.total_frames)
+            ):
+                count = 0
+                total = 0.0
+                for j in range(len(episode_scores) - 1, -1, -1):
+                    if episode_end[j] < int(frame_idx) - int(self.config.rolling_average_frames):
+                        break
+                    count += 1
+                    total += float(episode_scores[j])
+                avg_for_log = -999.0 if count == 0 else float(total / count)
+
             decided_action_idx = int(taken_action)
             delayed_actions.append(int(decided_action_idx))
             applied_action_idx = int(delayed_actions.popleft()) if self.config.delay_frames > 0 else int(decided_action_idx)
@@ -238,14 +254,6 @@ class CarmackCompatRunner:
                     frame_rate = float(frames / max(now - environment_start_time, 1e-9))
                     environment_start_time = now
                     environment_start = int(frame_idx)
-                    count = 0
-                    total = 0.0
-                    for j in range(len(episode_scores) - 1, -1, -1):
-                        if episode_end[j] < int(frame_idx) - int(self.config.rolling_average_frames):
-                            break
-                        count += 1
-                        total += float(episode_scores[j])
-                    avg = -999.0 if count == 0 else float(total / count)
                     stats = _agent_stats()
                     err_avg = float(stats.get("avg_error_ema", 0.0))
                     err_max = float(stats.get("max_error_ema", 0.0))
@@ -255,11 +263,11 @@ class CarmackCompatRunner:
                         f"{int(self.config.log_rank)}:{self.config.log_name} "
                         f"frame:{int(frame_idx):7} "
                         f"{frame_rate:4.0f}/s "
-                        f"eps {int(episodes_completed - 1):3},{int(event_episode_length):5}={int(event_episode_return):5} "
+                        f"eps {int(episodes_completed - 1):3},{int(frames):5}={int(event_episode_return):5} "
                         f"err {err_avg:.1f} {err_max:.1f} "
                         f"loss {loss:.1f} "
                         f"targ {targ:.1f} "
-                        f"avg {avg:4.1f}",
+                        f"avg {avg_for_log:4.1f}",
                         flush=True,
                     )
             else:
