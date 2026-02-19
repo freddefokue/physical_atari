@@ -45,9 +45,12 @@ class CarmackRunnerConfig:
     lives_as_episodes: bool = True
     max_frames_without_reward: int = 18_000
     reset_on_life_loss: bool = False
-    progress_log_interval_frames: int = 2_000
-    pulse_log_interval: int = 20
+    progress_log_interval_frames: int = 0
+    pulse_log_interval: int = 0
     reset_log_interval: int = 1
+    rolling_average_frames: int = 100_000
+    log_rank: int = 0
+    log_name: str = "delay"
 
     def __post_init__(self) -> None:
         if self.total_frames <= 0:
@@ -64,6 +67,8 @@ class CarmackRunnerConfig:
             raise ValueError("pulse_log_interval must be >= 0")
         if self.reset_log_interval < 0:
             raise ValueError("reset_log_interval must be >= 0")
+        if self.rolling_average_frames <= 0:
+            raise ValueError("rolling_average_frames must be > 0")
 
 
 class CarmackCompatRunner:
@@ -116,6 +121,10 @@ class CarmackCompatRunner:
         game_over_resets = 0
         timeout_resets = 0
         life_loss_resets = 0
+        episode_scores = []
+        episode_end = []
+        environment_start = 0
+        environment_start_time = float(self.time_fn())
         start_time = float(self.time_fn())
         last_log_time = float(start_time)
         last_logged_frame = 0
@@ -221,13 +230,36 @@ class CarmackCompatRunner:
                 frames_without_reward = 0
                 reset_performed = True
                 reset_count += 1
+                episode_end.append(int(frame_idx))
+                episode_scores.append(float(event_episode_return))
                 if self.config.reset_log_interval > 0 and (episodes_completed % self.config.reset_log_interval == 0):
+                    now = float(self.time_fn())
+                    frames = int(frame_idx - environment_start)
+                    frame_rate = float(frames / max(now - environment_start_time, 1e-9))
+                    environment_start_time = now
+                    environment_start = int(frame_idx)
+                    count = 0
+                    total = 0.0
+                    for j in range(len(episode_scores) - 1, -1, -1):
+                        if episode_end[j] < int(frame_idx) - int(self.config.rolling_average_frames):
+                            break
+                        count += 1
+                        total += float(episode_scores[j])
+                    avg = -999.0 if count == 0 else float(total / count)
+                    stats = _agent_stats()
+                    err_avg = float(stats.get("avg_error_ema", 0.0))
+                    err_max = float(stats.get("max_error_ema", 0.0))
+                    loss = float(stats.get("train_loss_ema", 0.0))
+                    targ = float(stats.get("target_ema", 0.0))
                     print(
-                        "[episode] "
-                        f"episode_idx={episodes_completed - 1} "
-                        f"return={event_episode_return:.3f} "
-                        f"length={event_episode_length} "
-                        f"reason={pulse_reason}",
+                        f"{int(self.config.log_rank)}:{self.config.log_name} "
+                        f"frame:{int(frame_idx):7} "
+                        f"{frame_rate:4.0f}/s "
+                        f"eps {int(episodes_completed - 1):3},{int(event_episode_length):5}={int(event_episode_return):5} "
+                        f"err {err_avg:.1f} {err_max:.1f} "
+                        f"loss {loss:.1f} "
+                        f"targ {targ:.1f} "
+                        f"avg {avg:4.1f}",
                         flush=True,
                     )
             else:

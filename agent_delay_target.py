@@ -853,6 +853,8 @@ def main():
         game = atari100k_list[rank % 24]
         seed = rank // 24
         total_frames = 1_000_000  # real atari100k is only 400_000, but training longer is helpful
+        # Reduce replay ring size so atari100k runs fit on ~10-12GB GPUs.
+        parms['ring_buffer_size'] = 16_384
 
         # run without sticky actions, which should give slightly better scores, because the models don't need to deal with any randomness
         ale.setFloat('repeat_action_probability', 0.0)

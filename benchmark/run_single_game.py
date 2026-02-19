@@ -87,14 +87,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--compat-log-every-frames",
         type=int,
-        default=2000,
-        help="Carmack compat mode: print training/progress stats every N frames (0 disables).",
+        default=0,
+        help="Carmack compat mode: print benchmark [train] progress stats every N frames (0 disables).",
     )
     parser.add_argument(
         "--compat-log-pulses-every",
         type=int,
-        default=20,
-        help="Carmack compat mode: print pulse logs every N pulses (0 disables).",
+        default=0,
+        help="Carmack compat mode: print benchmark [pulse] logs every N pulses (0 disables).",
     )
     parser.add_argument(
         "--compat-log-resets-every",
@@ -237,6 +237,9 @@ def build_config_payload(
                 "lives_as_episodes": bool(runner_config.lives_as_episodes),
                 "max_frames_without_reward": int(runner_config.max_frames_without_reward),
                 "reset_on_life_loss": bool(runner_config.reset_on_life_loss),
+                "log_rank": int(runner_config.log_rank),
+                "log_name": str(runner_config.log_name),
+                "rolling_average_frames": int(runner_config.rolling_average_frames),
             }
         )
     return payload
@@ -265,6 +268,14 @@ def main() -> None:
     episode_writer = JsonlWriter(run_dir / "episodes.jsonl")
 
     if args.runner_mode == "carmack_compat":
+        if args.agent == "delay_target":
+            log_name = f"delay_{args.game}{int(args.delay)}_{int(args.frame_skip)}"
+            if args.delay_target_ring_buffer_size is not None:
+                log_name += f"_{int(args.delay_target_ring_buffer_size)}"
+            log_rank = int(args.seed)
+        else:
+            log_name = str(args.agent)
+            log_rank = int(args.seed)
         runner_config = CarmackRunnerConfig(
             total_frames=int(args.frames),
             delay_frames=int(args.delay),
@@ -276,6 +287,8 @@ def main() -> None:
             progress_log_interval_frames=int(args.compat_log_every_frames),
             pulse_log_interval=int(args.compat_log_pulses_every),
             reset_log_interval=int(args.compat_log_resets_every),
+            log_rank=log_rank,
+            log_name=log_name,
         )
     else:
         runner_config = RunnerConfig(
