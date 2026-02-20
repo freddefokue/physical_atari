@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import random
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Mapping
 
 import numpy as np
 
@@ -143,13 +143,27 @@ class _FrameFromStepAdapter:
         self._step_agent = step_agent
         self._frame_idx = 0
 
-    def frame(self, obs_rgb, reward, end_of_episode) -> int:
+    def frame(self, obs_rgb, reward, boundary) -> int:
+        if isinstance(boundary, Mapping):
+            terminated = bool(boundary.get("terminated", False))
+            truncated = bool(boundary.get("truncated", False))
+            end_of_episode_pulse = bool(boundary.get("end_of_episode_pulse", False))
+            boundary_cause = boundary.get("boundary_cause")
+        else:
+            terminated = bool(boundary)
+            truncated = False
+            end_of_episode_pulse = bool(boundary)
+            boundary_cause = None
         action = self._step_agent.step(
             obs_rgb=obs_rgb,
             reward=float(reward),
-            terminated=bool(end_of_episode),
-            truncated=False,
-            info={"frame_idx": int(self._frame_idx)},
+            terminated=bool(terminated),
+            truncated=bool(truncated),
+            info={
+                "frame_idx": int(self._frame_idx),
+                "end_of_episode_pulse": bool(end_of_episode_pulse),
+                "boundary_cause": boundary_cause,
+            },
         )
         self._frame_idx += 1
         return int(action)

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import inspect
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Protocol, Sequence
+from typing import Any, Dict, Mapping, Optional, Protocol, Sequence
 
 import numpy as np
 
@@ -30,8 +31,56 @@ class CarmackEnv(Protocol):
 class CarmackAgent(Protocol):
     """Carmack agent interface: receives post-action transition each frame."""
 
-    def frame(self, obs_rgb, reward, end_of_episode) -> int:
-        """Consume post-step tuple and return the next policy action index."""
+    def frame(self, obs_rgb, reward, boundary) -> int:
+        """Consume post-step tuple and boundary payload and return next action."""
+
+
+class _LegacyEndOfEpisodeFrameAdapter:
+    """
+    Backward-compatible adapter for old agents expecting:
+    frame(obs_rgb, reward, end_of_episode).
+    """
+
+    def __init__(self, agent: Any) -> None:
+        self._agent = agent
+
+    def frame(self, obs_rgb, reward, boundary) -> int:
+        end_of_episode = 0
+        if isinstance(boundary, Mapping):
+            end_of_episode = int(bool(boundary.get("end_of_episode_pulse", False)))
+        else:
+            end_of_episode = int(bool(boundary))
+        return int(self._agent.frame(obs_rgb, float(reward), int(end_of_episode)))
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._agent, name)
+
+
+def _adapt_carmack_agent(agent: Any) -> Any:
+    """
+    Wrap old frame(obs, reward, end_of_episode) agents for compatibility.
+
+    New-style agents should accept frame(obs, reward, boundary_payload).
+    """
+
+    frame_fn = getattr(agent, "frame", None)
+    if not callable(frame_fn):
+        return agent
+
+    try:
+        sig = inspect.signature(frame_fn)
+    except (TypeError, ValueError):
+        return agent
+
+    params = list(sig.parameters.values())
+    if len(params) < 3:
+        return agent
+    third = params[2]
+    if third.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+        return agent
+    if third.name.lower() in {"end_of_episode", "done", "terminal", "episode_end"}:
+        return _LegacyEndOfEpisodeFrameAdapter(agent)
+    return agent
 
 
 @dataclass
@@ -84,7 +133,7 @@ class CarmackCompatRunner:
         time_fn=time.time,
     ) -> None:
         self.env = env
-        self.agent = agent
+        self.agent = _adapt_carmack_agent(agent)
         self.config = config
         self.event_writer = event_writer
         self.episode_writer = episode_writer
@@ -199,6 +248,19 @@ class CarmackCompatRunner:
                 end_of_episode = 1
                 pulse_reason = termination_reason or "truncated"
 
+            boundary_terminated = bool(step.terminated)
+            boundary_truncated = bool(
+                step.truncated
+                or timeout_reached
+                or (reset_due_to_life_loss and not step.terminated and not step.truncated)
+            )
+            boundary_payload = {
+                "terminated": bool(boundary_terminated),
+                "truncated": bool(boundary_truncated),
+                "end_of_episode_pulse": bool(end_of_episode),
+                "boundary_cause": pulse_reason,
+            }
+
             if end_of_episode:
                 pulse_count += 1
                 if self.config.pulse_log_interval > 0 and (pulse_count % self.config.pulse_log_interval == 0):
@@ -273,7 +335,7 @@ class CarmackCompatRunner:
             else:
                 obs_for_agent = step.obs_rgb
 
-            next_action = self._validate_action_idx(self.agent.frame(obs_for_agent, reward, int(end_of_episode)))
+            next_action = self._validate_action_idx(self.agent.frame(obs_for_agent, reward, boundary_payload))
             taken_action = int(next_action)
 
             if self.config.progress_log_interval_frames > 0 and (

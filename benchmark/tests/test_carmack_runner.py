@@ -44,6 +44,20 @@ class RecordingFrameAgentWithStats(RecordingFrameAgent):
         }
 
 
+class RecordingBoundaryFrameAgent:
+    def __init__(self, action_idx: int = 1) -> None:
+        self.action_idx = int(action_idx)
+        self.calls = []
+
+    def frame(self, obs_rgb, reward, boundary) -> int:
+        marker = int(obs_rgb[0, 0, 0])
+        payload = dict(boundary) if isinstance(boundary, dict) else {"raw": boundary}
+        payload["obs_marker"] = marker
+        payload["reward"] = float(reward)
+        self.calls.append(payload)
+        return int(self.action_idx)
+
+
 @dataclass
 class ScriptedEnv:
     action_set: list
@@ -221,3 +235,55 @@ def test_carmack_runner_reset_log_matches_delay_target_style(capsys):
     assert "err 1.2 3.4" in out
     assert "loss 0.5" in out
     assert "targ -2.0" in out
+
+
+def test_carmack_runner_new_boundary_payload_timeout_marks_truncated():
+    env = ScriptedEnv(
+        action_set=list(range(4)),
+        rewards=[0.0, 0.0, 0.0],
+        lives_seq=[3, 3, 3],
+        terminated_at=set(),
+        truncated_at=set(),
+    )
+    agent = RecordingBoundaryFrameAgent(action_idx=1)
+    config = CarmackRunnerConfig(total_frames=3, delay_frames=0, include_timestamps=False, max_frames_without_reward=2)
+    summary, events, episodes = run_with_memory(env, agent, config)
+
+    assert summary["timeout_resets"] == 1
+    assert len(episodes) == 1
+    assert events[1]["pulse_reason"] == "no_reward_timeout"
+    assert events[1]["reset_performed"] is True
+    assert agent.calls[1]["terminated"] is False
+    assert agent.calls[1]["truncated"] is True
+    assert agent.calls[1]["end_of_episode_pulse"] is True
+    assert agent.calls[1]["boundary_cause"] == "no_reward_timeout"
+
+
+def test_carmack_runner_new_boundary_payload_life_loss_pulse_without_reset():
+    env = ScriptedEnv(
+        action_set=list(range(4)),
+        rewards=[0.0, 0.0, 0.0],
+        lives_seq=[3, 2, 2],
+        terminated_at=set(),
+        truncated_at=set(),
+    )
+    agent = RecordingBoundaryFrameAgent(action_idx=1)
+    config = CarmackRunnerConfig(
+        total_frames=3,
+        delay_frames=0,
+        include_timestamps=False,
+        lives_as_episodes=True,
+        reset_on_life_loss=False,
+        max_frames_without_reward=999,
+    )
+    summary, events, episodes = run_with_memory(env, agent, config)
+
+    assert summary["life_loss_pulses"] == 1
+    assert summary["reset_count"] == 0
+    assert len(episodes) == 0
+    assert events[1]["pulse_reason"] == "life_loss"
+    assert events[1]["reset_performed"] is False
+    assert agent.calls[1]["terminated"] is False
+    assert agent.calls[1]["truncated"] is False
+    assert agent.calls[1]["end_of_episode_pulse"] is True
+    assert agent.calls[1]["boundary_cause"] == "life_loss"

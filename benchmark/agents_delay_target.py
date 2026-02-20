@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import importlib
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 
 def _to_json_scalar(value: Any) -> Any:
@@ -64,7 +64,19 @@ class DelayTargetAdapter:
             **self._agent_kwargs,
         )
 
-    def frame(self, obs_rgb, reward, end_of_episode) -> int:
+    @staticmethod
+    def _parse_boundary(boundary: Any) -> Tuple[bool, bool]:
+        if isinstance(boundary, Mapping):
+            terminated = bool(boundary.get("terminated", False))
+            truncated = bool(boundary.get("truncated", False))
+            return terminated, truncated
+        return bool(boundary), False
+
+    def frame(self, obs_rgb, reward, boundary) -> int:
+        terminated, truncated = self._parse_boundary(boundary)
+        # Keep root DelayTarget agent contract unchanged while upgrading runner-side API
+        # to explicit terminated/truncated semantics.
+        end_of_episode = int(bool(terminated) or bool(truncated))
         action_idx = int(self._agent.frame(obs_rgb, float(reward), end_of_episode))
         self._decision_steps += 1
         if action_idx < 0 or action_idx >= self._num_actions:
@@ -74,8 +86,16 @@ class DelayTargetAdapter:
 
     def step(self, obs_rgb, reward, terminated, truncated, info) -> int:
         del info
-        end_of_episode = int(bool(terminated) or bool(truncated))
-        return self.frame(obs_rgb, reward, end_of_episode)
+        return self.frame(
+            obs_rgb,
+            reward,
+            {
+                "terminated": bool(terminated),
+                "truncated": bool(truncated),
+                "end_of_episode_pulse": bool(terminated) or bool(truncated),
+                "boundary_cause": "terminated" if bool(terminated) else ("truncated" if bool(truncated) else None),
+            },
+        )
 
     def get_config(self) -> Dict[str, Any]:
         return dict(self._config)
