@@ -63,6 +63,9 @@ Precedence for boundary cause:
 - `segments.jsonl`
 - `run_summary.json`
 
+Scoring-stage artifact:
+- `score.json` is produced by scorer tooling (not by the runner process itself).
+
 All rows must include profile/schema markers:
 - `multi_run_profile`
 - `multi_run_schema_version`

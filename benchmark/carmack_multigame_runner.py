@@ -256,6 +256,10 @@ class CarmackMultiGameRunner:
         self._segment_return = 0.0
         self._segment_length = 0
 
+        # Seed delay queue once so persist mode behaves as true queue persistence,
+        # not as an accidental no-delay path on first use.
+        self._delay_queue = deque([self.config.default_action_idx] * self.config.delay_frames)
+
     def _validate_action_idx(self, action_idx: Any) -> int:
         action_idx = int(action_idx)
         if action_idx < 0 or action_idx >= self._num_global_actions:
@@ -264,7 +268,7 @@ class CarmackMultiGameRunner:
 
     def _reset_control_state(self, *, reset_delay_queue: bool) -> None:
         self._decided_action_idx = int(self.config.default_action_idx)
-        if reset_delay_queue:
+        if reset_delay_queue or len(self._delay_queue) == 0:
             self._delay_queue = deque([self.config.default_action_idx] * self.config.delay_frames)
         self._last_applied_action_idx_global = None
         self._has_prev_applied_action = False
@@ -331,22 +335,24 @@ class CarmackMultiGameRunner:
             boundary_cause = cls._BOUNDARY_CAUSE_VISIT_SWITCH
             reset_cause = cls._BOUNDARY_CAUSE_VISIT_SWITCH
         elif bool(step.truncated):
-            boundary_cause = str(step.termination_reason or cls._BOUNDARY_CAUSE_TRUNCATED)
+            boundary_cause = cls._BOUNDARY_CAUSE_TRUNCATED
             reset_cause = cls._BOUNDARY_CAUSE_TRUNCATED
         elif bool(step.terminated):
-            boundary_cause = str(step.termination_reason or cls._BOUNDARY_CAUSE_TERMINATED)
+            boundary_cause = cls._BOUNDARY_CAUSE_TERMINATED
             reset_cause = cls._BOUNDARY_CAUSE_TERMINATED
         else:
             boundary_cause = None
             reset_cause = None
 
+        reset_performed = bool(reset_cause is not None)
         return {
             "terminated": bool(boundary_terminated),
             "truncated": bool(boundary_truncated),
             "boundary_cause": boundary_cause,
             "reset_cause": reset_cause,
             "end_of_episode_pulse": bool(boundary_terminated or boundary_truncated),
-            "reset_in_visit": bool(reset_cause is not None and not is_visit_last_frame),
+            "reset_performed": bool(reset_performed),
+            "reset_in_visit": bool(reset_performed and not is_visit_last_frame),
         }
 
     @staticmethod
@@ -484,14 +490,15 @@ class CarmackMultiGameRunner:
                     "end_of_episode_pulse": bool(boundary["end_of_episode_pulse"]),
                     "boundary_cause": boundary["boundary_cause"],
                     "reset_cause": boundary["reset_cause"],
-                    "reset_performed": bool(boundary["reset_in_visit"]),
+                    "reset_performed": bool(boundary["reset_performed"]),
+                    "env_termination_reason": None if step.termination_reason is None else str(step.termination_reason),
                 }
 
                 if bool(boundary["end_of_episode_pulse"]):
                     cause = boundary.get("boundary_cause")
                     if cause is not None:
                         boundary_cause_counts[str(cause)] = int(boundary_cause_counts.get(str(cause), 0) + 1)
-                if bool(boundary["reset_in_visit"]):
+                if bool(boundary["reset_performed"]):
                     reset_count += 1
                     cause = boundary.get("reset_cause")
                     if cause is not None:

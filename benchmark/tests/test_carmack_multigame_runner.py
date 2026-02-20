@@ -129,6 +129,8 @@ def test_carmack_multigame_runner_emits_required_boundary_payload():
     }
     assert first_boundary["has_prev_applied_action"] is False
     assert agent.calls[1]["boundary"]["end_of_episode_pulse"] is True
+    assert events[1]["boundary_cause"] == "terminated"
+    assert events[1]["env_termination_reason"] == "scripted_end"
     assert events[0]["multi_run_profile"] == CARMACK_MULTI_RUN_PROFILE
     assert events[0]["multi_run_schema_version"] == CARMACK_MULTI_RUN_SCHEMA_VERSION
 
@@ -150,9 +152,12 @@ def test_carmack_multigame_runner_visit_switch_emits_truncated_boundary():
 
     switch_frames = [row["global_frame_idx"] for row in events if row["boundary_cause"] == "visit_switch"]
     assert switch_frames == [1, 3]
+    assert events[1]["reset_performed"] is True
+    assert events[1]["reset_cause"] == "visit_switch"
     assert [row["ended_by"] for row in episodes] == ["truncated", "truncated"]
     assert [row["ended_by"] for row in segments] == ["truncated", "truncated"]
     assert summary["boundary_cause_counts"].get("visit_switch") == 2
+    assert summary["reset_cause_counts"].get("visit_switch") == 2
 
 
 def test_carmack_multigame_step_adapter_supplies_required_info_fields():
@@ -184,3 +189,39 @@ def test_carmack_multigame_step_adapter_supplies_required_info_fields():
     assert all("has_prev_applied_action" in call for call in step_agent.calls)
     assert all("prev_applied_action_idx" in call for call in step_agent.calls)
     assert [bool(call["is_decision_frame"]) for call in step_agent.calls] == [True, False, False, True]
+
+
+def test_carmack_multigame_delay_queue_persistence_across_visit_switch():
+    schedule = Schedule(
+        ScheduleConfig(games=["a", "b"], base_visit_frames=3, num_cycles=1, seed=0, jitter_pct=0.0, min_visit_frames=1)
+    )
+    env = MockMultiGameEnv(action_sets={"a": list(range(8)), "b": list(range(8))})
+    agent = RecordingFrameAgent(action_idx=1)
+
+    # Persist queue on visit switch.
+    config_persist = CarmackMultiGameRunnerConfig(
+        decision_interval=1,
+        delay_frames=2,
+        default_action_idx=0,
+        include_timestamps=False,
+        global_action_set=tuple(range(8)),
+        reset_delay_queue_on_visit_switch=False,
+    )
+    _, events_persist, _, _ = _run_with_memory(env, agent, schedule, config_persist)
+
+    # Reset queue on visit switch.
+    env_reset = MockMultiGameEnv(action_sets={"a": list(range(8)), "b": list(range(8))})
+    agent_reset = RecordingFrameAgent(action_idx=1)
+    config_reset = CarmackMultiGameRunnerConfig(
+        decision_interval=1,
+        delay_frames=2,
+        default_action_idx=0,
+        include_timestamps=False,
+        global_action_set=tuple(range(8)),
+        reset_delay_queue_on_visit_switch=True,
+    )
+    _, events_reset, _, _ = _run_with_memory(env_reset, agent_reset, schedule, config_reset)
+
+    # Frame 3 is first frame of second visit.
+    assert events_persist[3]["applied_action_idx"] == 1
+    assert events_reset[3]["applied_action_idx"] == 0
