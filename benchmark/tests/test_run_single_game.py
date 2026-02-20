@@ -14,14 +14,26 @@ from benchmark.run_single_game import validate_args
 
 
 def test_validate_args_carmack_requires_frame_skip_1():
-    args = Namespace(runner_mode="carmack_compat", frame_skip=4)
+    args = Namespace(runner_mode="carmack_compat", frame_skip=4, agent="random")
     with pytest.raises(ValueError, match=r"carmack_compat requires --frame-skip 1"):
         validate_args(args)
 
 
 def test_validate_args_standard_allows_frame_skip_not_one():
-    args = Namespace(runner_mode="standard", frame_skip=4)
+    args = Namespace(runner_mode="standard", frame_skip=4, agent="random")
     validate_args(args)
+
+
+def test_validate_args_tinydqn_requires_carmack_mode():
+    args = Namespace(runner_mode="standard", frame_skip=1, agent="tinydqn")
+    with pytest.raises(ValueError, match=r"agent tinydqn currently requires --runner-mode carmack_compat"):
+        validate_args(args)
+
+
+def test_validate_args_tinydqn_requires_positive_decision_interval():
+    args = Namespace(runner_mode="carmack_compat", frame_skip=1, agent="tinydqn", dqn_decision_interval=0)
+    with pytest.raises(ValueError, match=r"--dqn-decision-interval must be > 0"):
+        validate_args(args)
 
 
 def test_build_config_payload_carmack_marks_agent_owned_cadence():
@@ -49,6 +61,20 @@ def test_build_config_payload_carmack_marks_agent_owned_cadence():
         compat_log_pulses_every=0,
         compat_log_resets_every=1,
         delay_target_ring_buffer_size=None,
+        dqn_gamma=0.99,
+        dqn_lr=1e-4,
+        dqn_buffer_size=10000,
+        dqn_batch_size=32,
+        dqn_train_every=4,
+        dqn_log_train_every=500,
+        dqn_target_update=250,
+        dqn_eps_start=1.0,
+        dqn_eps_end=0.05,
+        dqn_eps_decay_frames=200000,
+        dqn_replay_min=1000,
+        dqn_use_replay=1,
+        dqn_device="cpu",
+        dqn_decision_interval=1,
         timestamps=0,
         logdir="runs",
     )
@@ -102,9 +128,58 @@ def test_frame_from_step_adapter_does_not_leak_frame_idx():
     assert call["truncated"] is True
     assert call["info"] == {
         "end_of_episode_pulse": True,
+        "has_prev_applied_action": False,
+        "prev_applied_action_idx": 0,
+        "is_decision_frame": True,
     }
     assert "frame_idx" not in call["info"]
     assert "boundary_cause" not in call["info"]
+
+
+def test_frame_from_step_adapter_forwards_prev_applied_action_fields():
+    class _StepAgent:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def step(self, obs_rgb, reward, terminated, truncated, info):
+            del obs_rgb, reward, terminated, truncated
+            self.calls.append(dict(info))
+            return 1
+
+    agent = _StepAgent()
+    adapter = _FrameFromStepAdapter(agent)
+    adapter.frame(
+        obs_rgb=None,
+        reward=0.0,
+        boundary={
+            "terminated": False,
+            "truncated": False,
+            "end_of_episode_pulse": False,
+            "has_prev_applied_action": True,
+            "prev_applied_action_idx": 3,
+        },
+    )
+    assert agent.calls[0]["has_prev_applied_action"] is True
+    assert agent.calls[0]["prev_applied_action_idx"] == 3
+    assert agent.calls[0]["is_decision_frame"] is True
+
+
+def test_frame_from_step_adapter_applies_agent_owned_decision_interval():
+    class _StepAgent:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def step(self, obs_rgb, reward, terminated, truncated, info):
+            del obs_rgb, reward, terminated, truncated
+            self.calls.append(dict(info))
+            return 0
+
+    agent = _StepAgent()
+    adapter = _FrameFromStepAdapter(agent, decision_interval=3)
+    for _ in range(7):
+        adapter.frame(obs_rgb=None, reward=0.0, boundary=False)
+    flags = [bool(call["is_decision_frame"]) for call in agent.calls]
+    assert flags == [True, False, False, True, False, False, True]
 
 
 def test_build_run_summary_payload_carmack_includes_schema_markers():

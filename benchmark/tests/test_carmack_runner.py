@@ -512,7 +512,13 @@ def test_carmack_runner_variadic_frame_signature_remains_passthrough():
     first_call = agent.calls[0]
     assert len(first_call) == 3
     assert isinstance(first_call[2], dict)
-    assert set(first_call[2].keys()) == {"terminated", "truncated", "end_of_episode_pulse"}
+    assert set(first_call[2].keys()) == {
+        "terminated",
+        "truncated",
+        "end_of_episode_pulse",
+        "has_prev_applied_action",
+        "prev_applied_action_idx",
+    }
     assert events[1]["terminated"] is True
 
 

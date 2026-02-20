@@ -57,7 +57,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--agent",
         type=str,
-        choices=["random", "repeat", "delay_target"],
+        choices=["random", "repeat", "tinydqn", "delay_target"],
         default="random",
         help="Agent type.",
     )
@@ -145,6 +145,62 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional override for agent_delay_target ring_buffer_size (frames).",
     )
+    parser.add_argument("--dqn-gamma", type=float, default=0.99, help="TinyDQN discount factor.")
+    parser.add_argument("--dqn-lr", type=float, default=1e-4, help="TinyDQN Adam learning rate.")
+    parser.add_argument("--dqn-buffer-size", type=int, default=10000, help="TinyDQN replay buffer size.")
+    parser.add_argument("--dqn-batch-size", type=int, default=32, help="TinyDQN batch size.")
+    parser.add_argument(
+        "--dqn-train-every",
+        type=int,
+        default=4,
+        help="Train TinyDQN every N decision frames.",
+    )
+    parser.add_argument(
+        "--dqn-log-train-every",
+        type=int,
+        default=500,
+        help="Emit TinyDQN training log every N train steps (0 disables).",
+    )
+    parser.add_argument(
+        "--dqn-target-update",
+        type=int,
+        default=250,
+        help="Hard target-network sync interval in decision frames.",
+    )
+    parser.add_argument("--dqn-eps-start", type=float, default=1.0, help="TinyDQN epsilon at frame 0.")
+    parser.add_argument("--dqn-eps-end", type=float, default=0.05, help="TinyDQN final epsilon.")
+    parser.add_argument(
+        "--dqn-eps-decay-frames",
+        type=int,
+        default=200000,
+        help="Frames for linear epsilon decay.",
+    )
+    parser.add_argument(
+        "--dqn-replay-min",
+        type=int,
+        default=1000,
+        help="Minimum replay size before training starts.",
+    )
+    parser.add_argument(
+        "--dqn-use-replay",
+        type=int,
+        choices=[0, 1],
+        default=1,
+        help="Enable replay buffer for TinyDQN (1=yes, 0=no).",
+    )
+    parser.add_argument(
+        "--dqn-device",
+        type=str,
+        choices=["cpu", "cuda"],
+        default="cpu",
+        help="TinyDQN device.",
+    )
+    parser.add_argument(
+        "--dqn-decision-interval",
+        type=int,
+        default=1,
+        help="TinyDQN decision interval in frames (agent-owned action repeat).",
+    )
     parser.add_argument(
         "--timestamps",
         type=int,
@@ -167,21 +223,39 @@ def validate_args(args: argparse.Namespace) -> None:
             "--runner-mode carmack_compat requires --frame-skip 1 "
             "(agent-owned cadence; runner does not apply frame-skip)."
         )
+    if str(args.agent) == "tinydqn" and str(args.runner_mode) != "carmack_compat":
+        raise ValueError(
+            "--agent tinydqn currently requires --runner-mode carmack_compat "
+            "because TinyDQN expects applied-action labels from the Carmack boundary payload."
+        )
+    if str(args.agent) == "tinydqn" and int(args.dqn_decision_interval) <= 0:
+        raise ValueError("--dqn-decision-interval must be > 0 for --agent tinydqn.")
 
 
 class _FrameFromStepAdapter:
-    def __init__(self, step_agent) -> None:
+    def __init__(self, step_agent, decision_interval: int = 1) -> None:
         self._step_agent = step_agent
+        self._decision_interval = max(1, int(decision_interval))
+        self._frame_counter = 0
 
     def frame(self, obs_rgb, reward, boundary) -> int:
         if isinstance(boundary, Mapping):
             terminated = bool(boundary.get("terminated", False))
             truncated = bool(boundary.get("truncated", False))
             end_of_episode_pulse = bool(boundary.get("end_of_episode_pulse", False))
+            has_prev_applied_action = bool(boundary.get("has_prev_applied_action", False))
+            prev_applied_action_idx = int(boundary.get("prev_applied_action_idx", 0))
+            if "is_decision_frame" in boundary:
+                is_decision_frame = bool(boundary.get("is_decision_frame"))
+            else:
+                is_decision_frame = bool(self._frame_counter % self._decision_interval == 0)
         else:
             terminated = bool(boundary)
             truncated = False
             end_of_episode_pulse = bool(boundary)
+            has_prev_applied_action = False
+            prev_applied_action_idx = 0
+            is_decision_frame = bool(self._frame_counter % self._decision_interval == 0)
         action = self._step_agent.step(
             obs_rgb=obs_rgb,
             reward=float(reward),
@@ -189,8 +263,12 @@ class _FrameFromStepAdapter:
             truncated=bool(truncated),
             info={
                 "end_of_episode_pulse": bool(end_of_episode_pulse),
+                "has_prev_applied_action": bool(has_prev_applied_action),
+                "prev_applied_action_idx": int(prev_applied_action_idx),
+                "is_decision_frame": bool(is_decision_frame),
             },
         )
+        self._frame_counter += 1
         return int(action)
 
     def get_stats(self) -> Mapping[str, object]:
@@ -212,7 +290,7 @@ def build_agent(args: argparse.Namespace, num_actions: int, total_frames: int):
         if args.repeat_action_idx < 0 or args.repeat_action_idx >= num_actions:
             raise ValueError(f"--repeat-action-idx must be in [0, {num_actions - 1}]")
         base = RepeatActionAgent(action_idx=args.repeat_action_idx)
-    else:
+    elif args.agent == "delay_target":
         from benchmark.agents_delay_target import DelayTargetAdapter  # pylint: disable=import-outside-toplevel
 
         kwargs = {
@@ -230,11 +308,37 @@ def build_agent(args: argparse.Namespace, num_actions: int, total_frames: int):
             total_frames=int(total_frames),
             agent_kwargs=kwargs,
         )
+    else:
+        try:
+            from benchmark.agents_tinydqn import TinyDQNAgent, TinyDQNConfig  # pylint: disable=import-outside-toplevel
+        except ImportError as exc:  # pragma: no cover - depends on optional torch dependency
+            raise ImportError(
+                "agent=tinydqn requires torch. Install torch or use --agent random/--agent repeat."
+            ) from exc
+
+        dqn_config = TinyDQNConfig(
+            gamma=float(args.dqn_gamma),
+            lr=float(args.dqn_lr),
+            buffer_size=int(args.dqn_buffer_size),
+            batch_size=int(args.dqn_batch_size),
+            train_every_decisions=int(args.dqn_train_every),
+            train_log_interval=int(args.dqn_log_train_every),
+            target_update_decisions=int(args.dqn_target_update),
+            replay_min_size=int(args.dqn_replay_min),
+            eps_start=float(args.dqn_eps_start),
+            eps_end=float(args.dqn_eps_end),
+            eps_decay_frames=int(args.dqn_eps_decay_frames),
+            use_replay=bool(int(args.dqn_use_replay)),
+            device=str(args.dqn_device),
+            decision_interval=int(args.dqn_decision_interval),
+        )
+        base = TinyDQNAgent(action_space_n=num_actions, seed=int(args.seed), config=dqn_config)
 
     if args.runner_mode == "carmack_compat":
         if hasattr(base, "frame") and callable(getattr(base, "frame")):
             return base
-        return _FrameFromStepAdapter(base)
+        decision_interval = int(args.dqn_decision_interval) if str(args.agent) == "tinydqn" else 1
+        return _FrameFromStepAdapter(base, decision_interval=decision_interval)
     return base
 
 
@@ -267,6 +371,22 @@ def build_config_payload(
         "delay_target_ring_buffer_size": (
             None if args.delay_target_ring_buffer_size is None else int(args.delay_target_ring_buffer_size)
         ),
+        "dqn_config": {
+            "gamma": float(args.dqn_gamma),
+            "lr": float(args.dqn_lr),
+            "buffer_size": int(args.dqn_buffer_size),
+            "batch_size": int(args.dqn_batch_size),
+            "train_every_decisions": int(args.dqn_train_every),
+            "train_log_interval": int(args.dqn_log_train_every),
+            "target_update_decisions": int(args.dqn_target_update),
+            "replay_min_size": int(args.dqn_replay_min),
+            "eps_start": float(args.dqn_eps_start),
+            "eps_end": float(args.dqn_eps_end),
+            "eps_decay_frames": int(args.dqn_eps_decay_frames),
+            "use_replay": bool(int(args.dqn_use_replay)),
+            "device": str(args.dqn_device),
+            "decision_interval": int(args.dqn_decision_interval),
+        },
         "timestamps": bool(args.timestamps),
         "logdir": str(Path(args.logdir)),
         "run_dir": str(run_dir),

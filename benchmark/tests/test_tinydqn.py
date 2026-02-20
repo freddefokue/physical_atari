@@ -73,6 +73,70 @@ def test_non_decision_frames_return_last_action_without_new_decision():
     assert agent.replay_size == 1
 
 
+def test_internal_decision_interval_fallback_used_when_info_key_missing():
+    agent = TinyDQNAgent(
+        action_space_n=6,
+        seed=123,
+        config=TinyDQNConfig(
+            eps_start=1.0,
+            eps_end=1.0,
+            replay_min_size=10_000,
+            use_replay=False,
+            device="cpu",
+            decision_interval=3,
+        ),
+    )
+    actions = []
+    for frame_idx in range(7):
+        actions.append(
+            agent.step(
+                make_obs(frame_idx),
+                reward=0.0,
+                terminated=False,
+                truncated=False,
+                info={
+                    "global_frame_idx": frame_idx,
+                    "has_prev_applied_action": frame_idx > 0,
+                    "prev_applied_action_idx": frame_idx % 6,
+                },
+            )
+        )
+    assert actions[1] == actions[0]
+    assert actions[2] == actions[0]
+    assert actions[4] == actions[3]
+    assert actions[5] == actions[3]
+    assert agent.decision_steps == 3
+
+
+def test_is_decision_frame_info_overrides_internal_interval():
+    agent = TinyDQNAgent(
+        action_space_n=4,
+        seed=7,
+        config=TinyDQNConfig(
+            eps_start=1.0,
+            eps_end=1.0,
+            replay_min_size=10_000,
+            use_replay=False,
+            device="cpu",
+            decision_interval=10,
+        ),
+    )
+    for frame_idx in range(5):
+        agent.step(
+            make_obs(100 + frame_idx),
+            reward=0.0,
+            terminated=False,
+            truncated=False,
+            info={
+                "is_decision_frame": (frame_idx % 2 == 0),
+                "global_frame_idx": frame_idx,
+                "has_prev_applied_action": frame_idx > 0,
+                "prev_applied_action_idx": frame_idx % 4,
+            },
+        )
+    assert agent.decision_steps == 3
+
+
 def test_replay_buffer_store_and_sample_shapes():
     replay = ReplayBuffer(capacity=3, obs_shape=(1, 8, 8), seed=0)
     for idx in range(4):

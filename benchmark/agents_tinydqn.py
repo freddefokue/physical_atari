@@ -31,6 +31,7 @@ class TinyDQNConfig:
     device: str = "cpu"
     grad_clip_norm: float = 10.0
     train_log_interval: int = 500
+    decision_interval: int = 1
 
     def __post_init__(self) -> None:
         if not (0.0 <= self.gamma <= 1.0):
@@ -55,6 +56,8 @@ class TinyDQNConfig:
             raise ValueError("device must be 'cpu' or 'cuda'")
         if self.train_log_interval < 0:
             raise ValueError("train_log_interval must be >= 0")
+        if self.decision_interval <= 0:
+            raise ValueError("decision_interval must be > 0")
 
     def as_dict(self) -> Dict[str, object]:
         return asdict(self)
@@ -328,7 +331,10 @@ class TinyDQNAgent:
 
     def step(self, obs_rgb: np.ndarray, reward: float, terminated: bool, truncated: bool, info: Dict[str, object]) -> int:
         done = bool(terminated or truncated)
-        is_decision_frame = bool(info.get("is_decision_frame", True))
+        if "is_decision_frame" in info:
+            is_decision_frame = bool(info.get("is_decision_frame"))
+        else:
+            is_decision_frame = bool(self._frame_counter % int(self.config.decision_interval) == 0)
         if is_decision_frame:
             # Count decisions at interval start so training cadence matches
             # the interval being finalized on this boundary.
