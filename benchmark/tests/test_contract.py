@@ -508,9 +508,54 @@ def test_validate_contract_stratified_mode_catches_rare_boundary_cause_row(tmp_p
 
     stratified_result = validate_contract(
         run_dir,
-        sample_event_lines=1,
+        sample_event_lines=3,
         validation_mode="stratified",
         stratified_seed=123,
     )
     assert stratified_result["ok"] is False
     assert any("no_reward_timeout reset requires truncated=true" in err for err in stratified_result["errors"])
+
+
+def test_validate_contract_stratified_mode_requires_positive_budget(tmp_path):
+    run_dir = tmp_path / "run_carmack_stratified_zero_budget"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    with (run_dir / "config.json").open("w", encoding="utf-8") as fh:
+        json.dump(_make_carmack_config(), fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    with (run_dir / "events.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_make_carmack_event_row(), sort_keys=True) + "\n")
+    with (run_dir / "episodes.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_make_carmack_episode_row(), sort_keys=True) + "\n")
+    with (run_dir / "run_summary.json").open("w", encoding="utf-8") as fh:
+        json.dump(_make_carmack_summary(), fh, indent=2, sort_keys=True)
+        fh.write("\n")
+
+    result = validate_contract(run_dir, sample_event_lines=0, validation_mode="stratified")
+    assert result["ok"] is False
+    assert any("stratified validation requires sample_event_lines > 0" in err for err in result["errors"])
+
+
+def test_validate_contract_stratified_mode_fails_when_budget_too_small(tmp_path):
+    run_dir = tmp_path / "run_carmack_stratified_small_budget"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    normal = _make_carmack_event_row()
+    second = _make_carmack_event_row()
+    second["frame_idx"] = 1
+
+    with (run_dir / "config.json").open("w", encoding="utf-8") as fh:
+        json.dump(_make_carmack_config(), fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    with (run_dir / "events.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(normal, sort_keys=True) + "\n")
+        fh.write(json.dumps(second, sort_keys=True) + "\n")
+    with (run_dir / "episodes.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_make_carmack_episode_row(), sort_keys=True) + "\n")
+    with (run_dir / "run_summary.json").open("w", encoding="utf-8") as fh:
+        json.dump(_make_carmack_summary(), fh, indent=2, sort_keys=True)
+        fh.write("\n")
+
+    result = validate_contract(run_dir, sample_event_lines=1, validation_mode="stratified")
+    assert result["ok"] is False
+    assert any("stratified validation budget too small" in err for err in result["errors"])

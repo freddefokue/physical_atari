@@ -332,7 +332,12 @@ def _select_sample_indices(
                 first_by_label[label] = row_idx
             mandatory_indices.update(first_by_label.values())
 
-    if len(mandatory_indices) >= sample_lines:
+    if len(mandatory_indices) > sample_lines:
+        raise ValueError(
+            "stratified validation budget too small: "
+            f"need at least {len(mandatory_indices)} rows for mandatory strata, got {sample_lines}"
+        )
+    if len(mandatory_indices) == sample_lines:
         return sorted(mandatory_indices)
 
     ranked_remaining: List[tuple[str, int]] = []
@@ -363,6 +368,9 @@ def _collect_jsonl_schema_sample(
         return []
 
     requires_full_read = validation_mode in {VALIDATION_MODE_STRATIFIED, VALIDATION_MODE_FULL}
+    if validation_mode == VALIDATION_MODE_STRATIFIED and sample_lines <= 0:
+        errors.append("stratified validation requires sample_event_lines > 0")
+        return []
     if not requires_full_read and sample_lines <= 0:
         return []
 
@@ -388,13 +396,17 @@ def _collect_jsonl_schema_sample(
         errors.append(f"{record_name} had no readable rows in validation scope")
         return []
 
-    selected_indices = _select_sample_indices(
-        rows,
-        validation_mode=validation_mode,
-        sample_lines=sample_lines,
-        stratified_seed=stratified_seed,
-        stratified_selectors=stratified_selectors,
-    )
+    try:
+        selected_indices = _select_sample_indices(
+            rows,
+            validation_mode=validation_mode,
+            sample_lines=sample_lines,
+            stratified_seed=stratified_seed,
+            stratified_selectors=stratified_selectors,
+        )
+    except ValueError as exc:
+        errors.append(str(exc))
+        return []
     sampled_rows: List[Mapping[str, Any]] = []
     for row_idx in selected_indices:
         row = rows[row_idx]
@@ -407,7 +419,9 @@ def _collect_jsonl_schema_sample(
         if schema_error is not None:
             errors.append(schema_error)
             return []
-        sampled_rows.append(row)
+        sampled = dict(row)
+        sampled["__validator_row_idx"] = int(row_idx)
+        sampled_rows.append(sampled)
 
     if not sampled_rows:
         errors.append(f"{record_name} had no readable rows in validation scope")
@@ -745,7 +759,8 @@ def _check_carmack_summary_schema(
 def _check_carmack_event_semantics(rows: Sequence[Mapping[str, Any]], errors: List[str]) -> None:
     allowed_reset_causes = {"no_reward_timeout", "terminated", "truncated", "life_loss_reset"}
     for idx, row in enumerate(rows):
-        prefix = f"events.jsonl semantic error at sampled row {idx}"
+        source_idx = row.get("__validator_row_idx")
+        prefix = f"events.jsonl semantic error at row {source_idx if _is_int(source_idx) else idx}"
 
         pulse = bool(row["end_of_episode_pulse"])
         boundary_cause = row.get("boundary_cause")
@@ -798,7 +813,8 @@ def _check_carmack_episode_semantics(rows: Sequence[Mapping[str, Any]], errors: 
     prev_episode_idx: Optional[int] = None
     prev_end_frame_idx: Optional[int] = None
     for idx, row in enumerate(rows):
-        prefix = f"episodes.jsonl semantic error at sampled row {idx}"
+        source_idx = row.get("__validator_row_idx")
+        prefix = f"episodes.jsonl semantic error at row {source_idx if _is_int(source_idx) else idx}"
         episode_idx = int(row["episode_idx"])
         end_frame_idx = int(row["end_frame_idx"])
         length = int(row["length"])
@@ -971,7 +987,10 @@ def parse_args() -> argparse.Namespace:
         "--sample-event-lines",
         type=int,
         default=0,
-        help="Validation row budget for sample/stratified modes; full mode scans all rows.",
+        help=(
+            "Validation row budget for sample/stratified modes; full mode scans all rows. "
+            "Stratified mode requires > 0 and may fail if budget is too small for mandatory strata."
+        ),
     )
     parser.add_argument(
         "--validation-mode",
