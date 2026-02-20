@@ -167,12 +167,10 @@ class _FrameFromStepAdapter:
             terminated = bool(boundary.get("terminated", False))
             truncated = bool(boundary.get("truncated", False))
             end_of_episode_pulse = bool(boundary.get("end_of_episode_pulse", False))
-            boundary_cause = boundary.get("boundary_cause")
         else:
             terminated = bool(boundary)
             truncated = False
             end_of_episode_pulse = bool(boundary)
-            boundary_cause = None
         action = self._step_agent.step(
             obs_rgb=obs_rgb,
             reward=float(reward),
@@ -180,7 +178,6 @@ class _FrameFromStepAdapter:
             truncated=bool(truncated),
             info={
                 "end_of_episode_pulse": bool(end_of_episode_pulse),
-                "boundary_cause": boundary_cause,
             },
         )
         return int(action)

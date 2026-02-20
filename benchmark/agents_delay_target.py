@@ -93,7 +93,6 @@ class DelayTargetAdapter:
                 "terminated": bool(terminated),
                 "truncated": bool(truncated),
                 "end_of_episode_pulse": bool(terminated) or bool(truncated),
-                "boundary_cause": "terminated" if bool(terminated) else ("truncated" if bool(truncated) else None),
             },
         )
 

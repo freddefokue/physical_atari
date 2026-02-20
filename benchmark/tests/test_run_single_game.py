@@ -88,7 +88,6 @@ def test_frame_from_step_adapter_does_not_leak_frame_idx():
             "terminated": False,
             "truncated": True,
             "end_of_episode_pulse": True,
-            "boundary_cause": "no_reward_timeout",
         },
     )
 
@@ -98,6 +97,6 @@ def test_frame_from_step_adapter_does_not_leak_frame_idx():
     assert call["truncated"] is True
     assert call["info"] == {
         "end_of_episode_pulse": True,
-        "boundary_cause": "no_reward_timeout",
     }
     assert "frame_idx" not in call["info"]
+    assert "boundary_cause" not in call["info"]

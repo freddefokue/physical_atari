@@ -300,7 +300,7 @@ def test_carmack_runner_new_boundary_payload_timeout_marks_truncated():
     assert agent.calls[1]["terminated"] is False
     assert agent.calls[1]["truncated"] is True
     assert agent.calls[1]["end_of_episode_pulse"] is True
-    assert agent.calls[1]["boundary_cause"] == "no_reward_timeout"
+    assert "boundary_cause" not in agent.calls[1]
 
 
 def test_carmack_runner_new_boundary_payload_life_loss_pulse_without_reset():
@@ -330,7 +330,7 @@ def test_carmack_runner_new_boundary_payload_life_loss_pulse_without_reset():
     assert agent.calls[1]["terminated"] is False
     assert agent.calls[1]["truncated"] is False
     assert agent.calls[1]["end_of_episode_pulse"] is True
-    assert agent.calls[1]["boundary_cause"] == "life_loss"
+    assert "boundary_cause" not in agent.calls[1]
 
 
 def test_carmack_runner_legacy_adapter_handles_unknown_third_arg_name():
@@ -496,14 +496,7 @@ def test_carmack_runner_golden_trace_actions_and_boundaries():
     assert summary["timeout_resets"] == 0
     assert summary["life_loss_resets"] == 0
 
-    assert [call["boundary"]["boundary_cause"] for call in agent.calls] == [
-        None,
-        "scripted_end",
-        None,
-        "life_loss",
-        "time_limit",
-        "life_loss",
-    ]
+    assert all("boundary_cause" not in call["boundary"] for call in agent.calls)
 
 
 def test_carmack_runner_delay_queue_policy_persist_vs_reset():

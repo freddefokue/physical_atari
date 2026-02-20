@@ -361,7 +361,6 @@ class CarmackCompatRunner:
                 "terminated": bool(boundary_terminated),
                 "truncated": bool(boundary_truncated),
                 "end_of_episode_pulse": bool(end_of_episode),
-                "boundary_cause": pulse_reason,
             }
 
             if end_of_episode:
