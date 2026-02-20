@@ -204,6 +204,7 @@ def test_carmack_runner_timeout_resets():
     summary, events, episodes = run_with_memory(env, agent, config)
 
     assert summary["timeout_resets"] == 2
+    assert summary["truncated_resets"] == 0
     assert summary["episodes_completed"] == 2
     assert len(episodes) == 2
     assert [row["pulse_reason"] for row in events] == [None, "no_reward_timeout", None, "no_reward_timeout", None]
@@ -326,3 +327,85 @@ def test_carmack_runner_legacy_adapter_handles_unknown_third_arg_name():
     assert [call["flag"] for call in agent.calls] == [0, 1, 0]
     assert events[1]["terminated"] is True
     assert events[1]["truncated"] is False
+
+
+def test_carmack_runner_boundary_precedence_table():
+    # timeout dominates all
+    timeout = CarmackCompatRunner._resolve_boundary_and_reset(
+        step_terminated=True,
+        step_truncated=True,
+        life_loss_pulse=True,
+        timeout_reached=True,
+        reset_on_life_loss=True,
+        termination_reason="custom_term",
+    )
+    assert timeout["boundary_cause"] == "no_reward_timeout"
+    assert timeout["reset_cause"] == "no_reward_timeout"
+    assert timeout["end_of_episode_pulse"] is True
+    assert timeout["should_reset"] is True
+    assert timeout["terminated"] is True
+    assert timeout["truncated"] is True
+
+    # terminated dominates truncated + life_loss
+    terminated = CarmackCompatRunner._resolve_boundary_and_reset(
+        step_terminated=True,
+        step_truncated=True,
+        life_loss_pulse=True,
+        timeout_reached=False,
+        reset_on_life_loss=True,
+        termination_reason="scripted_end",
+    )
+    assert terminated["boundary_cause"] == "scripted_end"
+    assert terminated["reset_cause"] == "terminated"
+    assert terminated["end_of_episode_pulse"] is True
+    assert terminated["should_reset"] is True
+    assert terminated["terminated"] is True
+    assert terminated["truncated"] is True
+
+    # truncated dominates life_loss
+    truncated = CarmackCompatRunner._resolve_boundary_and_reset(
+        step_terminated=False,
+        step_truncated=True,
+        life_loss_pulse=True,
+        timeout_reached=False,
+        reset_on_life_loss=True,
+        termination_reason="time_limit",
+    )
+    assert truncated["boundary_cause"] == "time_limit"
+    assert truncated["reset_cause"] == "truncated"
+    assert truncated["end_of_episode_pulse"] is True
+    assert truncated["should_reset"] is True
+    assert truncated["terminated"] is False
+    assert truncated["truncated"] is True
+
+    # life-loss pulse without reset
+    life_loss_no_reset = CarmackCompatRunner._resolve_boundary_and_reset(
+        step_terminated=False,
+        step_truncated=False,
+        life_loss_pulse=True,
+        timeout_reached=False,
+        reset_on_life_loss=False,
+        termination_reason=None,
+    )
+    assert life_loss_no_reset["boundary_cause"] == "life_loss"
+    assert life_loss_no_reset["reset_cause"] is None
+    assert life_loss_no_reset["end_of_episode_pulse"] is True
+    assert life_loss_no_reset["should_reset"] is False
+    assert life_loss_no_reset["terminated"] is False
+    assert life_loss_no_reset["truncated"] is False
+
+    # life-loss with reset
+    life_loss_reset = CarmackCompatRunner._resolve_boundary_and_reset(
+        step_terminated=False,
+        step_truncated=False,
+        life_loss_pulse=True,
+        timeout_reached=False,
+        reset_on_life_loss=True,
+        termination_reason=None,
+    )
+    assert life_loss_reset["boundary_cause"] == "life_loss"
+    assert life_loss_reset["reset_cause"] == "life_loss_reset"
+    assert life_loss_reset["end_of_episode_pulse"] is True
+    assert life_loss_reset["should_reset"] is True
+    assert life_loss_reset["terminated"] is False
+    assert life_loss_reset["truncated"] is True

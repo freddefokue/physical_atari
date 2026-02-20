@@ -134,6 +134,18 @@ class CarmackRunnerConfig:
 class CarmackCompatRunner:
     """Runner emulating the order/boundary behavior in agent_delay_target.py main loop."""
 
+    # Canonical precedence (highest to lowest):
+    # boundary_cause: no_reward_timeout > terminated > truncated > life_loss > None
+    # reset_cause:    no_reward_timeout > terminated > truncated > life_loss_reset > None
+    #
+    # `life_loss` may emit a pulse without reset. `life_loss_reset` only applies when
+    # reset_on_life_loss=1 and no higher-priority reset cause is present.
+    _BOUNDARY_CAUSE_TIMEOUT = "no_reward_timeout"
+    _BOUNDARY_CAUSE_TERMINATED = "terminated"
+    _BOUNDARY_CAUSE_TRUNCATED = "truncated"
+    _BOUNDARY_CAUSE_LIFE_LOSS = "life_loss"
+    _RESET_CAUSE_LIFE_LOSS = "life_loss_reset"
+
     def __init__(
         self,
         env: CarmackEnv,
@@ -162,6 +174,51 @@ class CarmackCompatRunner:
             raise ValueError(f"action_idx {action_idx} out of bounds [0, {self._num_actions - 1}]")
         return action_idx
 
+    @classmethod
+    def _resolve_boundary_and_reset(
+        cls,
+        *,
+        step_terminated: bool,
+        step_truncated: bool,
+        life_loss_pulse: bool,
+        timeout_reached: bool,
+        reset_on_life_loss: bool,
+        termination_reason: Optional[str],
+    ) -> Dict[str, Any]:
+        boundary_cause: Optional[str] = None
+        reset_cause: Optional[str] = None
+
+        if timeout_reached:
+            boundary_cause = cls._BOUNDARY_CAUSE_TIMEOUT
+            reset_cause = cls._BOUNDARY_CAUSE_TIMEOUT
+        elif step_terminated:
+            boundary_cause = str(termination_reason or cls._BOUNDARY_CAUSE_TERMINATED)
+            reset_cause = cls._BOUNDARY_CAUSE_TERMINATED
+        elif step_truncated:
+            boundary_cause = str(termination_reason or cls._BOUNDARY_CAUSE_TRUNCATED)
+            reset_cause = cls._BOUNDARY_CAUSE_TRUNCATED
+        elif life_loss_pulse:
+            boundary_cause = cls._BOUNDARY_CAUSE_LIFE_LOSS
+            if reset_on_life_loss:
+                reset_cause = cls._RESET_CAUSE_LIFE_LOSS
+
+        end_of_episode_pulse = bool(boundary_cause is not None)
+        should_reset = bool(reset_cause is not None)
+        boundary_terminated = bool(step_terminated)
+        boundary_truncated = bool(
+            step_truncated
+            or timeout_reached
+            or reset_cause == cls._RESET_CAUSE_LIFE_LOSS
+        )
+        return {
+            "boundary_cause": boundary_cause,
+            "reset_cause": reset_cause,
+            "end_of_episode_pulse": bool(end_of_episode_pulse),
+            "should_reset": bool(should_reset),
+            "terminated": bool(boundary_terminated),
+            "truncated": bool(boundary_truncated),
+        }
+
     def run(self) -> Dict[str, Any]:
         self.env.reset()
         previous_lives = int(self.env.lives())
@@ -179,6 +236,7 @@ class CarmackCompatRunner:
         pulse_count = 0
         reset_count = 0
         game_over_resets = 0
+        truncated_resets = 0
         timeout_resets = 0
         life_loss_resets = 0
         episode_scores = []
@@ -234,37 +292,32 @@ class CarmackCompatRunner:
 
             end_of_episode = 0
             pulse_reason: Optional[str] = None
+            reset_cause: Optional[str] = None
             reset_performed = False
             termination_reason = str(step.termination_reason) if step.termination_reason else None
 
+            life_loss_pulse = False
             if bool(self.config.lives_as_episodes) and int(step.lives) < previous_lives:
                 previous_lives = int(step.lives)
                 life_loss_pulses += 1
-                end_of_episode = 1
-                pulse_reason = "life_loss"
+                life_loss_pulse = True
 
             timeout_reached = frames_without_reward >= int(self.config.max_frames_without_reward)
             frames_without_reward_before_reset = int(frames_without_reward)
-            env_done = bool(step.terminated or step.truncated or timeout_reached)
-            reset_due_to_life_loss = bool(end_of_episode and self.config.reset_on_life_loss)
-            should_reset = bool(env_done or reset_due_to_life_loss)
-
-            if timeout_reached:
-                end_of_episode = 1
-                pulse_reason = "no_reward_timeout"
-            elif step.terminated:
-                end_of_episode = 1
-                pulse_reason = termination_reason or "terminated"
-            elif step.truncated:
-                end_of_episode = 1
-                pulse_reason = termination_reason or "truncated"
-
-            boundary_terminated = bool(step.terminated)
-            boundary_truncated = bool(
-                step.truncated
-                or timeout_reached
-                or (reset_due_to_life_loss and not step.terminated and not step.truncated)
+            boundary = self._resolve_boundary_and_reset(
+                step_terminated=bool(step.terminated),
+                step_truncated=bool(step.truncated),
+                life_loss_pulse=bool(life_loss_pulse),
+                timeout_reached=bool(timeout_reached),
+                reset_on_life_loss=bool(self.config.reset_on_life_loss),
+                termination_reason=termination_reason,
             )
+            end_of_episode = int(bool(boundary["end_of_episode_pulse"]))
+            pulse_reason = boundary["boundary_cause"]
+            reset_cause = boundary["reset_cause"]
+            should_reset = bool(boundary["should_reset"])
+            boundary_terminated = bool(boundary["terminated"])
+            boundary_truncated = bool(boundary["truncated"])
             boundary_payload = {
                 "terminated": bool(boundary_terminated),
                 "truncated": bool(boundary_truncated),
@@ -292,11 +345,13 @@ class CarmackCompatRunner:
             event_episode_length = int(episode_length)
 
             if should_reset:
-                if timeout_reached:
+                if reset_cause == self._BOUNDARY_CAUSE_TIMEOUT:
                     timeout_resets += 1
-                elif step.terminated:
+                elif reset_cause == self._BOUNDARY_CAUSE_TERMINATED:
                     game_over_resets += 1
-                elif reset_due_to_life_loss:
+                elif reset_cause == self._BOUNDARY_CAUSE_TRUNCATED:
+                    truncated_resets += 1
+                elif reset_cause == self._RESET_CAUSE_LIFE_LOSS:
                     life_loss_resets += 1
                 if self.episode_writer is not None:
                     self.episode_writer.write(
@@ -424,6 +479,8 @@ class CarmackCompatRunner:
                 "episode_length": int(event_episode_length),
                 "end_of_episode_pulse": bool(end_of_episode),
                 "pulse_reason": pulse_reason,
+                "boundary_cause": pulse_reason,
+                "reset_cause": reset_cause,
                 "reset_performed": bool(reset_performed),
                 "frames_without_reward": int(frames_without_reward_before_reset),
             }
@@ -441,6 +498,7 @@ class CarmackCompatRunner:
             "life_loss_pulses": int(life_loss_pulses),
             "reset_count": int(reset_count),
             "game_over_resets": int(game_over_resets),
+            "truncated_resets": int(truncated_resets),
             "timeout_resets": int(timeout_resets),
             "life_loss_resets": int(life_loss_resets),
         }
