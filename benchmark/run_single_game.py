@@ -269,6 +269,8 @@ def build_config_payload(
         payload["runner_config"].update(
             {
                 "runner_mode": "carmack_compat",
+                "action_cadence_mode": "agent_owned",
+                "frame_skip_enforced": 1,
                 "lives_as_episodes": bool(runner_config.lives_as_episodes),
                 "max_frames_without_reward": int(runner_config.max_frames_without_reward),
                 "reset_on_life_loss": bool(runner_config.reset_on_life_loss),

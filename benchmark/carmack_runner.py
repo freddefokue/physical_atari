@@ -236,6 +236,8 @@ class CarmackCompatRunner:
 
         life_loss_pulses = 0
         pulse_count = 0
+        boundary_cause_counts: Dict[str, int] = {}
+        reset_cause_counts: Dict[str, int] = {}
         reset_count = 0
         game_over_resets = 0
         truncated_resets = 0
@@ -291,7 +293,15 @@ class CarmackCompatRunner:
             delayed_actions.append(int(decided_action_idx))
             applied_action_idx = int(delayed_actions.popleft()) if self.config.delay_frames > 0 else int(decided_action_idx)
 
-            if prev_decided_action_idx is not None and int(decided_action_idx) != int(prev_decided_action_idx):
+            decided_action_changed = bool(
+                prev_decided_action_idx is not None and int(decided_action_idx) != int(prev_decided_action_idx)
+            )
+            applied_action_changed = bool(
+                prev_applied_action_idx is not None and int(applied_action_idx) != int(prev_applied_action_idx)
+            )
+            decided_applied_mismatch = bool(int(applied_action_idx) != int(decided_action_idx))
+
+            if decided_action_changed:
                 decided_action_change_count += 1
             if prev_applied_action_idx is None:
                 current_applied_hold_run_length = 1
@@ -303,7 +313,7 @@ class CarmackCompatRunner:
                 applied_hold_run_length_sum += int(current_applied_hold_run_length)
                 applied_hold_run_length_max = max(applied_hold_run_length_max, int(current_applied_hold_run_length))
                 current_applied_hold_run_length = 1
-            if int(applied_action_idx) != int(decided_action_idx):
+            if decided_applied_mismatch:
                 decided_applied_mismatch_count += 1
             prev_decided_action_idx = int(decided_action_idx)
             prev_applied_action_idx = int(applied_action_idx)
@@ -356,6 +366,8 @@ class CarmackCompatRunner:
 
             if end_of_episode:
                 pulse_count += 1
+                if pulse_reason is not None:
+                    boundary_cause_counts[str(pulse_reason)] = int(boundary_cause_counts.get(str(pulse_reason), 0) + 1)
                 if self.config.pulse_log_interval > 0 and (pulse_count % self.config.pulse_log_interval == 0):
                     print(
                         "[pulse] "
@@ -374,6 +386,8 @@ class CarmackCompatRunner:
             event_episode_length = int(episode_length)
 
             if should_reset:
+                if reset_cause is not None:
+                    reset_cause_counts[str(reset_cause)] = int(reset_cause_counts.get(str(reset_cause), 0) + 1)
                 if reset_cause == self._BOUNDARY_CAUSE_TIMEOUT:
                     timeout_resets += 1
                 elif reset_cause == self._BOUNDARY_CAUSE_TERMINATED:
@@ -496,6 +510,10 @@ class CarmackCompatRunner:
                 "applied_action_idx": int(applied_action_idx),
                 "decided_action_idx": int(decided_action_idx),
                 "next_policy_action_idx": int(next_action),
+                "decided_action_changed": bool(decided_action_changed),
+                "applied_action_changed": bool(applied_action_changed),
+                "decided_applied_mismatch": bool(decided_applied_mismatch),
+                "applied_action_hold_run_length": int(current_applied_hold_run_length),
                 "reward": float(reward),
                 # Agent-facing boundary semantics (includes synthetic truncation causes
                 # like timeout/life-loss-reset) for consistency with boundary_payload.
@@ -540,6 +558,9 @@ class CarmackCompatRunner:
             "last_episode_idx": int(episode_idx),
             "last_episode_return": float(episode_return),
             "last_episode_length": int(episode_length),
+            "pulse_count": int(pulse_count),
+            "boundary_cause_counts": dict(boundary_cause_counts),
+            "reset_cause_counts": dict(reset_cause_counts),
             "life_loss_pulses": int(life_loss_pulses),
             "reset_count": int(reset_count),
             "game_over_resets": int(game_over_resets),

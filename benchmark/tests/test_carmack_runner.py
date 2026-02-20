@@ -487,6 +487,9 @@ def test_carmack_runner_golden_trace_actions_and_boundaries():
 
     assert summary["frames"] == 6
     assert summary["episodes_completed"] == 2
+    assert summary["pulse_count"] == 4
+    assert summary["boundary_cause_counts"] == {"scripted_end": 1, "life_loss": 2, "time_limit": 1}
+    assert summary["reset_cause_counts"] == {"terminated": 1, "truncated": 1}
     assert summary["life_loss_pulses"] == 2
     assert summary["game_over_resets"] == 1
     assert summary["truncated_resets"] == 1
@@ -657,6 +660,10 @@ def test_carmack_runner_cadence_summary_stats():
 
     assert [row["decided_action_idx"] for row in events] == [0, 1, 1, 2, 2, 2]
     assert [row["applied_action_idx"] for row in events] == [0, 1, 1, 2, 2, 2]
+    assert [row["decided_action_changed"] for row in events] == [False, True, False, True, False, False]
+    assert [row["applied_action_changed"] for row in events] == [False, True, False, True, False, False]
+    assert [row["decided_applied_mismatch"] for row in events] == [False, False, False, False, False, False]
+    assert [row["applied_action_hold_run_length"] for row in events] == [1, 1, 2, 1, 2, 3]
     assert summary["decided_action_change_count"] == 2
     assert summary["applied_action_change_count"] == 2
     assert summary["decided_applied_mismatch_count"] == 0
@@ -666,3 +673,6 @@ def test_carmack_runner_cadence_summary_stats():
     assert summary["applied_action_hold_run_count"] == 3
     assert summary["applied_action_hold_run_mean"] == 2.0
     assert summary["applied_action_hold_run_max"] == 3
+    assert summary["pulse_count"] == 0
+    assert summary["boundary_cause_counts"] == {}
+    assert summary["reset_cause_counts"] == {}
