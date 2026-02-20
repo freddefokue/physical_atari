@@ -151,7 +151,7 @@ python3 harness_physical.py \
  --total_frames=1_000_000
 ```
 
-## Single-Game Streaming Benchmark Runner (v0)
+## Single-Game Streaming Benchmark Runner
 
 This repository also includes a minimal Atari benchmark harness that uses `ale_py` directly (no Gym wrappers), with:
 - streaming agent calls every frame
@@ -193,6 +193,46 @@ These tests verify:
 - combined delay + frame-skip behavior
 - logging completeness
 - queue reinitialization and episode counter behavior across resets
+
+### Carmack-Compatible Single-Run Profile
+
+The single-game runner also supports a Carmack-compatible profile:
+
+```bash
+python -m benchmark.run_single_game \
+  --runner-mode carmack_compat \
+  --frame-skip 1 \
+  --game breakout \
+  --agent delay_target \
+  --frames 200000 \
+  --delay 0 \
+  --sticky 0.0 \
+  --full-action-space 0 \
+  --life-loss-termination 0 \
+  --lives-as-episodes 1 \
+  --max-frames-without-reward 18000 \
+  --reset-on-life-loss 0 \
+  --logdir ./runs/single_carmack
+```
+
+Key contract points:
+- agent-owned cadence (`--frame-skip 1` enforced)
+- agent-facing boundary payload: `terminated`, `truncated`, `end_of_episode_pulse`
+- `boundary_cause` remains log-only (not agent-facing)
+- schema/profile tags on config/events/episodes:
+  - `single_run_profile="carmack_compat"`
+  - `single_run_schema_version="carmack_single_v1"`
+
+Validate a run directory with:
+
+```bash
+python -m benchmark.validate_contract \
+  --run-dir ./runs/single_carmack/<run_id> \
+  --sample-event-lines 10
+```
+
+The frozen contract spec is in:
+- `benchmark/contracts/carmack_single_v1_contract.md`
 
 ## Multi-Game Continual Benchmark Runner (v1)
 

@@ -498,7 +498,9 @@ def validate_contract(run_dir: Path, sample_event_lines: int = 0) -> Dict[str, A
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Validate benchmark contract tags for a run directory.")
+    parser = argparse.ArgumentParser(
+        description="Validate benchmark run schema for multi-game v1 or single-game Carmack profile."
+    )
     parser.add_argument("--run-dir", type=str, required=True, help="Run directory path.")
     parser.add_argument(
         "--sample-event-lines",
