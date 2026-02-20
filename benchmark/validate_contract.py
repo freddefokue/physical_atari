@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
+from benchmark.carmack_runner import CARMACK_SINGLE_RUN_PROFILE, CARMACK_SINGLE_RUN_SCHEMA_VERSION
 from benchmark.contract import BENCHMARK_CONTRACT_VERSION, compute_contract_hash
 
 
@@ -16,6 +17,10 @@ def _is_int(value: Any) -> bool:
 
 def _is_number(value: Any) -> bool:
     return (isinstance(value, int) and not isinstance(value, bool)) or isinstance(value, float)
+
+
+def _is_optional_str(value: Any) -> bool:
+    return value is None or isinstance(value, str)
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
@@ -35,7 +40,7 @@ def _iter_jsonl(path: Path):
             yield json.loads(line)
 
 
-def _check_config(config: Mapping[str, Any], errors: List[str]) -> None:
+def _check_multigame_config(config: Mapping[str, Any], errors: List[str]) -> None:
     if not isinstance(config.get("benchmark_contract_version"), str):
         errors.append("config.json missing string key: benchmark_contract_version")
     if not isinstance(config.get("benchmark_contract_hash"), str):
@@ -107,6 +112,44 @@ def _check_config(config: Mapping[str, Any], errors: List[str]) -> None:
             or any(not _is_number(weight) for weight in weights)
         ):
             errors.append("config.json scoring_defaults.final_score_weights must be [number, number]")
+
+
+def _check_carmack_single_run_config(config: Mapping[str, Any], errors: List[str]) -> None:
+    runner_mode = config.get("runner_mode")
+    if str(runner_mode) != CARMACK_SINGLE_RUN_PROFILE:
+        errors.append(f"config.json runner_mode must be '{CARMACK_SINGLE_RUN_PROFILE}'")
+    if config.get("single_run_profile") != CARMACK_SINGLE_RUN_PROFILE:
+        errors.append(f"config.json single_run_profile must be '{CARMACK_SINGLE_RUN_PROFILE}'")
+    if config.get("single_run_schema_version") != CARMACK_SINGLE_RUN_SCHEMA_VERSION:
+        errors.append(f"config.json single_run_schema_version must be '{CARMACK_SINGLE_RUN_SCHEMA_VERSION}'")
+
+    if not isinstance(config.get("game"), str):
+        errors.append("config.json game must be string")
+    if not _is_int(config.get("seed")):
+        errors.append("config.json seed must be int")
+    if not _is_int(config.get("frames")):
+        errors.append("config.json frames must be int")
+    if not _is_int(config.get("default_action_idx")):
+        errors.append("config.json default_action_idx must be int")
+
+    runner_cfg = config.get("runner_config")
+    if not isinstance(runner_cfg, dict):
+        errors.append("config.json runner_config must be object")
+        return
+    if runner_cfg.get("runner_mode") != CARMACK_SINGLE_RUN_PROFILE:
+        errors.append(f"config.json runner_config.runner_mode must be '{CARMACK_SINGLE_RUN_PROFILE}'")
+    if runner_cfg.get("single_run_schema_version") != CARMACK_SINGLE_RUN_SCHEMA_VERSION:
+        errors.append(
+            f"config.json runner_config.single_run_schema_version must be '{CARMACK_SINGLE_RUN_SCHEMA_VERSION}'"
+        )
+    if runner_cfg.get("action_cadence_mode") != "agent_owned":
+        errors.append("config.json runner_config.action_cadence_mode must be 'agent_owned'")
+    if not _is_int(runner_cfg.get("frame_skip_enforced")) or int(runner_cfg.get("frame_skip_enforced")) != 1:
+        errors.append("config.json runner_config.frame_skip_enforced must be int 1")
+    if not _is_int(runner_cfg.get("total_frames")):
+        errors.append("config.json runner_config.total_frames must be int")
+    if not _is_int(runner_cfg.get("delay_frames")):
+        errors.append("config.json runner_config.delay_frames must be int")
 
 
 def _check_score_tags(config: Mapping[str, Any], score: Mapping[str, Any], errors: List[str]) -> None:
@@ -312,6 +355,105 @@ def _check_segments_sample(segments_path: Path, sample_lines: int, errors: List[
     )
 
 
+def _check_carmack_events_sample(events_path: Path, sample_lines: int, errors: List[str]) -> None:
+    _check_jsonl_schema_sample(
+        events_path,
+        sample_lines,
+        errors,
+        record_name="events.jsonl",
+        required_keys=(
+            "single_run_profile",
+            "single_run_schema_version",
+            "frame_idx",
+            "applied_action_idx",
+            "decided_action_idx",
+            "next_policy_action_idx",
+            "decided_action_changed",
+            "applied_action_changed",
+            "decided_applied_mismatch",
+            "applied_action_hold_run_length",
+            "reward",
+            "terminated",
+            "truncated",
+            "env_terminated",
+            "env_truncated",
+            "lives",
+            "episode_idx",
+            "episode_return",
+            "episode_length",
+            "end_of_episode_pulse",
+            "pulse_reason",
+            "boundary_cause",
+            "reset_cause",
+            "reset_performed",
+            "frames_without_reward",
+        ),
+        field_validators={
+            "single_run_profile": lambda value: str(value) == CARMACK_SINGLE_RUN_PROFILE,
+            "single_run_schema_version": lambda value: str(value) == CARMACK_SINGLE_RUN_SCHEMA_VERSION,
+            "frame_idx": _is_int,
+            "applied_action_idx": _is_int,
+            "decided_action_idx": _is_int,
+            "next_policy_action_idx": _is_int,
+            "decided_action_changed": lambda value: isinstance(value, bool),
+            "applied_action_changed": lambda value: isinstance(value, bool),
+            "decided_applied_mismatch": lambda value: isinstance(value, bool),
+            "applied_action_hold_run_length": _is_int,
+            "reward": _is_number,
+            "terminated": lambda value: isinstance(value, bool),
+            "truncated": lambda value: isinstance(value, bool),
+            "env_terminated": lambda value: isinstance(value, bool),
+            "env_truncated": lambda value: isinstance(value, bool),
+            "lives": _is_int,
+            "episode_idx": _is_int,
+            "episode_return": _is_number,
+            "episode_length": _is_int,
+            "end_of_episode_pulse": lambda value: isinstance(value, bool),
+            "pulse_reason": _is_optional_str,
+            "boundary_cause": _is_optional_str,
+            "reset_cause": _is_optional_str,
+            "reset_performed": lambda value: isinstance(value, bool),
+            "frames_without_reward": _is_int,
+        },
+    )
+
+
+def _check_carmack_episodes_sample(episodes_path: Path, sample_lines: int, errors: List[str]) -> None:
+    _check_jsonl_schema_sample(
+        episodes_path,
+        sample_lines,
+        errors,
+        record_name="episodes.jsonl",
+        required_keys=(
+            "single_run_profile",
+            "single_run_schema_version",
+            "episode_idx",
+            "episode_return",
+            "length",
+            "termination_reason",
+            "end_frame_idx",
+            "ended_by_reset",
+        ),
+        field_validators={
+            "single_run_profile": lambda value: str(value) == CARMACK_SINGLE_RUN_PROFILE,
+            "single_run_schema_version": lambda value: str(value) == CARMACK_SINGLE_RUN_SCHEMA_VERSION,
+            "episode_idx": _is_int,
+            "episode_return": _is_number,
+            "length": _is_int,
+            "termination_reason": lambda value: isinstance(value, str),
+            "end_frame_idx": _is_int,
+            "ended_by_reset": lambda value: isinstance(value, bool),
+        },
+    )
+
+
+def _is_carmack_single_run_config(config: Mapping[str, Any]) -> bool:
+    return (
+        str(config.get("runner_mode")) == CARMACK_SINGLE_RUN_PROFILE
+        or str(config.get("single_run_profile")) == CARMACK_SINGLE_RUN_PROFILE
+    )
+
+
 def validate_contract(run_dir: Path, sample_event_lines: int = 0) -> Dict[str, Any]:
     run_dir = Path(run_dir)
     errors: List[str] = []
@@ -324,27 +466,33 @@ def validate_contract(run_dir: Path, sample_event_lines: int = 0) -> Dict[str, A
 
     if not config_path.exists():
         return {"ok": False, "errors": ["config.json not found"]}
-    if not score_path.exists():
-        return {"ok": False, "errors": ["score.json not found"]}
 
     try:
         config = _load_json(config_path)
     except Exception as exc:  # pragma: no cover - invalid JSON path
         return {"ok": False, "errors": [f"failed to load config.json: {exc}"]}
 
-    try:
-        score = _load_json(score_path)
-    except Exception as exc:  # pragma: no cover - invalid JSON path
-        return {"ok": False, "errors": [f"failed to load score.json: {exc}"]}
-
-    _check_config(config, errors)
-    _check_config_hash_integrity(config, errors)
-    _check_score_schema(score, errors)
-    _check_score_tags(config, score, errors)
     sample_lines = int(sample_event_lines)
-    _check_events_sample(events_path, sample_lines, errors)
-    _check_episodes_sample(episodes_path, sample_lines, errors)
-    _check_segments_sample(segments_path, sample_lines, errors)
+
+    if _is_carmack_single_run_config(config):
+        _check_carmack_single_run_config(config, errors)
+        _check_carmack_events_sample(events_path, sample_lines, errors)
+        _check_carmack_episodes_sample(episodes_path, sample_lines, errors)
+    else:
+        if not score_path.exists():
+            return {"ok": False, "errors": ["score.json not found"]}
+        try:
+            score = _load_json(score_path)
+        except Exception as exc:  # pragma: no cover - invalid JSON path
+            return {"ok": False, "errors": [f"failed to load score.json: {exc}"]}
+
+        _check_multigame_config(config, errors)
+        _check_config_hash_integrity(config, errors)
+        _check_score_schema(score, errors)
+        _check_score_tags(config, score, errors)
+        _check_events_sample(events_path, sample_lines, errors)
+        _check_episodes_sample(episodes_path, sample_lines, errors)
+        _check_segments_sample(segments_path, sample_lines, errors)
 
     return {"ok": len(errors) == 0, "errors": errors}
 

@@ -11,7 +11,12 @@ import numpy as np
 
 from benchmark.agents import RandomAgent, RepeatActionAgent
 from benchmark.ale_env import ALEAtariEnv, ALEEnvConfig
-from benchmark.carmack_runner import CarmackCompatRunner, CarmackRunnerConfig
+from benchmark.carmack_runner import (
+    CARMACK_SINGLE_RUN_PROFILE,
+    CARMACK_SINGLE_RUN_SCHEMA_VERSION,
+    CarmackCompatRunner,
+    CarmackRunnerConfig,
+)
 from benchmark.logging_utils import JsonlWriter, dump_json, make_run_dir
 from benchmark.runner import BenchmarkRunner, RunnerConfig
 
@@ -260,11 +265,14 @@ def build_config_payload(
     if isinstance(runner_config, RunnerConfig):
         payload["runner_config"]["frame_skip"] = int(runner_config.frame_skip)
     if isinstance(runner_config, CarmackRunnerConfig):
+        payload["single_run_profile"] = CARMACK_SINGLE_RUN_PROFILE
+        payload["single_run_schema_version"] = CARMACK_SINGLE_RUN_SCHEMA_VERSION
         payload["runner_config"].update(
             {
-                "runner_mode": "carmack_compat",
+                "runner_mode": CARMACK_SINGLE_RUN_PROFILE,
                 "action_cadence_mode": "agent_owned",
                 "frame_skip_enforced": 1,
+                "single_run_schema_version": CARMACK_SINGLE_RUN_SCHEMA_VERSION,
                 "lives_as_episodes": bool(runner_config.lives_as_episodes),
                 "max_frames_without_reward": int(runner_config.max_frames_without_reward),
                 "reset_on_life_loss": bool(runner_config.reset_on_life_loss),

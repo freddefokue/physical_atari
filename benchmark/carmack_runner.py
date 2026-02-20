@@ -12,6 +12,9 @@ import numpy as np
 
 from benchmark.runner import EnvStep
 
+CARMACK_SINGLE_RUN_PROFILE = "carmack_compat"
+CARMACK_SINGLE_RUN_SCHEMA_VERSION = "carmack_single_v1"
+
 
 class CarmackEnv(Protocol):
     """Environment interface needed by Carmack-compatible single-game runner."""
@@ -398,6 +401,8 @@ class CarmackCompatRunner:
                 if self.episode_writer is not None:
                     self.episode_writer.write(
                         {
+                            "single_run_profile": CARMACK_SINGLE_RUN_PROFILE,
+                            "single_run_schema_version": CARMACK_SINGLE_RUN_SCHEMA_VERSION,
                             "episode_idx": int(episode_idx),
                             "episode_return": float(episode_return),
                             "length": int(episode_length),
@@ -505,6 +510,8 @@ class CarmackCompatRunner:
                 print(msg, flush=True)
 
             event = {
+                "single_run_profile": CARMACK_SINGLE_RUN_PROFILE,
+                "single_run_schema_version": CARMACK_SINGLE_RUN_SCHEMA_VERSION,
                 "frame_idx": int(frame_idx),
                 "applied_action_idx": int(applied_action_idx),
                 "decided_action_idx": int(decided_action_idx),

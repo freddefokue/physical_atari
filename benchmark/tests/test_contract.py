@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from benchmark.carmack_runner import CARMACK_SINGLE_RUN_PROFILE, CARMACK_SINGLE_RUN_SCHEMA_VERSION
 from benchmark.contract import BENCHMARK_CONTRACT_VERSION, compute_contract_hash, resolve_scoring_defaults
 from benchmark.validate_contract import validate_contract
 
@@ -174,3 +175,103 @@ def test_validate_contract_fails_on_missing_score_keys(tmp_path):
     result = validate_contract(run_dir, sample_event_lines=0)
     assert result["ok"] is False
     assert any("score.json missing key: final_score" in error for error in result["errors"])
+
+
+def _make_carmack_config() -> dict:
+    return {
+        "runner_mode": CARMACK_SINGLE_RUN_PROFILE,
+        "single_run_profile": CARMACK_SINGLE_RUN_PROFILE,
+        "single_run_schema_version": CARMACK_SINGLE_RUN_SCHEMA_VERSION,
+        "game": "breakout",
+        "seed": 0,
+        "frames": 100,
+        "default_action_idx": 0,
+        "runner_config": {
+            "runner_mode": CARMACK_SINGLE_RUN_PROFILE,
+            "single_run_schema_version": CARMACK_SINGLE_RUN_SCHEMA_VERSION,
+            "action_cadence_mode": "agent_owned",
+            "frame_skip_enforced": 1,
+            "total_frames": 100,
+            "delay_frames": 0,
+        },
+    }
+
+
+def _make_carmack_event_row() -> dict:
+    return {
+        "single_run_profile": CARMACK_SINGLE_RUN_PROFILE,
+        "single_run_schema_version": CARMACK_SINGLE_RUN_SCHEMA_VERSION,
+        "frame_idx": 0,
+        "applied_action_idx": 0,
+        "decided_action_idx": 0,
+        "next_policy_action_idx": 1,
+        "decided_action_changed": False,
+        "applied_action_changed": False,
+        "decided_applied_mismatch": False,
+        "applied_action_hold_run_length": 1,
+        "reward": 0.0,
+        "terminated": False,
+        "truncated": False,
+        "env_terminated": False,
+        "env_truncated": False,
+        "lives": 3,
+        "episode_idx": 0,
+        "episode_return": 0.0,
+        "episode_length": 1,
+        "end_of_episode_pulse": False,
+        "pulse_reason": None,
+        "boundary_cause": None,
+        "reset_cause": None,
+        "reset_performed": False,
+        "frames_without_reward": 1,
+    }
+
+
+def _make_carmack_episode_row() -> dict:
+    return {
+        "single_run_profile": CARMACK_SINGLE_RUN_PROFILE,
+        "single_run_schema_version": CARMACK_SINGLE_RUN_SCHEMA_VERSION,
+        "episode_idx": 0,
+        "episode_return": 1.0,
+        "length": 10,
+        "termination_reason": "terminated",
+        "end_frame_idx": 9,
+        "ended_by_reset": True,
+    }
+
+
+def test_validate_contract_passes_for_carmack_single_run_schema(tmp_path):
+    run_dir = tmp_path / "run_carmack_ok"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    with (run_dir / "config.json").open("w", encoding="utf-8") as fh:
+        json.dump(_make_carmack_config(), fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    with (run_dir / "events.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_make_carmack_event_row(), sort_keys=True) + "\n")
+    with (run_dir / "episodes.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_make_carmack_episode_row(), sort_keys=True) + "\n")
+
+    result = validate_contract(run_dir, sample_event_lines=1)
+    assert result["ok"] is True, result["errors"]
+    assert result["errors"] == []
+
+
+def test_validate_contract_fails_for_carmack_bad_event_type(tmp_path):
+    run_dir = tmp_path / "run_carmack_bad"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    bad_event = _make_carmack_event_row()
+    bad_event["decided_action_changed"] = "no"
+
+    with (run_dir / "config.json").open("w", encoding="utf-8") as fh:
+        json.dump(_make_carmack_config(), fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    with (run_dir / "events.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(bad_event, sort_keys=True) + "\n")
+    with (run_dir / "episodes.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_make_carmack_episode_row(), sort_keys=True) + "\n")
+
+    result = validate_contract(run_dir, sample_event_lines=1)
+    assert result["ok"] is False
+    assert any("events.jsonl row has invalid type/value for 'decided_action_changed'" in err for err in result["errors"])

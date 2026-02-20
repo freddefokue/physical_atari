@@ -5,7 +5,12 @@ import re
 
 import numpy as np
 
-from benchmark.carmack_runner import CarmackCompatRunner, CarmackRunnerConfig
+from benchmark.carmack_runner import (
+    CARMACK_SINGLE_RUN_PROFILE,
+    CARMACK_SINGLE_RUN_SCHEMA_VERSION,
+    CarmackCompatRunner,
+    CarmackRunnerConfig,
+)
 from benchmark.runner import EnvStep
 
 
@@ -468,6 +473,8 @@ def test_carmack_runner_golden_trace_actions_and_boundaries():
 
     assert episodes == [
         {
+            "single_run_profile": CARMACK_SINGLE_RUN_PROFILE,
+            "single_run_schema_version": CARMACK_SINGLE_RUN_SCHEMA_VERSION,
             "episode_idx": 0,
             "episode_return": 2.0,
             "length": 2,
@@ -476,6 +483,8 @@ def test_carmack_runner_golden_trace_actions_and_boundaries():
             "ended_by_reset": True,
         },
         {
+            "single_run_profile": CARMACK_SINGLE_RUN_PROFILE,
+            "single_run_schema_version": CARMACK_SINGLE_RUN_SCHEMA_VERSION,
             "episode_idx": 1,
             "episode_return": 0.0,
             "length": 3,
@@ -669,3 +678,63 @@ def test_carmack_runner_cadence_summary_stats():
     assert summary["pulse_count"] == 0
     assert summary["boundary_cause_counts"] == {}
     assert summary["reset_cause_counts"] == {}
+
+
+def test_carmack_runner_emits_required_schema_fields_and_types():
+    env = ScriptedEnv(
+        action_set=list(range(3)),
+        rewards=[1.0, 0.0],
+        lives_seq=[3, 3],
+        terminated_at={0},
+        truncated_at=set(),
+    )
+    agent = RecordingBoundaryFrameAgent(action_idx=1)
+    config = CarmackRunnerConfig(
+        total_frames=2,
+        delay_frames=0,
+        include_timestamps=False,
+        max_frames_without_reward=999,
+        progress_log_interval_frames=0,
+        pulse_log_interval=0,
+        reset_log_interval=0,
+    )
+    _, events, episodes = run_with_memory(env, agent, config)
+
+    assert len(events) == 2
+    event = events[0]
+    assert event["single_run_profile"] == CARMACK_SINGLE_RUN_PROFILE
+    assert event["single_run_schema_version"] == CARMACK_SINGLE_RUN_SCHEMA_VERSION
+    assert isinstance(event["frame_idx"], int)
+    assert isinstance(event["applied_action_idx"], int)
+    assert isinstance(event["decided_action_idx"], int)
+    assert isinstance(event["next_policy_action_idx"], int)
+    assert isinstance(event["decided_action_changed"], bool)
+    assert isinstance(event["applied_action_changed"], bool)
+    assert isinstance(event["decided_applied_mismatch"], bool)
+    assert isinstance(event["applied_action_hold_run_length"], int)
+    assert isinstance(event["reward"], float)
+    assert isinstance(event["terminated"], bool)
+    assert isinstance(event["truncated"], bool)
+    assert isinstance(event["env_terminated"], bool)
+    assert isinstance(event["env_truncated"], bool)
+    assert isinstance(event["lives"], int)
+    assert isinstance(event["episode_idx"], int)
+    assert isinstance(event["episode_return"], float)
+    assert isinstance(event["episode_length"], int)
+    assert isinstance(event["end_of_episode_pulse"], bool)
+    assert "pulse_reason" in event
+    assert "boundary_cause" in event
+    assert "reset_cause" in event
+    assert isinstance(event["reset_performed"], bool)
+    assert isinstance(event["frames_without_reward"], int)
+
+    assert len(episodes) == 1
+    episode = episodes[0]
+    assert episode["single_run_profile"] == CARMACK_SINGLE_RUN_PROFILE
+    assert episode["single_run_schema_version"] == CARMACK_SINGLE_RUN_SCHEMA_VERSION
+    assert isinstance(episode["episode_idx"], int)
+    assert isinstance(episode["episode_return"], float)
+    assert isinstance(episode["length"], int)
+    assert isinstance(episode["termination_reason"], str)
+    assert isinstance(episode["end_frame_idx"], int)
+    assert isinstance(episode["ended_by_reset"], bool)

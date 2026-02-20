@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from benchmark.carmack_runner import CarmackRunnerConfig
+from benchmark.carmack_runner import CARMACK_SINGLE_RUN_PROFILE, CARMACK_SINGLE_RUN_SCHEMA_VERSION, CarmackRunnerConfig
 from benchmark.run_single_game import _FrameFromStepAdapter
 from benchmark.run_single_game import build_config_payload
 from benchmark.run_single_game import validate_args
@@ -56,8 +56,11 @@ def test_build_config_payload_carmack_marks_agent_owned_cadence():
         runner_config=CarmackRunnerConfig(total_frames=100, include_timestamps=False),
         run_dir=Path("runs/test"),
     )
+    assert payload["single_run_profile"] == CARMACK_SINGLE_RUN_PROFILE
+    assert payload["single_run_schema_version"] == CARMACK_SINGLE_RUN_SCHEMA_VERSION
     rc = payload["runner_config"]
-    assert rc["runner_mode"] == "carmack_compat"
+    assert rc["runner_mode"] == CARMACK_SINGLE_RUN_PROFILE
+    assert rc["single_run_schema_version"] == CARMACK_SINGLE_RUN_SCHEMA_VERSION
     assert rc["action_cadence_mode"] == "agent_owned"
     assert rc["frame_skip_enforced"] == 1
 
