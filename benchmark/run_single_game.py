@@ -161,7 +161,6 @@ def validate_args(args: argparse.Namespace) -> None:
 class _FrameFromStepAdapter:
     def __init__(self, step_agent) -> None:
         self._step_agent = step_agent
-        self._frame_idx = 0
 
     def frame(self, obs_rgb, reward, boundary) -> int:
         if isinstance(boundary, Mapping):
@@ -180,12 +179,10 @@ class _FrameFromStepAdapter:
             terminated=bool(terminated),
             truncated=bool(truncated),
             info={
-                "frame_idx": int(self._frame_idx),
                 "end_of_episode_pulse": bool(end_of_episode_pulse),
                 "boundary_cause": boundary_cause,
             },
         )
-        self._frame_idx += 1
         return int(action)
 
 

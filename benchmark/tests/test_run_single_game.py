@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from benchmark.carmack_runner import CarmackRunnerConfig
+from benchmark.run_single_game import _FrameFromStepAdapter
 from benchmark.run_single_game import build_config_payload
 from benchmark.run_single_game import validate_args
 
@@ -59,3 +60,44 @@ def test_build_config_payload_carmack_marks_agent_owned_cadence():
     assert rc["runner_mode"] == "carmack_compat"
     assert rc["action_cadence_mode"] == "agent_owned"
     assert rc["frame_skip_enforced"] == 1
+
+
+def test_frame_from_step_adapter_does_not_leak_frame_idx():
+    class _StepAgent:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def step(self, obs_rgb, reward, terminated, truncated, info):
+            del obs_rgb
+            self.calls.append(
+                {
+                    "reward": float(reward),
+                    "terminated": bool(terminated),
+                    "truncated": bool(truncated),
+                    "info": dict(info),
+                }
+            )
+            return 1
+
+    agent = _StepAgent()
+    adapter = _FrameFromStepAdapter(agent)
+    adapter.frame(
+        obs_rgb=None,
+        reward=1.0,
+        boundary={
+            "terminated": False,
+            "truncated": True,
+            "end_of_episode_pulse": True,
+            "boundary_cause": "no_reward_timeout",
+        },
+    )
+
+    assert len(agent.calls) == 1
+    call = agent.calls[0]
+    assert call["terminated"] is False
+    assert call["truncated"] is True
+    assert call["info"] == {
+        "end_of_episode_pulse": True,
+        "boundary_cause": "no_reward_timeout",
+    }
+    assert "frame_idx" not in call["info"]
