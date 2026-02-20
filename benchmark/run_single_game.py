@@ -187,6 +187,17 @@ class _FrameFromStepAdapter:
         )
         return int(action)
 
+    def get_stats(self) -> Mapping[str, object]:
+        stats_fn = getattr(self._step_agent, "get_stats", None)
+        if callable(stats_fn):
+            try:
+                payload = stats_fn()
+            except Exception:  # pragma: no cover - defensive
+                return {}
+            if isinstance(payload, Mapping):
+                return payload
+        return {}
+
 
 def build_agent(args: argparse.Namespace, num_actions: int, total_frames: int):
     if args.agent == "random":

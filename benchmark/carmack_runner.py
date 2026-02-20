@@ -60,6 +60,34 @@ class _LegacyEndOfEpisodeFrameAdapter:
         return getattr(self._agent, name)
 
 
+class _LegacyObsRewardFrameAdapter:
+    """Backward-compatible adapter for old agents expecting frame(obs_rgb, reward)."""
+
+    def __init__(self, agent: Any) -> None:
+        self._agent = agent
+
+    def frame(self, obs_rgb, reward, boundary) -> int:
+        del boundary
+        return int(self._agent.frame(obs_rgb, float(reward)))
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._agent, name)
+
+
+class _LegacyObsOnlyFrameAdapter:
+    """Backward-compatible adapter for old agents expecting frame(obs_rgb)."""
+
+    def __init__(self, agent: Any) -> None:
+        self._agent = agent
+
+    def frame(self, obs_rgb, reward, boundary) -> int:
+        del reward, boundary
+        return int(self._agent.frame(obs_rgb))
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._agent, name)
+
+
 def _adapt_carmack_agent(agent: Any) -> Any:
     """
     Wrap old frame(obs, reward, end_of_episode) agents for compatibility.
@@ -78,6 +106,10 @@ def _adapt_carmack_agent(agent: Any) -> Any:
 
     params = list(sig.parameters.values())
     if len(params) < 3:
+        if len(params) == 2:
+            return _LegacyObsRewardFrameAdapter(agent)
+        if len(params) == 1:
+            return _LegacyObsOnlyFrameAdapter(agent)
         return agent
     third = params[2]
     if third.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):

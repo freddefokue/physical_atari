@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 import re
 
 import numpy as np
+import pytest
 
 from benchmark.carmack_runner import (
     CARMACK_SINGLE_RUN_PROFILE,
@@ -11,6 +13,7 @@ from benchmark.carmack_runner import (
     CarmackCompatRunner,
     CarmackRunnerConfig,
 )
+from benchmark.run_single_game import _FrameFromStepAdapter
 from benchmark.runner import EnvStep
 
 
@@ -92,6 +95,52 @@ class RecordingLegacyUnknownNameAgent:
         return int(self.action_idx)
 
 
+class RecordingTwoArgFrameAgent:
+    """Legacy/malformed signature: frame(obs, reward)."""
+
+    def __init__(self, action_idx: int = 1) -> None:
+        self.action_idx = int(action_idx)
+        self.calls = []
+
+    def frame(self, obs_rgb, reward) -> int:
+        marker = int(obs_rgb[0, 0, 0])
+        self.calls.append({"obs_marker": marker, "reward": float(reward)})
+        return int(self.action_idx)
+
+
+class RecordingObsOnlyFrameAgent:
+    """Legacy/malformed signature: frame(obs)."""
+
+    def __init__(self, action_idx: int = 1) -> None:
+        self.action_idx = int(action_idx)
+        self.calls = []
+
+    def frame(self, obs_rgb) -> int:
+        marker = int(obs_rgb[0, 0, 0])
+        self.calls.append({"obs_marker": marker})
+        return int(self.action_idx)
+
+
+class RecordingStepAgentWithMalformedStats:
+    def __init__(self, action_idx: int = 1) -> None:
+        self.action_idx = int(action_idx)
+        self.calls = 0
+
+    def step(self, obs_rgb, reward, terminated, truncated, info) -> int:
+        del obs_rgb, reward, terminated, truncated, info
+        self.calls += 1
+        return int(self.action_idx)
+
+    def get_stats(self):
+        return {
+            "avg_error_ema": object(),
+            "max_error_ema": "bad",
+            "train_loss_ema": None,
+            "target_ema": float("nan"),
+            "train_steps_estimate": "not_an_int",
+        }
+
+
 class RecordingBoundarySequenceAgent:
     """Deterministic agent for golden-trace compatibility checks."""
 
@@ -149,10 +198,19 @@ class ScriptedEnv:
         return EnvStep(obs_rgb=obs, reward=reward, terminated=terminated, truncated=truncated, lives=self._lives, termination_reason=reason)
 
 
-def run_with_memory(env, agent, config: CarmackRunnerConfig):
+def run_with_memory(env, agent, config: CarmackRunnerConfig, *, time_fn=None):
     events = MemoryWriter()
     episodes = MemoryWriter()
-    summary = CarmackCompatRunner(env=env, agent=agent, config=config, event_writer=events, episode_writer=episodes).run()
+    runner_kwargs = {
+        "env": env,
+        "agent": agent,
+        "config": config,
+        "event_writer": events,
+        "episode_writer": episodes,
+    }
+    if time_fn is not None:
+        runner_kwargs["time_fn"] = time_fn
+    summary = CarmackCompatRunner(**runner_kwargs).run()
     return summary, events.rows, episodes.rows
 
 
@@ -390,6 +448,66 @@ def test_carmack_runner_legacy_adapter_handles_unknown_third_arg_name():
     assert [call["flag"] for call in agent.calls] == [0, 1, 0]
     assert events[1]["terminated"] is True
     assert events[1]["truncated"] is False
+
+
+def test_carmack_runner_legacy_adapter_handles_two_arg_frame_signature():
+    env = ScriptedEnv(
+        action_set=list(range(4)),
+        rewards=[0.0, 0.0, 0.0],
+        lives_seq=[3, 3, 3],
+        terminated_at={1},
+        truncated_at=set(),
+    )
+    agent = RecordingTwoArgFrameAgent(action_idx=1)
+    config = CarmackRunnerConfig(total_frames=3, delay_frames=0, include_timestamps=False, max_frames_without_reward=999)
+    summary, events, _ = run_with_memory(env, agent, config)
+
+    assert summary["frames"] == 3
+    assert len(agent.calls) == 3
+    assert events[1]["terminated"] is True
+
+
+def test_carmack_runner_legacy_adapter_handles_obs_only_frame_signature():
+    env = ScriptedEnv(
+        action_set=list(range(4)),
+        rewards=[0.0, 0.0],
+        lives_seq=[3, 3],
+        terminated_at={1},
+        truncated_at=set(),
+    )
+    agent = RecordingObsOnlyFrameAgent(action_idx=1)
+    config = CarmackRunnerConfig(total_frames=2, delay_frames=0, include_timestamps=False, max_frames_without_reward=999)
+    summary, _, _ = run_with_memory(env, agent, config)
+
+    assert summary["frames"] == 2
+    assert len(agent.calls) == 2
+
+
+def test_carmack_runner_step_adapter_malformed_stats_do_not_crash_logging(capsys):
+    env = ScriptedEnv(
+        action_set=list(range(4)),
+        rewards=[0.0, 0.0, 0.0],
+        lives_seq=[3, 3, 3],
+        terminated_at={2},
+        truncated_at=set(),
+    )
+    step_agent = RecordingStepAgentWithMalformedStats(action_idx=1)
+    agent = _FrameFromStepAdapter(step_agent)
+    config = CarmackRunnerConfig(
+        total_frames=3,
+        delay_frames=0,
+        include_timestamps=False,
+        progress_log_interval_frames=1,
+        pulse_log_interval=0,
+        reset_log_interval=1,
+        max_frames_without_reward=999,
+    )
+    summary, _, _ = run_with_memory(env, agent, config)
+    out = capsys.readouterr().out
+
+    assert summary["frames"] == 3
+    assert summary["episodes_completed"] == 1
+    assert "[train]" in out
 
 
 def test_carmack_runner_golden_trace_actions_and_boundaries():
@@ -774,3 +892,96 @@ def test_carmack_runner_emits_required_schema_fields_and_types():
     assert isinstance(episode["termination_reason"], str)
     assert isinstance(episode["end_frame_idx"], int)
     assert isinstance(episode["ended_by_reset"], bool)
+
+
+class _IncrementClock:
+    def __init__(self, start: float, step: float) -> None:
+        self._t = float(start)
+        self._step = float(step)
+
+    def __call__(self) -> float:
+        current = float(self._t)
+        self._t += self._step
+        return current
+
+
+def _run_determinism_trace(time_fn):
+    env = ScriptedEnv(
+        action_set=list(range(4)),
+        rewards=[0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+        lives_seq=[3, 3, 3, 2, 2, 2],
+        terminated_at={1},
+        truncated_at={4},
+    )
+    agent = RecordingBoundarySequenceAgent(action_sequence=[1, 2, 3, 1, 2, 3])
+    config = CarmackRunnerConfig(
+        total_frames=6,
+        delay_frames=1,
+        include_timestamps=True,
+        lives_as_episodes=True,
+        reset_on_life_loss=False,
+        max_frames_without_reward=99,
+        progress_log_interval_frames=0,
+        pulse_log_interval=0,
+        reset_log_interval=0,
+    )
+    return run_with_memory(env, agent, config, time_fn=time_fn)
+
+
+def _normalize_events(rows):
+    normalized = []
+    for row in rows:
+        payload = dict(row)
+        payload.pop("wallclock_time", None)
+        normalized.append(payload)
+    return normalized
+
+
+_SUMMARY_INT_KEYS = (
+    "frames",
+    "episodes_completed",
+    "last_episode_idx",
+    "last_episode_length",
+    "pulse_count",
+    "life_loss_pulses",
+    "reset_count",
+    "game_over_resets",
+    "truncated_resets",
+    "timeout_resets",
+    "life_loss_resets",
+    "decided_action_change_count",
+    "applied_action_change_count",
+    "decided_applied_mismatch_count",
+    "applied_action_hold_run_count",
+    "applied_action_hold_run_max",
+)
+
+
+@pytest.mark.skipif(
+    os.getenv("BENCHMARK_STRICT_RUNTIME_TESTS", "0") != "1",
+    reason="strict determinism tier is same-runtime only; enable with BENCHMARK_STRICT_RUNTIME_TESTS=1",
+)
+def test_carmack_runner_determinism_strict_tier_same_runtime_only():
+    summary_a, events_a, _ = _run_determinism_trace(time_fn=_IncrementClock(start=100.0, step=0.01))
+    summary_b, events_b, _ = _run_determinism_trace(time_fn=_IncrementClock(start=100.0, step=0.01))
+
+    assert _normalize_events(events_a) == _normalize_events(events_b)
+    assert [row.get("wallclock_time") for row in events_a] == [row.get("wallclock_time") for row in events_b]
+    for key in _SUMMARY_INT_KEYS:
+        assert summary_a[key] == summary_b[key]
+
+
+def test_carmack_runner_determinism_portable_tier_bounded_drift():
+    summary_a, events_a, _ = _run_determinism_trace(time_fn=_IncrementClock(start=100.0, step=0.01))
+    summary_b, events_b, _ = _run_determinism_trace(time_fn=_IncrementClock(start=900.0, step=0.015))
+
+    # Portable tier: semantics must match after normalization.
+    assert _normalize_events(events_a) == _normalize_events(events_b)
+    for key in _SUMMARY_INT_KEYS:
+        assert summary_a[key] == summary_b[key]
+
+    # Bounded drift check: wallclock pacing can differ but should remain bounded.
+    dts_a = [float(events_a[i]["wallclock_time"] - events_a[i - 1]["wallclock_time"]) for i in range(1, len(events_a))]
+    dts_b = [float(events_b[i]["wallclock_time"] - events_b[i - 1]["wallclock_time"]) for i in range(1, len(events_b))]
+    assert len(dts_a) == len(dts_b)
+    assert max(abs(a - b) for a, b in zip(dts_a, dts_b)) <= 0.01

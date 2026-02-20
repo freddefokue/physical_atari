@@ -199,3 +199,93 @@ def test_score_run_marks_unassigned_episodes(tmp_path):
     assert summary["per_game_scores"]["a"] == pytest.approx(1.0)
     assert summary["notes"]["unassigned_episode_count"] == 1
     assert len(summary["notes"]["unassigned_episode_examples"]) == 1
+
+
+def test_score_run_excludes_time_limit_episode_via_segments_fallback(tmp_path):
+    run_dir = tmp_path / "run_timeout_time_limit"
+    config = {
+        "games": ["a"],
+        "total_scheduled_frames": 6,
+        "schedule": [{"visit_idx": 0, "cycle_idx": 0, "game_id": "a", "visit_frames": 6}],
+    }
+    segments = [
+        {"game_id": "a", "segment_id": 0, "start_global_frame_idx": 0, "end_global_frame_idx": 2, "return": 1.0, "ended_by": "terminated"},
+        {"game_id": "a", "segment_id": 1, "start_global_frame_idx": 3, "end_global_frame_idx": 5, "return": 999.0, "ended_by": "time_limit"},
+    ]
+    # time_limit in episodes triggers truncated detection and fallback to segments_terminated.
+    episodes = [
+        {
+            "game_id": "a",
+            "episode_id": 0,
+            "start_global_frame_idx": 0,
+            "end_global_frame_idx": 2,
+            "length": 3,
+            "return": 1.0,
+            "ended_by": "terminated",
+        },
+        {
+            "game_id": "a",
+            "episode_id": 1,
+            "start_global_frame_idx": 3,
+            "end_global_frame_idx": 5,
+            "length": 3,
+            "return": 999.0,
+            "termination_reason": "time_limit",
+        },
+    ]
+
+    _write_json(run_dir / "config.json", config)
+    _write_jsonl(run_dir / "segments.jsonl", segments)
+    _write_jsonl(run_dir / "episodes.jsonl", episodes)
+    _write_jsonl(run_dir / "events.jsonl", [{"global_frame_idx": i, "reward": 0.0} for i in range(6)])
+
+    summary = score_run(run_dir, window_episodes=10, bottom_k_frac=1.0, revisit_episodes=1)
+
+    assert summary["per_game_scores"]["a"] == pytest.approx(1.0)
+    assert "segments_terminated_fallback" in str(summary["notes"]["episode_source"])
+    assert summary["notes"]["episodes_jsonl_truncated_entries_detected"] is True
+
+
+def test_score_run_excludes_no_reward_timeout_episode_without_fallback(tmp_path):
+    run_dir = tmp_path / "run_timeout_no_reward_timeout"
+    config = {
+        "games": ["a"],
+        "total_scheduled_frames": 6,
+        "schedule": [{"visit_idx": 0, "cycle_idx": 0, "game_id": "a", "visit_frames": 6}],
+    }
+    segments = [
+        {"game_id": "a", "segment_id": 0, "start_global_frame_idx": 0, "end_global_frame_idx": 2, "return": 1.0, "ended_by": "terminated"},
+        {"game_id": "a", "segment_id": 1, "start_global_frame_idx": 3, "end_global_frame_idx": 5, "return": 999.0, "ended_by": "terminated"},
+    ]
+    # no_reward_timeout is not normalized to terminated, so it is excluded by terminated-only policy.
+    episodes = [
+        {
+            "game_id": "a",
+            "episode_id": 0,
+            "start_global_frame_idx": 0,
+            "end_global_frame_idx": 2,
+            "length": 3,
+            "return": 1.0,
+            "ended_by": "terminated",
+        },
+        {
+            "game_id": "a",
+            "episode_id": 1,
+            "start_global_frame_idx": 3,
+            "end_global_frame_idx": 5,
+            "length": 3,
+            "return": 999.0,
+            "termination_reason": "no_reward_timeout",
+        },
+    ]
+
+    _write_json(run_dir / "config.json", config)
+    _write_jsonl(run_dir / "segments.jsonl", segments)
+    _write_jsonl(run_dir / "episodes.jsonl", episodes)
+    _write_jsonl(run_dir / "events.jsonl", [{"global_frame_idx": i, "reward": 0.0} for i in range(6)])
+
+    summary = score_run(run_dir, window_episodes=10, bottom_k_frac=1.0, revisit_episodes=1)
+
+    assert summary["per_game_scores"]["a"] == pytest.approx(1.0)
+    assert summary["notes"]["episode_source"] == "episodes_jsonl_terminated_only"
+    assert summary["notes"]["episodes_jsonl_truncated_entries_detected"] is False

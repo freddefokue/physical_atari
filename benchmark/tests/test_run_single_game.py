@@ -114,3 +114,31 @@ def test_build_run_summary_payload_carmack_includes_schema_markers():
     assert payload["frames"] == 10
     assert payload["single_run_profile"] == CARMACK_SINGLE_RUN_PROFILE
     assert payload["single_run_schema_version"] == CARMACK_SINGLE_RUN_SCHEMA_VERSION
+
+
+def test_frame_from_step_adapter_get_stats_graceful_fallback():
+    class _StepAgent:
+        def step(self, obs_rgb, reward, terminated, truncated, info):
+            del obs_rgb, reward, terminated, truncated, info
+            return 0
+
+        def get_stats(self):
+            return {"train_steps": "bad", "epsilon": object()}
+
+    adapter = _FrameFromStepAdapter(_StepAgent())
+    payload = adapter.get_stats()
+    assert isinstance(payload, dict)
+    assert payload["train_steps"] == "bad"
+
+
+def test_frame_from_step_adapter_get_stats_handles_exceptions():
+    class _StepAgent:
+        def step(self, obs_rgb, reward, terminated, truncated, info):
+            del obs_rgb, reward, terminated, truncated, info
+            return 0
+
+        def get_stats(self):
+            raise RuntimeError("boom")
+
+    adapter = _FrameFromStepAdapter(_StepAgent())
+    assert adapter.get_stats() == {}
