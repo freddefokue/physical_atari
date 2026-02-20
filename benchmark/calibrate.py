@@ -426,7 +426,24 @@ def _success_metric_by_key(run_rows: Sequence[Dict[str, Any]], metric: str) -> D
 
 
 def _stable_json_sha256(payload: Mapping[str, Any]) -> str:
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
+    def _normalize_non_finite(value: Any) -> Any:
+        if isinstance(value, float):
+            return value if math.isfinite(value) else None
+        if isinstance(value, list):
+            return [_normalize_non_finite(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(_normalize_non_finite(item) for item in value)
+        if isinstance(value, dict):
+            return {str(key): _normalize_non_finite(item) for key, item in value.items()}
+        return value
+
+    canonical = json.dumps(
+        _normalize_non_finite(payload),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 

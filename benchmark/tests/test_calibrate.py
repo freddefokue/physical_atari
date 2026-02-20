@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from benchmark.calibrate import (
+    _stable_json_sha256,
     _should_stream_line,
     aggregate_summary,
     evaluate_calib_expectations,
@@ -509,3 +510,13 @@ def test_rollout_acceptance_can_require_full_baseline_coverage():
     )
     assert result["passed"] is False
     assert any("Missing successful current runs" in msg for msg in result["errors"])
+
+
+def test_stable_json_sha256_normalizes_non_finite_values():
+    payload_a = {"runs": [{"score": {"final_score": float("nan"), "fps": float("inf")}}], "x": -float("inf")}
+    payload_b = {"x": -float("inf"), "runs": [{"score": {"fps": float("inf"), "final_score": float("nan")}}]}
+    digest_a = _stable_json_sha256(payload_a)
+    digest_b = _stable_json_sha256(payload_b)
+    assert isinstance(digest_a, str)
+    assert len(digest_a) == 64
+    assert digest_a == digest_b
