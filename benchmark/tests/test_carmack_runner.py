@@ -58,6 +58,25 @@ class RecordingBoundaryFrameAgent:
         return int(self.action_idx)
 
 
+class RecordingLegacyUnknownNameAgent:
+    """Legacy scalar end-of-episode contract but non-standard parameter name."""
+
+    def __init__(self, action_idx: int = 1) -> None:
+        self.action_idx = int(action_idx)
+        self.calls = []
+
+    def frame(self, obs_rgb, reward, flag) -> int:
+        marker = int(obs_rgb[0, 0, 0])
+        self.calls.append(
+            {
+                "obs_marker": marker,
+                "reward": float(reward),
+                "flag": int(flag),
+            }
+        )
+        return int(self.action_idx)
+
+
 @dataclass
 class ScriptedEnv:
     action_set: list
@@ -189,6 +208,8 @@ def test_carmack_runner_timeout_resets():
     assert len(episodes) == 2
     assert [row["pulse_reason"] for row in events] == [None, "no_reward_timeout", None, "no_reward_timeout", None]
     assert [row["frames_without_reward"] for row in events] == [1, 2, 1, 2, 1]
+    assert [row["truncated"] for row in events] == [False, True, False, True, False]
+    assert [row["env_truncated"] for row in events] == [False, False, False, False, False]
 
 
 def test_carmack_runner_consumes_final_transition():
@@ -287,3 +308,21 @@ def test_carmack_runner_new_boundary_payload_life_loss_pulse_without_reset():
     assert agent.calls[1]["truncated"] is False
     assert agent.calls[1]["end_of_episode_pulse"] is True
     assert agent.calls[1]["boundary_cause"] == "life_loss"
+
+
+def test_carmack_runner_legacy_adapter_handles_unknown_third_arg_name():
+    env = ScriptedEnv(
+        action_set=list(range(4)),
+        rewards=[0.0, 0.0, 0.0],
+        lives_seq=[3, 3, 3],
+        terminated_at={1},
+        truncated_at=set(),
+    )
+    agent = RecordingLegacyUnknownNameAgent(action_idx=1)
+    config = CarmackRunnerConfig(total_frames=3, delay_frames=0, include_timestamps=False, max_frames_without_reward=999)
+    _, events, _ = run_with_memory(env, agent, config)
+
+    assert len(agent.calls) == 3
+    assert [call["flag"] for call in agent.calls] == [0, 1, 0]
+    assert events[1]["terminated"] is True
+    assert events[1]["truncated"] is False

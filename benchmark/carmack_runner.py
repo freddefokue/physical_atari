@@ -78,7 +78,18 @@ def _adapt_carmack_agent(agent: Any) -> Any:
     third = params[2]
     if third.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
         return agent
-    if third.name.lower() in {"end_of_episode", "done", "terminal", "episode_end"}:
+
+    name = third.name.lower()
+    # New-style payload contract should use an explicit boundary-like name.
+    if name in {"boundary", "boundary_payload", "boundary_info"}:
+        return agent
+    # Legacy scalar done/end-of-episode names.
+    if name in {"end_of_episode", "done", "terminal", "episode_end"}:
+        return _LegacyEndOfEpisodeFrameAdapter(agent)
+    # Compatibility-first default:
+    # unknown 3rd-arg naming is treated as legacy scalar to avoid breaking old agents.
+    # New agents can opt in by naming the argument boundary/boundary_payload.
+    if third.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.POSITIONAL_ONLY):
         return _LegacyEndOfEpisodeFrameAdapter(agent)
     return agent
 
@@ -400,8 +411,13 @@ class CarmackCompatRunner:
                 "decided_action_idx": int(decided_action_idx),
                 "next_policy_action_idx": int(next_action),
                 "reward": float(reward),
-                "terminated": bool(step.terminated),
-                "truncated": bool(step.truncated),
+                # Agent-facing boundary semantics (includes synthetic truncation causes
+                # like timeout/life-loss-reset) for consistency with boundary_payload.
+                "terminated": bool(boundary_terminated),
+                "truncated": bool(boundary_truncated),
+                # Raw env signals are still logged explicitly for debugging/analysis.
+                "env_terminated": bool(step.terminated),
+                "env_truncated": bool(step.truncated),
                 "lives": int(step.lives),
                 "episode_idx": int(event_episode_idx),
                 "episode_return": float(event_episode_return),
