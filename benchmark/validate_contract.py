@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
@@ -14,6 +15,7 @@ from benchmark.contract import BENCHMARK_CONTRACT_VERSION, compute_contract_hash
 VALIDATION_MODE_SAMPLE = "sample"
 VALIDATION_MODE_STRATIFIED = "stratified"
 VALIDATION_MODE_FULL = "full"
+RUNTIME_FINGERPRINT_SCHEMA_VERSION = "runtime_fingerprint_v1"
 
 
 def _is_int(value: Any) -> bool:
@@ -34,6 +36,11 @@ def _load_json(path: Path) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError(f"Expected JSON object in {path}")
     return payload
+
+
+def _stable_payload_sha256(payload: Mapping[str, Any]) -> str:
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _iter_jsonl(path: Path):
@@ -169,6 +176,82 @@ def _check_carmack_single_run_config(config: Mapping[str, Any], errors: List[str
         errors.append("config.json runner_config.delay_frames must be int")
     elif int(runner_cfg.get("delay_frames")) < 0:
         errors.append("config.json runner_config.delay_frames must be >= 0")
+
+
+def _check_carmack_runtime_fingerprint(
+    fingerprint: Mapping[str, Any],
+    config: Mapping[str, Any],
+    errors: List[str],
+    warnings: List[str],
+) -> None:
+    required_str_keys = (
+        "fingerprint_schema_version",
+        "runner_mode",
+        "single_run_profile",
+        "single_run_schema_version",
+        "game",
+        "python_version",
+        "ale_py_version",
+        "rom_sha256",
+        "config_sha256",
+    )
+    for key in required_str_keys:
+        if not isinstance(fingerprint.get(key), str):
+            errors.append(f"runtime_fingerprint.json missing string key: {key}")
+
+    required_int_keys = ("seed", "frames")
+    for key in required_int_keys:
+        if not _is_int(fingerprint.get(key)):
+            errors.append(f"runtime_fingerprint.json missing int key: {key}")
+
+    if fingerprint.get("fingerprint_schema_version") != RUNTIME_FINGERPRINT_SCHEMA_VERSION:
+        errors.append(
+            f"runtime_fingerprint.json fingerprint_schema_version must be '{RUNTIME_FINGERPRINT_SCHEMA_VERSION}'"
+        )
+    if fingerprint.get("runner_mode") != CARMACK_SINGLE_RUN_PROFILE:
+        errors.append(f"runtime_fingerprint.json runner_mode must be '{CARMACK_SINGLE_RUN_PROFILE}'")
+    if fingerprint.get("single_run_profile") != CARMACK_SINGLE_RUN_PROFILE:
+        errors.append(f"runtime_fingerprint.json single_run_profile must be '{CARMACK_SINGLE_RUN_PROFILE}'")
+    if fingerprint.get("single_run_schema_version") != CARMACK_SINGLE_RUN_SCHEMA_VERSION:
+        errors.append(
+            f"runtime_fingerprint.json single_run_schema_version must be '{CARMACK_SINGLE_RUN_SCHEMA_VERSION}'"
+        )
+
+    if isinstance(fingerprint.get("game"), str) and isinstance(config.get("game"), str):
+        if str(fingerprint.get("game")) != str(config.get("game")):
+            errors.append("runtime_fingerprint.json game does not match config.json")
+    if _is_int(fingerprint.get("seed")) and _is_int(config.get("seed")):
+        if int(fingerprint.get("seed")) != int(config.get("seed")):
+            errors.append("runtime_fingerprint.json seed does not match config.json")
+    if _is_int(fingerprint.get("frames")) and _is_int(config.get("frames")):
+        if int(fingerprint.get("frames")) != int(config.get("frames")):
+            errors.append("runtime_fingerprint.json frames does not match config.json")
+
+    expected_config_sha = _stable_payload_sha256(config)
+    observed_config_sha = fingerprint.get("config_sha256")
+    if isinstance(observed_config_sha, str):
+        if observed_config_sha != expected_config_sha:
+            errors.append("runtime_fingerprint.json config_sha256 does not match config.json canonical hash")
+
+    rom_sha = fingerprint.get("rom_sha256")
+    if isinstance(rom_sha, str):
+        if re.fullmatch(r"[0-9a-f]{64}", rom_sha) is None:
+            errors.append("runtime_fingerprint.json rom_sha256 must be a lowercase 64-char hex digest")
+
+    informational_keys = (
+        "platform",
+        "machine",
+        "processor",
+        "python_implementation",
+        "python_executable",
+        "numpy_version",
+        "torch_version",
+        "cuda_available",
+        "rom_path",
+    )
+    for key in informational_keys:
+        if key not in fingerprint:
+            warnings.append(f"runtime_fingerprint.json missing informational key: {key}")
 
 
 def _check_score_tags(config: Mapping[str, Any], score: Mapping[str, Any], errors: List[str]) -> None:
@@ -893,24 +976,27 @@ def validate_contract(
     *,
     validation_mode: str = VALIDATION_MODE_SAMPLE,
     stratified_seed: int = 0,
+    fail_on_warnings: bool = False,
 ) -> Dict[str, Any]:
     run_dir = Path(run_dir)
     errors: List[str] = []
+    warnings: List[str] = []
 
     config_path = run_dir / "config.json"
     score_path = run_dir / "score.json"
     run_summary_path = run_dir / "run_summary.json"
+    runtime_fingerprint_path = run_dir / "runtime_fingerprint.json"
     events_path = run_dir / "events.jsonl"
     episodes_path = run_dir / "episodes.jsonl"
     segments_path = run_dir / "segments.jsonl"
 
     if not config_path.exists():
-        return {"ok": False, "errors": ["config.json not found"]}
+        return {"ok": False, "errors": ["config.json not found"], "warnings": []}
 
     try:
         config = _load_json(config_path)
     except Exception as exc:  # pragma: no cover - invalid JSON path
-        return {"ok": False, "errors": [f"failed to load config.json: {exc}"]}
+        return {"ok": False, "errors": [f"failed to load config.json: {exc}"], "warnings": []}
 
     mode = _normalize_validation_mode(validation_mode)
     if mode is None:
@@ -919,6 +1005,7 @@ def validate_contract(
             "errors": [
                 "validation_mode must be one of: sample, stratified, full",
             ],
+            "warnings": [],
         }
 
     sample_lines = int(sample_event_lines)
@@ -941,6 +1028,15 @@ def validate_contract(
                     errors,
                     config_frames=int(config_frames) if _is_int(config_frames) else None,
                 )
+        if not runtime_fingerprint_path.exists():
+            errors.append("runtime_fingerprint.json not found")
+        else:
+            try:
+                runtime_fingerprint = _load_json(runtime_fingerprint_path)
+            except Exception as exc:  # pragma: no cover - invalid JSON path
+                errors.append(f"failed to load runtime_fingerprint.json: {exc}")
+            else:
+                _check_carmack_runtime_fingerprint(runtime_fingerprint, config, errors, warnings)
         event_rows = _check_carmack_events_sample(
             events_path,
             sample_lines,
@@ -961,11 +1057,11 @@ def validate_contract(
             _check_carmack_sample_consistency(event_rows, episode_rows, run_summary, errors)
     else:
         if not score_path.exists():
-            return {"ok": False, "errors": ["score.json not found"]}
+            return {"ok": False, "errors": ["score.json not found"], "warnings": []}
         try:
             score = _load_json(score_path)
         except Exception as exc:  # pragma: no cover - invalid JSON path
-            return {"ok": False, "errors": [f"failed to load score.json: {exc}"]}
+            return {"ok": False, "errors": [f"failed to load score.json: {exc}"], "warnings": []}
 
         _check_multigame_config(config, errors)
         _check_config_hash_integrity(config, errors)
@@ -975,7 +1071,8 @@ def validate_contract(
         _check_episodes_sample(episodes_path, sample_lines, errors, validation_mode=mode, stratified_seed=seed)
         _check_segments_sample(segments_path, sample_lines, errors, validation_mode=mode, stratified_seed=seed)
 
-    return {"ok": len(errors) == 0, "errors": errors}
+    ok = len(errors) == 0 and (not bool(fail_on_warnings) or len(warnings) == 0)
+    return {"ok": ok, "errors": errors, "warnings": warnings}
 
 
 def parse_args() -> argparse.Namespace:
@@ -1005,6 +1102,13 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Deterministic seed used by stratified mode row ranking.",
     )
+    parser.add_argument(
+        "--fail-on-warnings",
+        type=int,
+        choices=[0, 1],
+        default=0,
+        help="When set to 1, treat validator warnings as failures.",
+    )
     return parser.parse_args()
 
 
@@ -1015,6 +1119,7 @@ def main() -> None:
         sample_event_lines=int(args.sample_event_lines),
         validation_mode=str(args.validation_mode),
         stratified_seed=int(args.stratified_seed),
+        fail_on_warnings=bool(int(args.fail_on_warnings)),
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     if not result["ok"]:

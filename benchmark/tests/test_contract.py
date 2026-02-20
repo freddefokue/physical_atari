@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -271,6 +272,45 @@ def _make_carmack_summary() -> dict:
     }
 
 
+def _make_carmack_runtime_fingerprint(config: dict) -> dict:
+    config_sha = hashlib.sha256(
+        json.dumps(config, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    ).hexdigest()
+    return {
+        "fingerprint_schema_version": "runtime_fingerprint_v1",
+        "runner_mode": CARMACK_SINGLE_RUN_PROFILE,
+        "single_run_profile": CARMACK_SINGLE_RUN_PROFILE,
+        "single_run_schema_version": CARMACK_SINGLE_RUN_SCHEMA_VERSION,
+        "game": str(config["game"]),
+        "seed": int(config["seed"]),
+        "frames": int(config["frames"]),
+        "config_sha256": config_sha,
+        "python_version": "3.12.0",
+        "ale_py_version": "0.10.1",
+        "rom_sha256": "0" * 64,
+        "platform": "linux-test",
+        "machine": "x86_64",
+        "processor": "x86_64",
+        "python_implementation": "CPython",
+        "python_executable": "/usr/bin/python3",
+        "numpy_version": "1.0.0",
+        "torch_version": "2.0.0",
+        "cuda_available": False,
+        "rom_path": "/tmp/fake_rom.bin",
+    }
+
+
+def _write_carmack_runtime_fingerprint_from_run_dir(run_dir: Path, *, drop_keys: tuple[str, ...] = ()) -> None:
+    with (run_dir / "config.json").open("r", encoding="utf-8") as fh:
+        config = json.load(fh)
+    fingerprint = _make_carmack_runtime_fingerprint(config)
+    for key in drop_keys:
+        fingerprint.pop(key, None)
+    with (run_dir / "runtime_fingerprint.json").open("w", encoding="utf-8") as fh:
+        json.dump(fingerprint, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+
+
 def test_validate_contract_passes_for_carmack_single_run_schema(tmp_path):
     run_dir = tmp_path / "run_carmack_ok"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -286,6 +326,7 @@ def test_validate_contract_passes_for_carmack_single_run_schema(tmp_path):
         json.dump(_make_carmack_summary(), fh, indent=2, sort_keys=True)
         fh.write("\n")
 
+    _write_carmack_runtime_fingerprint_from_run_dir(run_dir)
     result = validate_contract(run_dir, sample_event_lines=1)
     assert result["ok"] is True, result["errors"]
     assert result["errors"] == []
@@ -309,6 +350,7 @@ def test_validate_contract_fails_for_carmack_bad_event_type(tmp_path):
         json.dump(_make_carmack_summary(), fh, indent=2, sort_keys=True)
         fh.write("\n")
 
+    _write_carmack_runtime_fingerprint_from_run_dir(run_dir)
     result = validate_contract(run_dir, sample_event_lines=1)
     assert result["ok"] is False
     assert any("events.jsonl row has invalid type/value for 'decided_action_changed'" in err for err in result["errors"])
@@ -326,6 +368,7 @@ def test_validate_contract_fails_for_carmack_missing_run_summary(tmp_path):
     with (run_dir / "episodes.jsonl").open("w", encoding="utf-8") as fh:
         fh.write(json.dumps(_make_carmack_episode_row(), sort_keys=True) + "\n")
 
+    _write_carmack_runtime_fingerprint_from_run_dir(run_dir)
     result = validate_contract(run_dir, sample_event_lines=1)
     assert result["ok"] is False
     assert any("run_summary.json not found" in err for err in result["errors"])
@@ -349,6 +392,7 @@ def test_validate_contract_fails_for_carmack_bad_summary_type(tmp_path):
         json.dump(bad_summary, fh, indent=2, sort_keys=True)
         fh.write("\n")
 
+    _write_carmack_runtime_fingerprint_from_run_dir(run_dir)
     result = validate_contract(run_dir, sample_event_lines=1)
     assert result["ok"] is False
     assert any("run_summary.json key 'frames' must be int" in err for err in result["errors"])
@@ -373,6 +417,7 @@ def test_validate_contract_fails_for_carmack_bad_event_semantics(tmp_path):
         json.dump(_make_carmack_summary(), fh, indent=2, sort_keys=True)
         fh.write("\n")
 
+    _write_carmack_runtime_fingerprint_from_run_dir(run_dir)
     result = validate_contract(run_dir, sample_event_lines=1)
     assert result["ok"] is False
     assert any("reset_performed must match" in err for err in result["errors"])
@@ -406,6 +451,7 @@ def test_validate_contract_fails_for_carmack_sample_vs_summary_inconsistency(tmp
         json.dump(summary, fh, indent=2, sort_keys=True)
         fh.write("\n")
 
+    _write_carmack_runtime_fingerprint_from_run_dir(run_dir)
     result = validate_contract(run_dir, sample_event_lines=1)
     assert result["ok"] is False
     assert any("pulse_count is smaller than sampled event pulse count" in err for err in result["errors"])
@@ -429,6 +475,7 @@ def test_validate_contract_fails_for_carmack_bad_config_combination(tmp_path):
         json.dump(_make_carmack_summary(), fh, indent=2, sort_keys=True)
         fh.write("\n")
 
+    _write_carmack_runtime_fingerprint_from_run_dir(run_dir)
     result = validate_contract(run_dir, sample_event_lines=1)
     assert result["ok"] is False
     assert any("config.json frame_skip must be int 1" in err for err in result["errors"])
@@ -453,6 +500,7 @@ def test_validate_contract_full_mode_catches_unsampled_bad_row(tmp_path):
         json.dump(_make_carmack_summary(), fh, indent=2, sort_keys=True)
         fh.write("\n")
 
+    _write_carmack_runtime_fingerprint_from_run_dir(run_dir)
     sample_result = validate_contract(run_dir, sample_event_lines=1, validation_mode="sample")
     assert sample_result["ok"] is True, sample_result["errors"]
 
@@ -503,6 +551,7 @@ def test_validate_contract_stratified_mode_catches_rare_boundary_cause_row(tmp_p
         json.dump(summary, fh, indent=2, sort_keys=True)
         fh.write("\n")
 
+    _write_carmack_runtime_fingerprint_from_run_dir(run_dir)
     sample_result = validate_contract(run_dir, sample_event_lines=1, validation_mode="sample")
     assert sample_result["ok"] is True, sample_result["errors"]
 
@@ -531,6 +580,7 @@ def test_validate_contract_stratified_mode_requires_positive_budget(tmp_path):
         json.dump(_make_carmack_summary(), fh, indent=2, sort_keys=True)
         fh.write("\n")
 
+    _write_carmack_runtime_fingerprint_from_run_dir(run_dir)
     result = validate_contract(run_dir, sample_event_lines=0, validation_mode="stratified")
     assert result["ok"] is False
     assert any("stratified validation requires sample_event_lines > 0" in err for err in result["errors"])
@@ -556,6 +606,51 @@ def test_validate_contract_stratified_mode_fails_when_budget_too_small(tmp_path)
         json.dump(_make_carmack_summary(), fh, indent=2, sort_keys=True)
         fh.write("\n")
 
+    _write_carmack_runtime_fingerprint_from_run_dir(run_dir)
     result = validate_contract(run_dir, sample_event_lines=1, validation_mode="stratified")
     assert result["ok"] is False
     assert any("stratified validation budget too small" in err for err in result["errors"])
+
+
+def test_validate_contract_runtime_fingerprint_missing_informational_keys_warns(tmp_path):
+    run_dir = tmp_path / "run_carmack_fingerprint_warn"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    with (run_dir / "config.json").open("w", encoding="utf-8") as fh:
+        json.dump(_make_carmack_config(), fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    with (run_dir / "events.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_make_carmack_event_row(), sort_keys=True) + "\n")
+    with (run_dir / "episodes.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_make_carmack_episode_row(), sort_keys=True) + "\n")
+    with (run_dir / "run_summary.json").open("w", encoding="utf-8") as fh:
+        json.dump(_make_carmack_summary(), fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    _write_carmack_runtime_fingerprint_from_run_dir(run_dir, drop_keys=("torch_version",))
+
+    result = validate_contract(run_dir, sample_event_lines=1)
+    assert result["ok"] is True
+    assert result["errors"] == []
+    assert any("runtime_fingerprint.json missing informational key: torch_version" in warn for warn in result["warnings"])
+
+
+def test_validate_contract_fail_on_warnings_rejects_informational_warning(tmp_path):
+    run_dir = tmp_path / "run_carmack_fingerprint_warn_fail"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    with (run_dir / "config.json").open("w", encoding="utf-8") as fh:
+        json.dump(_make_carmack_config(), fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    with (run_dir / "events.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_make_carmack_event_row(), sort_keys=True) + "\n")
+    with (run_dir / "episodes.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_make_carmack_episode_row(), sort_keys=True) + "\n")
+    with (run_dir / "run_summary.json").open("w", encoding="utf-8") as fh:
+        json.dump(_make_carmack_summary(), fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    _write_carmack_runtime_fingerprint_from_run_dir(run_dir, drop_keys=("torch_version",))
+
+    result = validate_contract(run_dir, sample_event_lines=1, fail_on_warnings=True)
+    assert result["ok"] is False
+    assert result["errors"] == []
+    assert any("runtime_fingerprint.json missing informational key: torch_version" in warn for warn in result["warnings"])

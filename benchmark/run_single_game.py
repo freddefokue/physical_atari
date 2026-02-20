@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+import platform
 import random
+import sys
 from pathlib import Path
 from typing import Dict, Mapping
 
@@ -19,6 +23,8 @@ from benchmark.carmack_runner import (
 )
 from benchmark.logging_utils import JsonlWriter, dump_json, make_run_dir
 from benchmark.runner import BenchmarkRunner, RunnerConfig
+
+RUNTIME_FINGERPRINT_SCHEMA_VERSION = "runtime_fingerprint_v1"
 
 
 def parse_args() -> argparse.Namespace:
@@ -307,6 +313,81 @@ def build_run_summary_payload(args: argparse.Namespace, summary: Mapping[str, ob
     return payload
 
 
+def _stable_payload_sha256(payload: Mapping[str, object]) -> str:
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        while True:
+            chunk = fh.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _try_version(module_name: str) -> str:
+    try:
+        module = __import__(module_name)
+        version = getattr(module, "__version__", None)
+        if isinstance(version, str) and version:
+            return str(version)
+    except Exception:
+        pass
+    return "unknown"
+
+
+def build_runtime_fingerprint_payload(
+    args: argparse.Namespace,
+    config_payload: Mapping[str, object],
+) -> Dict[str, object]:
+    rom_path: str = "unknown"
+    rom_sha256: str = "0" * 64
+    try:
+        rom_candidate = ALEAtariEnv._resolve_rom_path(str(args.game))
+        rom_path_obj = Path(str(rom_candidate))
+        rom_path = str(rom_path_obj)
+        if rom_path_obj.exists() and rom_path_obj.is_file():
+            rom_sha256 = _file_sha256(rom_path_obj)
+    except Exception:
+        pass
+
+    torch_version = _try_version("torch")
+    cuda_available = False
+    try:
+        import torch  # pylint: disable=import-outside-toplevel
+
+        cuda_available = bool(torch.cuda.is_available())
+    except Exception:
+        cuda_available = False
+
+    return {
+        "fingerprint_schema_version": RUNTIME_FINGERPRINT_SCHEMA_VERSION,
+        "runner_mode": str(args.runner_mode),
+        "single_run_profile": str(config_payload.get("single_run_profile", args.runner_mode)),
+        "single_run_schema_version": str(config_payload.get("single_run_schema_version", "n/a")),
+        "game": str(args.game),
+        "seed": int(args.seed),
+        "frames": int(args.frames),
+        "config_sha256": _stable_payload_sha256(config_payload),
+        "python_version": str(sys.version.split()[0]),
+        "ale_py_version": _try_version("ale_py"),
+        "rom_sha256": str(rom_sha256),
+        "platform": str(platform.platform()),
+        "machine": str(platform.machine()),
+        "processor": str(platform.processor() or "unknown"),
+        "python_implementation": str(platform.python_implementation()),
+        "python_executable": str(sys.executable),
+        "numpy_version": str(np.__version__),
+        "torch_version": str(torch_version),
+        "cuda_available": bool(cuda_available),
+        "rom_path": str(rom_path),
+    }
+
+
 def main() -> None:
     args = parse_args()
     validate_args(args)
@@ -364,6 +445,7 @@ def main() -> None:
         )
     config_payload = build_config_payload(args, env, runner_config, run_dir)
     dump_json(run_dir / "config.json", config_payload)
+    dump_json(run_dir / "runtime_fingerprint.json", build_runtime_fingerprint_payload(args, config_payload))
 
     try:
         if args.runner_mode == "carmack_compat":

@@ -7,6 +7,7 @@ import pytest
 
 from benchmark.carmack_runner import CARMACK_SINGLE_RUN_PROFILE, CARMACK_SINGLE_RUN_SCHEMA_VERSION, CarmackRunnerConfig
 from benchmark.run_single_game import _FrameFromStepAdapter
+from benchmark.run_single_game import build_runtime_fingerprint_payload
 from benchmark.run_single_game import build_config_payload
 from benchmark.run_single_game import build_run_summary_payload
 from benchmark.run_single_game import validate_args
@@ -142,3 +143,29 @@ def test_frame_from_step_adapter_get_stats_handles_exceptions():
 
     adapter = _FrameFromStepAdapter(_StepAgent())
     assert adapter.get_stats() == {}
+
+
+def test_build_runtime_fingerprint_payload_contains_required_keys():
+    class _Args:
+        runner_mode = "carmack_compat"
+        game = "breakout"
+        seed = 3
+        frames = 200
+
+    config_payload = {
+        "single_run_profile": CARMACK_SINGLE_RUN_PROFILE,
+        "single_run_schema_version": CARMACK_SINGLE_RUN_SCHEMA_VERSION,
+        "game": "breakout",
+        "seed": 3,
+        "frames": 200,
+    }
+    payload = build_runtime_fingerprint_payload(_Args(), config_payload)
+    assert payload["fingerprint_schema_version"] == "runtime_fingerprint_v1"
+    assert payload["runner_mode"] == "carmack_compat"
+    assert payload["single_run_profile"] == CARMACK_SINGLE_RUN_PROFILE
+    assert payload["single_run_schema_version"] == CARMACK_SINGLE_RUN_SCHEMA_VERSION
+    assert payload["game"] == "breakout"
+    assert payload["seed"] == 3
+    assert payload["frames"] == 200
+    assert isinstance(payload["config_sha256"], str) and len(payload["config_sha256"]) == 64
+    assert isinstance(payload["rom_sha256"], str) and len(payload["rom_sha256"]) == 64
