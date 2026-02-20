@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from benchmark.carmack_multigame_runner import CARMACK_MULTI_RUN_PROFILE, CARMACK_MULTI_RUN_SCHEMA_VERSION
 from benchmark.carmack_runner import CARMACK_SINGLE_RUN_PROFILE, CARMACK_SINGLE_RUN_SCHEMA_VERSION
 from benchmark.contract import BENCHMARK_CONTRACT_VERSION, compute_contract_hash, resolve_scoring_defaults
 from benchmark.validate_contract import validate_contract
@@ -33,6 +34,148 @@ def _make_config() -> dict:
             "revisit_episodes": 5,
             "final_score_weights": [0.5, 0.5],
         },
+    }
+
+
+def _make_multigame_score(contract_hash: str) -> dict:
+    return {
+        "benchmark_contract_version": BENCHMARK_CONTRACT_VERSION,
+        "benchmark_contract_hash": contract_hash,
+        "final_score": 0.0,
+        "mean_score": 0.0,
+        "bottom_k_score": 0.0,
+        "forgetting_index_mean": None,
+        "forgetting_index_median": None,
+        "plasticity_mean": None,
+        "plasticity_median": None,
+        "fps": 10.0,
+        "frames": 4,
+        "per_game_scores": {"breakout": 0.0},
+        "per_game_episode_counts": {"breakout": 2},
+        "per_game_forgetting": {},
+        "per_game_plasticity": {},
+    }
+
+
+def _make_carmack_multigame_config() -> dict:
+    config = {
+        "games": ["breakout"],
+        "schedule": [
+            {"visit_idx": 0, "cycle_idx": 0, "game_id": "breakout", "visit_frames": 4},
+        ],
+        "decision_interval": 1,
+        "delay": 0,
+        "sticky": 0.0,
+        "life_loss_termination": False,
+        "full_action_space": False,
+        "default_action_idx": 0,
+        "runner_mode": CARMACK_MULTI_RUN_PROFILE,
+        "multi_run_profile": CARMACK_MULTI_RUN_PROFILE,
+        "multi_run_schema_version": CARMACK_MULTI_RUN_SCHEMA_VERSION,
+        "action_mapping_policy": {"global_action_set": list(range(4))},
+        "runner_config": {
+            "decision_interval": 1,
+            "delay_frames": 0,
+            "default_action_idx": 0,
+            "episode_log_interval": 0,
+            "include_timestamps": False,
+            "runner_mode": CARMACK_MULTI_RUN_PROFILE,
+            "action_cadence_mode": "agent_owned",
+            "frame_skip_enforced": 1,
+            "multi_run_schema_version": CARMACK_MULTI_RUN_SCHEMA_VERSION,
+            "reset_delay_queue_on_reset": True,
+            "reset_delay_queue_on_visit_switch": True,
+        },
+        "scoring_defaults": {
+            "window_episodes": 20,
+            "bottom_k_frac": 0.25,
+            "revisit_episodes": 5,
+            "final_score_weights": [0.5, 0.5],
+        },
+        "total_scheduled_frames": 4,
+    }
+    config["benchmark_contract_version"] = BENCHMARK_CONTRACT_VERSION
+    config["benchmark_contract_hash"] = compute_contract_hash(config)
+    return config
+
+
+def _make_carmack_multigame_event_row() -> dict:
+    return {
+        "multi_run_profile": CARMACK_MULTI_RUN_PROFILE,
+        "multi_run_schema_version": CARMACK_MULTI_RUN_SCHEMA_VERSION,
+        "frame_idx": 0,
+        "global_frame_idx": 0,
+        "game_id": "breakout",
+        "visit_idx": 0,
+        "cycle_idx": 0,
+        "visit_frame_idx": 0,
+        "episode_id": 0,
+        "segment_id": 0,
+        "is_decision_frame": True,
+        "decided_action_idx": 0,
+        "applied_action_idx": 0,
+        "next_policy_action_idx": 1,
+        "applied_action_idx_local": 0,
+        "applied_ale_action": 0,
+        "reward": 0.0,
+        "terminated": False,
+        "truncated": False,
+        "env_terminated": False,
+        "env_truncated": False,
+        "lives": 3,
+        "episode_return_so_far": 0.0,
+        "segment_return_so_far": 0.0,
+        "end_of_episode_pulse": False,
+        "boundary_cause": None,
+        "reset_cause": None,
+        "reset_performed": False,
+        "env_termination_reason": None,
+    }
+
+
+def _make_carmack_multigame_episode_row() -> dict:
+    return {
+        "multi_run_profile": CARMACK_MULTI_RUN_PROFILE,
+        "multi_run_schema_version": CARMACK_MULTI_RUN_SCHEMA_VERSION,
+        "game_id": "breakout",
+        "episode_id": 0,
+        "start_global_frame_idx": 0,
+        "end_global_frame_idx": 3,
+        "length": 4,
+        "return": 0.0,
+        "ended_by": "truncated",
+        "boundary_cause": "visit_switch",
+    }
+
+
+def _make_carmack_multigame_segment_row() -> dict:
+    return {
+        "multi_run_profile": CARMACK_MULTI_RUN_PROFILE,
+        "multi_run_schema_version": CARMACK_MULTI_RUN_SCHEMA_VERSION,
+        "game_id": "breakout",
+        "segment_id": 0,
+        "start_global_frame_idx": 0,
+        "end_global_frame_idx": 3,
+        "length": 4,
+        "return": 0.0,
+        "ended_by": "truncated",
+        "boundary_cause": "visit_switch",
+    }
+
+
+def _make_carmack_multigame_summary() -> dict:
+    return {
+        "frames": 4,
+        "episodes_completed": 1,
+        "segments_completed": 1,
+        "last_episode_id": 1,
+        "last_segment_id": 1,
+        "visits_completed": 1,
+        "total_scheduled_frames": 4,
+        "boundary_cause_counts": {"visit_switch": 1},
+        "reset_cause_counts": {"visit_switch": 1},
+        "reset_count": 1,
+        "agent_stats": {},
     }
 
 
@@ -176,6 +319,132 @@ def test_validate_contract_fails_on_missing_score_keys(tmp_path):
     result = validate_contract(run_dir, sample_event_lines=0)
     assert result["ok"] is False
     assert any("score.json missing key: final_score" in error for error in result["errors"])
+
+
+def test_validate_contract_passes_for_carmack_multigame_schema(tmp_path):
+    run_dir = tmp_path / "run_carmack_multigame_ok"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    config = _make_carmack_multigame_config()
+    score = _make_multigame_score(config["benchmark_contract_hash"])
+    e0 = _make_carmack_multigame_event_row()
+    e1 = dict(e0)
+    e1["frame_idx"] = 1
+    e1["global_frame_idx"] = 1
+    e1["visit_frame_idx"] = 1
+    e1["applied_action_idx"] = 1
+    e1["next_policy_action_idx"] = 2
+    e1["episode_return_so_far"] = 0.5
+    e1["segment_return_so_far"] = 0.5
+    e2 = dict(e1)
+    e2["frame_idx"] = 2
+    e2["global_frame_idx"] = 2
+    e2["visit_frame_idx"] = 2
+    e2["applied_action_idx"] = 2
+    e2["next_policy_action_idx"] = 3
+    e2["episode_return_so_far"] = 1.0
+    e2["segment_return_so_far"] = 1.0
+    e3 = dict(e2)
+    e3["frame_idx"] = 3
+    e3["global_frame_idx"] = 3
+    e3["visit_frame_idx"] = 3
+    e3["applied_action_idx"] = 3
+    e3["next_policy_action_idx"] = 0
+    e3["end_of_episode_pulse"] = True
+    e3["truncated"] = True
+    e3["boundary_cause"] = "visit_switch"
+    e3["reset_cause"] = "visit_switch"
+    e3["reset_performed"] = True
+
+    with (run_dir / "config.json").open("w", encoding="utf-8") as fh:
+        json.dump(config, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    with (run_dir / "score.json").open("w", encoding="utf-8") as fh:
+        json.dump(score, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    with (run_dir / "events.jsonl").open("w", encoding="utf-8") as fh:
+        for row in (e0, e1, e2, e3):
+            fh.write(json.dumps(row, sort_keys=True) + "\n")
+    with (run_dir / "episodes.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_make_carmack_multigame_episode_row(), sort_keys=True) + "\n")
+    with (run_dir / "segments.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_make_carmack_multigame_segment_row(), sort_keys=True) + "\n")
+    with (run_dir / "run_summary.json").open("w", encoding="utf-8") as fh:
+        json.dump(_make_carmack_multigame_summary(), fh, indent=2, sort_keys=True)
+        fh.write("\n")
+
+    result = validate_contract(run_dir, sample_event_lines=4, validation_mode="full")
+    assert result["ok"] is True, result["errors"]
+    assert result["errors"] == []
+
+
+def test_validate_contract_fails_for_carmack_multigame_bad_boundary_cause(tmp_path):
+    run_dir = tmp_path / "run_carmack_multigame_bad_cause"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    config = _make_carmack_multigame_config()
+    score = _make_multigame_score(config["benchmark_contract_hash"])
+    bad_event = _make_carmack_multigame_event_row()
+    bad_event["end_of_episode_pulse"] = True
+    bad_event["truncated"] = True
+    bad_event["boundary_cause"] = "scripted_end"
+    bad_event["reset_cause"] = "truncated"
+    bad_event["reset_performed"] = True
+    bad_event["env_truncated"] = True
+
+    with (run_dir / "config.json").open("w", encoding="utf-8") as fh:
+        json.dump(config, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    with (run_dir / "score.json").open("w", encoding="utf-8") as fh:
+        json.dump(score, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    with (run_dir / "events.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(bad_event, sort_keys=True) + "\n")
+    with (run_dir / "episodes.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_make_carmack_multigame_episode_row(), sort_keys=True) + "\n")
+    with (run_dir / "segments.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_make_carmack_multigame_segment_row(), sort_keys=True) + "\n")
+    with (run_dir / "run_summary.json").open("w", encoding="utf-8") as fh:
+        json.dump(_make_carmack_multigame_summary(), fh, indent=2, sort_keys=True)
+        fh.write("\n")
+
+    result = validate_contract(run_dir, sample_event_lines=1)
+    assert result["ok"] is False
+    assert any("boundary_cause must be one of" in err for err in result["errors"])
+
+
+def test_validate_contract_fails_for_carmack_multigame_reset_consistency(tmp_path):
+    run_dir = tmp_path / "run_carmack_multigame_bad_reset"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    config = _make_carmack_multigame_config()
+    score = _make_multigame_score(config["benchmark_contract_hash"])
+    bad_event = _make_carmack_multigame_event_row()
+    bad_event["end_of_episode_pulse"] = True
+    bad_event["truncated"] = True
+    bad_event["boundary_cause"] = "visit_switch"
+    bad_event["reset_cause"] = "visit_switch"
+    bad_event["reset_performed"] = False
+
+    with (run_dir / "config.json").open("w", encoding="utf-8") as fh:
+        json.dump(config, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    with (run_dir / "score.json").open("w", encoding="utf-8") as fh:
+        json.dump(score, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    with (run_dir / "events.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(bad_event, sort_keys=True) + "\n")
+    with (run_dir / "episodes.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_make_carmack_multigame_episode_row(), sort_keys=True) + "\n")
+    with (run_dir / "segments.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_make_carmack_multigame_segment_row(), sort_keys=True) + "\n")
+    with (run_dir / "run_summary.json").open("w", encoding="utf-8") as fh:
+        json.dump(_make_carmack_multigame_summary(), fh, indent=2, sort_keys=True)
+        fh.write("\n")
+
+    result = validate_contract(run_dir, sample_event_lines=1)
+    assert result["ok"] is False
+    assert any("reset_performed must match" in err for err in result["errors"])
 
 
 def _make_carmack_config() -> dict:

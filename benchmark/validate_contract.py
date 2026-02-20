@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
+from benchmark.carmack_multigame_runner import CARMACK_MULTI_RUN_PROFILE, CARMACK_MULTI_RUN_SCHEMA_VERSION
 from benchmark.carmack_runner import CARMACK_SINGLE_RUN_PROFILE, CARMACK_SINGLE_RUN_SCHEMA_VERSION
 from benchmark.contract import BENCHMARK_CONTRACT_VERSION, compute_contract_hash
 
@@ -172,6 +173,39 @@ def _check_carmack_single_run_config(config: Mapping[str, Any], errors: List[str
         errors.append("config.json runner_config.total_frames must be int")
     elif _is_int(config.get("frames")) and int(runner_cfg.get("total_frames")) != int(config.get("frames")):
         errors.append("config.json runner_config.total_frames must match config.json frames")
+    if not _is_int(runner_cfg.get("delay_frames")):
+        errors.append("config.json runner_config.delay_frames must be int")
+    elif int(runner_cfg.get("delay_frames")) < 0:
+        errors.append("config.json runner_config.delay_frames must be >= 0")
+
+
+def _check_carmack_multigame_config(config: Mapping[str, Any], errors: List[str]) -> None:
+    if str(config.get("runner_mode")) != CARMACK_MULTI_RUN_PROFILE:
+        errors.append(f"config.json runner_mode must be '{CARMACK_MULTI_RUN_PROFILE}'")
+    if str(config.get("multi_run_profile")) != CARMACK_MULTI_RUN_PROFILE:
+        errors.append(f"config.json multi_run_profile must be '{CARMACK_MULTI_RUN_PROFILE}'")
+    if str(config.get("multi_run_schema_version")) != CARMACK_MULTI_RUN_SCHEMA_VERSION:
+        errors.append(f"config.json multi_run_schema_version must be '{CARMACK_MULTI_RUN_SCHEMA_VERSION}'")
+
+    if not _is_int(config.get("decision_interval")):
+        errors.append("config.json decision_interval must be int")
+    elif int(config.get("decision_interval")) != 1:
+        errors.append("config.json decision_interval must be int 1 for carmack_compat multi-game")
+
+    runner_cfg = config.get("runner_config")
+    if not isinstance(runner_cfg, dict):
+        errors.append("config.json runner_config must be object")
+        return
+    if str(runner_cfg.get("runner_mode")) != CARMACK_MULTI_RUN_PROFILE:
+        errors.append(f"config.json runner_config.runner_mode must be '{CARMACK_MULTI_RUN_PROFILE}'")
+    if str(runner_cfg.get("multi_run_schema_version")) != CARMACK_MULTI_RUN_SCHEMA_VERSION:
+        errors.append(
+            f"config.json runner_config.multi_run_schema_version must be '{CARMACK_MULTI_RUN_SCHEMA_VERSION}'"
+        )
+    if runner_cfg.get("action_cadence_mode") != "agent_owned":
+        errors.append("config.json runner_config.action_cadence_mode must be 'agent_owned'")
+    if not _is_int(runner_cfg.get("frame_skip_enforced")) or int(runner_cfg.get("frame_skip_enforced")) != 1:
+        errors.append("config.json runner_config.frame_skip_enforced must be int 1")
     if not _is_int(runner_cfg.get("delay_frames")):
         errors.append("config.json runner_config.delay_frames must be int")
     elif int(runner_cfg.get("delay_frames")) < 0:
@@ -643,6 +677,175 @@ def _check_segments_sample(
     )
 
 
+def _check_carmack_multigame_events_sample(
+    events_path: Path,
+    sample_lines: int,
+    errors: List[str],
+    *,
+    validation_mode: str,
+    stratified_seed: int,
+) -> List[Mapping[str, Any]]:
+    return _collect_jsonl_schema_sample(
+        events_path,
+        sample_lines,
+        errors,
+        record_name="events.jsonl",
+        required_keys=(
+            "multi_run_profile",
+            "multi_run_schema_version",
+            "frame_idx",
+            "global_frame_idx",
+            "game_id",
+            "visit_idx",
+            "cycle_idx",
+            "visit_frame_idx",
+            "episode_id",
+            "segment_id",
+            "is_decision_frame",
+            "decided_action_idx",
+            "applied_action_idx",
+            "next_policy_action_idx",
+            "applied_action_idx_local",
+            "applied_ale_action",
+            "reward",
+            "terminated",
+            "truncated",
+            "env_terminated",
+            "env_truncated",
+            "lives",
+            "episode_return_so_far",
+            "segment_return_so_far",
+            "end_of_episode_pulse",
+            "boundary_cause",
+            "reset_cause",
+            "reset_performed",
+            "env_termination_reason",
+        ),
+        field_validators={
+            "multi_run_profile": lambda value: str(value) == CARMACK_MULTI_RUN_PROFILE,
+            "multi_run_schema_version": lambda value: str(value) == CARMACK_MULTI_RUN_SCHEMA_VERSION,
+            "frame_idx": _is_int,
+            "global_frame_idx": _is_int,
+            "game_id": lambda value: isinstance(value, str),
+            "visit_idx": _is_int,
+            "cycle_idx": _is_int,
+            "visit_frame_idx": _is_int,
+            "episode_id": _is_int,
+            "segment_id": _is_int,
+            "is_decision_frame": lambda value: isinstance(value, bool),
+            "decided_action_idx": _is_int,
+            "applied_action_idx": _is_int,
+            "next_policy_action_idx": _is_int,
+            "applied_action_idx_local": _is_int,
+            "applied_ale_action": _is_int,
+            "reward": _is_number,
+            "terminated": lambda value: isinstance(value, bool),
+            "truncated": lambda value: isinstance(value, bool),
+            "env_terminated": lambda value: isinstance(value, bool),
+            "env_truncated": lambda value: isinstance(value, bool),
+            "lives": _is_int,
+            "episode_return_so_far": _is_number,
+            "segment_return_so_far": _is_number,
+            "end_of_episode_pulse": lambda value: isinstance(value, bool),
+            "boundary_cause": _is_optional_str,
+            "reset_cause": _is_optional_str,
+            "reset_performed": lambda value: isinstance(value, bool),
+            "env_termination_reason": _is_optional_str,
+        },
+        validation_mode=validation_mode,
+        stratified_seed=stratified_seed,
+        stratified_selectors=(
+            _stratify_boundary_cause_label,
+            _stratify_reset_cause_label,
+            _stratify_pulse_reset_pair_label,
+        ),
+    )
+
+
+def _check_carmack_multigame_episodes_sample(
+    episodes_path: Path,
+    sample_lines: int,
+    errors: List[str],
+    *,
+    validation_mode: str,
+    stratified_seed: int,
+) -> List[Mapping[str, Any]]:
+    return _collect_jsonl_schema_sample(
+        episodes_path,
+        sample_lines,
+        errors,
+        record_name="episodes.jsonl",
+        required_keys=(
+            "multi_run_profile",
+            "multi_run_schema_version",
+            "game_id",
+            "episode_id",
+            "start_global_frame_idx",
+            "end_global_frame_idx",
+            "length",
+            "return",
+            "ended_by",
+            "boundary_cause",
+        ),
+        field_validators={
+            "multi_run_profile": lambda value: str(value) == CARMACK_MULTI_RUN_PROFILE,
+            "multi_run_schema_version": lambda value: str(value) == CARMACK_MULTI_RUN_SCHEMA_VERSION,
+            "game_id": lambda value: isinstance(value, str),
+            "episode_id": _is_int,
+            "start_global_frame_idx": _is_int,
+            "end_global_frame_idx": _is_int,
+            "length": _is_int,
+            "return": _is_number,
+            "ended_by": lambda value: str(value) in {"terminated", "truncated"},
+            "boundary_cause": _is_optional_str,
+        },
+        validation_mode=validation_mode,
+        stratified_seed=stratified_seed,
+    )
+
+
+def _check_carmack_multigame_segments_sample(
+    segments_path: Path,
+    sample_lines: int,
+    errors: List[str],
+    *,
+    validation_mode: str,
+    stratified_seed: int,
+) -> List[Mapping[str, Any]]:
+    return _collect_jsonl_schema_sample(
+        segments_path,
+        sample_lines,
+        errors,
+        record_name="segments.jsonl",
+        required_keys=(
+            "multi_run_profile",
+            "multi_run_schema_version",
+            "game_id",
+            "segment_id",
+            "start_global_frame_idx",
+            "end_global_frame_idx",
+            "length",
+            "return",
+            "ended_by",
+            "boundary_cause",
+        ),
+        field_validators={
+            "multi_run_profile": lambda value: str(value) == CARMACK_MULTI_RUN_PROFILE,
+            "multi_run_schema_version": lambda value: str(value) == CARMACK_MULTI_RUN_SCHEMA_VERSION,
+            "game_id": lambda value: isinstance(value, str),
+            "segment_id": _is_int,
+            "start_global_frame_idx": _is_int,
+            "end_global_frame_idx": _is_int,
+            "length": _is_int,
+            "return": _is_number,
+            "ended_by": lambda value: str(value) in {"terminated", "truncated"},
+            "boundary_cause": _is_optional_str,
+        },
+        validation_mode=validation_mode,
+        stratified_seed=stratified_seed,
+    )
+
+
 def _stratify_boundary_cause_label(row: Mapping[str, Any]) -> Optional[str]:
     boundary_cause = row.get("boundary_cause")
     if isinstance(boundary_cause, str):
@@ -850,6 +1053,222 @@ def _check_carmack_summary_schema(
         errors.append("run_summary.json frames does not match config.json frames")
 
 
+def _check_carmack_multigame_summary_schema(
+    summary: Mapping[str, Any],
+    errors: List[str],
+    *,
+    config_total_scheduled_frames: Optional[int] = None,
+) -> None:
+    int_keys = (
+        "frames",
+        "episodes_completed",
+        "segments_completed",
+        "last_episode_id",
+        "last_segment_id",
+        "visits_completed",
+        "total_scheduled_frames",
+        "reset_count",
+    )
+    for key in int_keys:
+        if key not in summary:
+            errors.append(f"run_summary.json missing key: {key}")
+            continue
+        if not _is_int(summary.get(key)):
+            errors.append(f"run_summary.json key '{key}' must be int")
+
+    for key in ("boundary_cause_counts", "reset_cause_counts"):
+        value = summary.get(key)
+        if not isinstance(value, dict):
+            errors.append(f"run_summary.json key '{key}' must be object")
+            continue
+        for sub_key, sub_value in value.items():
+            if not isinstance(sub_key, str):
+                errors.append(f"run_summary.json key '{key}' must map string keys")
+                break
+            if not _is_int(sub_value):
+                errors.append(f"run_summary.json key '{key}' must map to int values")
+                break
+
+    if config_total_scheduled_frames is not None and _is_int(summary.get("frames")):
+        if int(summary["frames"]) != int(config_total_scheduled_frames):
+            errors.append("run_summary.json frames does not match config.json total_scheduled_frames")
+    if config_total_scheduled_frames is not None and _is_int(summary.get("total_scheduled_frames")):
+        if int(summary["total_scheduled_frames"]) != int(config_total_scheduled_frames):
+            errors.append("run_summary.json total_scheduled_frames does not match config.json total_scheduled_frames")
+
+
+def _check_carmack_multigame_event_semantics(rows: Sequence[Mapping[str, Any]], errors: List[str]) -> None:
+    allowed_boundary_causes = {"visit_switch", "terminated", "truncated"}
+    allowed_reset_causes = {"visit_switch", "terminated", "truncated"}
+    for idx, row in enumerate(rows):
+        source_idx = row.get("__validator_row_idx")
+        prefix = f"events.jsonl semantic error at row {source_idx if _is_int(source_idx) else idx}"
+
+        pulse = bool(row["end_of_episode_pulse"])
+        terminated = bool(row["terminated"])
+        truncated = bool(row["truncated"])
+        env_terminated = bool(row["env_terminated"])
+        env_truncated = bool(row["env_truncated"])
+        boundary_cause = row.get("boundary_cause")
+        reset_cause = row.get("reset_cause")
+        reset_performed = bool(row["reset_performed"])
+
+        if not bool(row["is_decision_frame"]):
+            errors.append(f"{prefix}: is_decision_frame must be true in Carmack multi-game profile")
+
+        if int(row["frame_idx"]) != int(row["global_frame_idx"]):
+            errors.append(f"{prefix}: frame_idx must equal global_frame_idx")
+
+        if terminated != env_terminated:
+            errors.append(f"{prefix}: terminated must match env_terminated")
+        if truncated != (env_truncated or str(boundary_cause) == "visit_switch"):
+            errors.append(f"{prefix}: truncated must equal (env_truncated or boundary_cause=visit_switch)")
+        if pulse != (terminated or truncated):
+            errors.append(f"{prefix}: end_of_episode_pulse must equal (terminated or truncated)")
+
+        if not pulse and (boundary_cause is not None or reset_cause is not None):
+            errors.append(f"{prefix}: non-pulse row must have boundary_cause/reset_cause = null")
+        if pulse and boundary_cause is None:
+            errors.append(f"{prefix}: pulse row must set boundary_cause")
+
+        if boundary_cause is not None and str(boundary_cause) not in allowed_boundary_causes:
+            errors.append(f"{prefix}: boundary_cause must be one of {sorted(allowed_boundary_causes)}")
+        if reset_cause is not None and str(reset_cause) not in allowed_reset_causes:
+            errors.append(f"{prefix}: reset_cause must be one of {sorted(allowed_reset_causes)}")
+
+        if reset_performed != (reset_cause is not None):
+            errors.append(f"{prefix}: reset_performed must match (reset_cause is not null)")
+
+        if str(boundary_cause) == "visit_switch":
+            if not truncated:
+                errors.append(f"{prefix}: boundary_cause=visit_switch requires truncated=true")
+            if str(reset_cause) != "visit_switch":
+                errors.append(f"{prefix}: boundary_cause=visit_switch requires reset_cause=visit_switch")
+            if not reset_performed:
+                errors.append(f"{prefix}: boundary_cause=visit_switch requires reset_performed=true")
+        elif str(boundary_cause) == "truncated":
+            if not env_truncated:
+                errors.append(f"{prefix}: boundary_cause=truncated requires env_truncated=true")
+        elif str(boundary_cause) == "terminated":
+            if not env_terminated:
+                errors.append(f"{prefix}: boundary_cause=terminated requires env_terminated=true")
+
+        if str(reset_cause) == "visit_switch" and str(boundary_cause) != "visit_switch":
+            errors.append(f"{prefix}: reset_cause=visit_switch requires boundary_cause=visit_switch")
+        if str(reset_cause) == "truncated" and str(boundary_cause) != "truncated":
+            errors.append(f"{prefix}: reset_cause=truncated requires boundary_cause=truncated")
+        if str(reset_cause) == "terminated" and str(boundary_cause) != "terminated":
+            errors.append(f"{prefix}: reset_cause=terminated requires boundary_cause=terminated")
+
+        if pulse and str(boundary_cause) != "visit_switch":
+            if env_truncated and str(boundary_cause) != "truncated":
+                errors.append(f"{prefix}: env_truncated=true requires boundary_cause=truncated")
+            if (not env_truncated) and env_terminated and str(boundary_cause) != "terminated":
+                errors.append(f"{prefix}: env_terminated=true without env_truncated requires boundary_cause=terminated")
+
+
+def _check_carmack_multigame_episode_semantics(rows: Sequence[Mapping[str, Any]], errors: List[str]) -> None:
+    allowed_boundary_causes = {"visit_switch", "terminated", "truncated"}
+    for idx, row in enumerate(rows):
+        source_idx = row.get("__validator_row_idx")
+        prefix = f"episodes.jsonl semantic error at row {source_idx if _is_int(source_idx) else idx}"
+
+        length = int(row["length"])
+        start_frame = int(row["start_global_frame_idx"])
+        end_frame = int(row["end_global_frame_idx"])
+        ended_by = str(row["ended_by"])
+        boundary_cause = row.get("boundary_cause")
+
+        if length <= 0:
+            errors.append(f"{prefix}: length must be > 0")
+        if end_frame < start_frame:
+            errors.append(f"{prefix}: end_global_frame_idx must be >= start_global_frame_idx")
+        if boundary_cause is None:
+            errors.append(f"{prefix}: boundary_cause must be non-null")
+            continue
+        if str(boundary_cause) not in allowed_boundary_causes:
+            errors.append(f"{prefix}: boundary_cause must be one of {sorted(allowed_boundary_causes)}")
+            continue
+        if ended_by == "terminated" and str(boundary_cause) != "terminated":
+            errors.append(f"{prefix}: ended_by=terminated requires boundary_cause=terminated")
+        if ended_by == "truncated" and str(boundary_cause) not in {"truncated", "visit_switch"}:
+            errors.append(f"{prefix}: ended_by=truncated requires boundary_cause in {{truncated,visit_switch}}")
+
+
+def _check_carmack_multigame_segment_semantics(rows: Sequence[Mapping[str, Any]], errors: List[str]) -> None:
+    allowed_boundary_causes = {"visit_switch", "terminated", "truncated"}
+    for idx, row in enumerate(rows):
+        source_idx = row.get("__validator_row_idx")
+        prefix = f"segments.jsonl semantic error at row {source_idx if _is_int(source_idx) else idx}"
+
+        length = int(row["length"])
+        start_frame = int(row["start_global_frame_idx"])
+        end_frame = int(row["end_global_frame_idx"])
+        ended_by = str(row["ended_by"])
+        boundary_cause = row.get("boundary_cause")
+
+        if length <= 0:
+            errors.append(f"{prefix}: length must be > 0")
+        if end_frame < start_frame:
+            errors.append(f"{prefix}: end_global_frame_idx must be >= start_global_frame_idx")
+        if boundary_cause is None:
+            errors.append(f"{prefix}: boundary_cause must be non-null")
+            continue
+        if str(boundary_cause) not in allowed_boundary_causes:
+            errors.append(f"{prefix}: boundary_cause must be one of {sorted(allowed_boundary_causes)}")
+            continue
+        if ended_by == "terminated" and str(boundary_cause) != "terminated":
+            errors.append(f"{prefix}: ended_by=terminated requires boundary_cause=terminated")
+        if ended_by == "truncated" and str(boundary_cause) not in {"truncated", "visit_switch"}:
+            errors.append(f"{prefix}: ended_by=truncated requires boundary_cause in {{truncated,visit_switch}}")
+
+
+def _check_carmack_multigame_sample_consistency(
+    event_rows: Sequence[Mapping[str, Any]],
+    episode_rows: Sequence[Mapping[str, Any]],
+    segment_rows: Sequence[Mapping[str, Any]],
+    summary: Mapping[str, Any],
+    errors: List[str],
+) -> None:
+    pulse_count_sample = sum(1 for row in event_rows if bool(row["end_of_episode_pulse"]))
+    reset_count_sample = sum(1 for row in event_rows if bool(row["reset_performed"]))
+    if _is_int(summary.get("episodes_completed")) and pulse_count_sample > int(summary["episodes_completed"]):
+        errors.append("run_summary.json episodes_completed is smaller than sampled event pulse count")
+    if _is_int(summary.get("segments_completed")) and pulse_count_sample > int(summary["segments_completed"]):
+        errors.append("run_summary.json segments_completed is smaller than sampled event pulse count")
+    if _is_int(summary.get("reset_count")) and reset_count_sample > int(summary["reset_count"]):
+        errors.append("run_summary.json reset_count is smaller than sampled event reset count")
+
+    boundary_counts_sample: Dict[str, int] = {}
+    reset_counts_sample: Dict[str, int] = {}
+    for row in event_rows:
+        boundary_cause = row.get("boundary_cause")
+        reset_cause = row.get("reset_cause")
+        if isinstance(boundary_cause, str):
+            boundary_counts_sample[boundary_cause] = int(boundary_counts_sample.get(boundary_cause, 0) + 1)
+        if isinstance(reset_cause, str):
+            reset_counts_sample[reset_cause] = int(reset_counts_sample.get(reset_cause, 0) + 1)
+
+    summary_boundary = summary.get("boundary_cause_counts")
+    if isinstance(summary_boundary, dict):
+        for cause, count in boundary_counts_sample.items():
+            value = summary_boundary.get(cause)
+            if not _is_int(value) or int(value) < int(count):
+                errors.append(f"run_summary.json boundary_cause_counts['{cause}'] is smaller than sampled events")
+
+    summary_reset = summary.get("reset_cause_counts")
+    if isinstance(summary_reset, dict):
+        for cause, count in reset_counts_sample.items():
+            value = summary_reset.get(cause)
+            if not _is_int(value) or int(value) < int(count):
+                errors.append(f"run_summary.json reset_cause_counts['{cause}'] is smaller than sampled events")
+
+    if _is_int(summary.get("episodes_completed")) and len(episode_rows) > int(summary["episodes_completed"]):
+        errors.append("run_summary.json episodes_completed is smaller than sampled episode row count")
+    if _is_int(summary.get("segments_completed")) and len(segment_rows) > int(summary["segments_completed"]):
+        errors.append("run_summary.json segments_completed is smaller than sampled segment row count")
+
+
 def _check_carmack_event_semantics(rows: Sequence[Mapping[str, Any]], errors: List[str]) -> None:
     allowed_reset_causes = {"no_reward_timeout", "terminated", "truncated", "life_loss_reset"}
     for idx, row in enumerate(rows):
@@ -967,10 +1386,26 @@ def _check_carmack_sample_consistency(
     if episode_rows and _is_int(summary.get("episodes_completed")) and len(episode_rows) > int(summary["episodes_completed"]):
         errors.append("run_summary.json episodes_completed is smaller than sampled episode row count")
 
+def _is_carmack_multigame_config(config: Mapping[str, Any]) -> bool:
+    if str(config.get("multi_run_profile")) == CARMACK_MULTI_RUN_PROFILE:
+        return True
+    if str(config.get("multi_run_schema_version")) == CARMACK_MULTI_RUN_SCHEMA_VERSION:
+        return True
+    if str(config.get("runner_mode")) != CARMACK_MULTI_RUN_PROFILE:
+        return False
+    return isinstance(config.get("games"), list) and isinstance(config.get("schedule"), list)
+
+
 def _is_carmack_single_run_config(config: Mapping[str, Any]) -> bool:
+    if str(config.get("single_run_profile")) == CARMACK_SINGLE_RUN_PROFILE:
+        return True
+    if str(config.get("single_run_schema_version")) == CARMACK_SINGLE_RUN_SCHEMA_VERSION:
+        return True
     return (
         str(config.get("runner_mode")) == CARMACK_SINGLE_RUN_PROFILE
-        or str(config.get("single_run_profile")) == CARMACK_SINGLE_RUN_PROFILE
+        and isinstance(config.get("game"), str)
+        and _is_int(config.get("frames"))
+        and not isinstance(config.get("games"), list)
     )
 
 
@@ -1022,7 +1457,69 @@ def validate_contract(
     sample_lines = int(sample_event_lines)
     seed = int(stratified_seed)
 
-    if _is_carmack_single_run_config(config):
+    if _is_carmack_multigame_config(config):
+        if not score_path.exists():
+            return {"ok": False, "errors": ["score.json not found"], "warnings": []}
+        try:
+            score = _load_json(score_path)
+        except Exception as exc:  # pragma: no cover - invalid JSON path
+            return {"ok": False, "errors": [f"failed to load score.json: {exc}"], "warnings": []}
+
+        _check_multigame_config(config, errors)
+        _check_carmack_multigame_config(config, errors)
+        _check_config_hash_integrity(config, errors)
+        _check_score_schema(score, errors)
+        _check_score_tags(config, score, errors)
+
+        run_summary: Optional[Mapping[str, Any]] = None
+        if not run_summary_path.exists():
+            errors.append("run_summary.json not found")
+        else:
+            try:
+                run_summary = _load_json(run_summary_path)
+            except Exception as exc:  # pragma: no cover - invalid JSON path
+                errors.append(f"failed to load run_summary.json: {exc}")
+            else:
+                config_total = config.get("total_scheduled_frames")
+                _check_carmack_multigame_summary_schema(
+                    run_summary,
+                    errors,
+                    config_total_scheduled_frames=int(config_total) if _is_int(config_total) else None,
+                )
+
+        event_rows = _check_carmack_multigame_events_sample(
+            events_path,
+            sample_lines,
+            errors,
+            validation_mode=mode,
+            stratified_seed=seed,
+        )
+        episode_rows = _check_carmack_multigame_episodes_sample(
+            episodes_path,
+            sample_lines,
+            errors,
+            validation_mode=mode,
+            stratified_seed=seed,
+        )
+        segment_rows = _check_carmack_multigame_segments_sample(
+            segments_path,
+            sample_lines,
+            errors,
+            validation_mode=mode,
+            stratified_seed=seed,
+        )
+        _check_carmack_multigame_event_semantics(event_rows, errors)
+        _check_carmack_multigame_episode_semantics(episode_rows, errors)
+        _check_carmack_multigame_segment_semantics(segment_rows, errors)
+        if run_summary is not None:
+            _check_carmack_multigame_sample_consistency(
+                event_rows,
+                episode_rows,
+                segment_rows,
+                run_summary,
+                errors,
+            )
+    elif _is_carmack_single_run_config(config):
         _check_carmack_single_run_config(config, errors)
         run_summary: Optional[Mapping[str, Any]] = None
         if not run_summary_path.exists():
@@ -1119,7 +1616,7 @@ def validate_contract(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Validate benchmark run schema for multi-game v1 or single-game Carmack profile."
+        description="Validate benchmark run schema for multi-game v1, Carmack multi-game v1, or single-game Carmack profile."
     )
     parser.add_argument("--run-dir", type=str, required=True, help="Run directory path.")
     parser.add_argument(
