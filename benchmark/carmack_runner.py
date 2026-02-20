@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import math
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -277,6 +278,20 @@ class CarmackCompatRunner:
                     pass
             return {}
 
+        def _coerce_float(value: Any, default: float = 0.0) -> float:
+            try:
+                out = float(value)
+            except (TypeError, ValueError):
+                return float(default)
+            return out if math.isfinite(out) else float(default)
+
+        def _coerce_optional_float(value: Any) -> Optional[float]:
+            try:
+                out = float(value)
+            except (TypeError, ValueError):
+                return None
+            return out if math.isfinite(out) else None
+
         for frame_idx in range(int(self.config.total_frames)):
             # Mirror agent_delay_target.py cadence: update rolling average only when the
             # episode graph bucket advances, not at every reset.
@@ -432,10 +447,10 @@ class CarmackCompatRunner:
                     environment_start_time = now
                     environment_start = int(frame_idx)
                     stats = _agent_stats()
-                    err_avg = float(stats.get("avg_error_ema", 0.0))
-                    err_max = float(stats.get("max_error_ema", 0.0))
-                    loss = float(stats.get("train_loss_ema", 0.0))
-                    targ = float(stats.get("target_ema", 0.0))
+                    err_avg = _coerce_float(stats.get("avg_error_ema", 0.0), default=0.0)
+                    err_max = _coerce_float(stats.get("max_error_ema", 0.0), default=0.0)
+                    loss = _coerce_float(stats.get("train_loss_ema", 0.0), default=0.0)
+                    targ = _coerce_float(stats.get("target_ema", 0.0), default=0.0)
                     print(
                         f"{int(self.config.log_rank)}:{self.config.log_name} "
                         f"frame:{int(frame_idx):7} "
@@ -500,13 +515,21 @@ class CarmackCompatRunner:
                     f"resets={episodes_completed}"
                 )
                 if "train_loss_ema" in stats:
-                    msg += f" loss={float(stats['train_loss_ema']):.6f}"
+                    loss_val = _coerce_optional_float(stats.get("train_loss_ema"))
+                    if loss_val is not None:
+                        msg += f" loss={loss_val:.6f}"
                 if "avg_error_ema" in stats:
-                    msg += f" err_avg={float(stats['avg_error_ema']):.6f}"
+                    err_avg_val = _coerce_optional_float(stats.get("avg_error_ema"))
+                    if err_avg_val is not None:
+                        msg += f" err_avg={err_avg_val:.6f}"
                 if "max_error_ema" in stats:
-                    msg += f" err_max={float(stats['max_error_ema']):.6f}"
+                    err_max_val = _coerce_optional_float(stats.get("max_error_ema"))
+                    if err_max_val is not None:
+                        msg += f" err_max={err_max_val:.6f}"
                 if "target_ema" in stats:
-                    msg += f" target={float(stats['target_ema']):.6f}"
+                    targ_val = _coerce_optional_float(stats.get("target_ema"))
+                    if targ_val is not None:
+                        msg += f" target={targ_val:.6f}"
                 print(msg, flush=True)
 
             event = {

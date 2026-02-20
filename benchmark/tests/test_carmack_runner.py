@@ -49,6 +49,16 @@ class RecordingFrameAgentWithStats(RecordingFrameAgent):
         }
 
 
+class RecordingFrameAgentWithMalformedStats(RecordingFrameAgent):
+    def get_stats(self):
+        return {
+            "avg_error_ema": "bad",
+            "max_error_ema": object(),
+            "train_loss_ema": "nan-ish",
+            "target_ema": None,
+        }
+
+
 class RecordingBoundaryFrameAgent:
     def __init__(self, action_idx: int = 1) -> None:
         self.action_idx = int(action_idx)
@@ -284,6 +294,32 @@ def test_carmack_runner_reset_log_matches_delay_target_style(capsys):
     assert "err 1.2 3.4" in out
     assert "loss 0.5" in out
     assert "targ -2.0" in out
+
+
+def test_carmack_runner_malformed_stats_do_not_crash_logging(capsys):
+    env = ScriptedEnv(
+        action_set=list(range(4)),
+        rewards=[0.0, 0.0],
+        lives_seq=[3, 3],
+        terminated_at={1},
+        truncated_at=set(),
+    )
+    agent = RecordingFrameAgentWithMalformedStats(action_idx=1)
+    config = CarmackRunnerConfig(
+        total_frames=2,
+        delay_frames=0,
+        include_timestamps=False,
+        progress_log_interval_frames=1,
+        pulse_log_interval=0,
+        reset_log_interval=1,
+        max_frames_without_reward=999,
+    )
+    summary, _, _ = run_with_memory(env, agent, config)
+    out = capsys.readouterr().out
+
+    assert summary["frames"] == 2
+    assert summary["episodes_completed"] == 1
+    assert "[train]" in out
 
 
 def test_carmack_runner_new_boundary_payload_timeout_marks_truncated():

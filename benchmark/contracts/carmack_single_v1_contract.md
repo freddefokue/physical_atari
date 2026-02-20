@@ -13,6 +13,7 @@ These fields are required in:
 - `config.json.runner_config`
 - every row of `events.jsonl`
 - every row of `episodes.jsonl`
+- `run_summary.json`
 
 ## Agent-Facing Contract
 
@@ -85,10 +86,12 @@ Reset precedence (high to low):
 - `end_frame_idx`
 - `ended_by_reset`
 
-## Summary Fields (return value)
+## `run_summary.json` Required Fields
 
-The run summary must include:
+Required keys:
 
+- profile markers: `single_run_profile`, `single_run_schema_version`
+- `runner_mode`
 - frame/episode counters
 - reset counters by cause
 - pulse counters by cause

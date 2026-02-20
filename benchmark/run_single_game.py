@@ -285,6 +285,17 @@ def build_config_payload(
     return payload
 
 
+def build_run_summary_payload(args: argparse.Namespace, summary: Mapping[str, object]) -> Dict[str, object]:
+    payload: Dict[str, object] = {
+        "runner_mode": str(args.runner_mode),
+        **dict(summary),
+    }
+    if str(args.runner_mode) == CARMACK_SINGLE_RUN_PROFILE:
+        payload["single_run_profile"] = CARMACK_SINGLE_RUN_PROFILE
+        payload["single_run_schema_version"] = CARMACK_SINGLE_RUN_SCHEMA_VERSION
+    return payload
+
+
 def main() -> None:
     args = parse_args()
     validate_args(args)
@@ -364,6 +375,7 @@ def main() -> None:
         event_writer.close()
         episode_writer.close()
 
+    dump_json(run_dir / "run_summary.json", build_run_summary_payload(args, summary))
     print(f"Run complete: {run_dir}")
     print(f"Summary: {summary}")
 

@@ -8,6 +8,7 @@ import pytest
 from benchmark.carmack_runner import CARMACK_SINGLE_RUN_PROFILE, CARMACK_SINGLE_RUN_SCHEMA_VERSION, CarmackRunnerConfig
 from benchmark.run_single_game import _FrameFromStepAdapter
 from benchmark.run_single_game import build_config_payload
+from benchmark.run_single_game import build_run_summary_payload
 from benchmark.run_single_game import validate_args
 
 
@@ -103,3 +104,13 @@ def test_frame_from_step_adapter_does_not_leak_frame_idx():
     }
     assert "frame_idx" not in call["info"]
     assert "boundary_cause" not in call["info"]
+
+
+def test_build_run_summary_payload_carmack_includes_schema_markers():
+    args = Namespace(runner_mode="carmack_compat")
+    summary = {"frames": 10}
+    payload = build_run_summary_payload(args, summary)
+    assert payload["runner_mode"] == "carmack_compat"
+    assert payload["frames"] == 10
+    assert payload["single_run_profile"] == CARMACK_SINGLE_RUN_PROFILE
+    assert payload["single_run_schema_version"] == CARMACK_SINGLE_RUN_SCHEMA_VERSION

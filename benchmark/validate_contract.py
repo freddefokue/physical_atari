@@ -447,6 +447,76 @@ def _check_carmack_episodes_sample(episodes_path: Path, sample_lines: int, error
     )
 
 
+def _check_carmack_summary_schema(
+    summary: Mapping[str, Any],
+    errors: List[str],
+    *,
+    config_frames: Optional[int] = None,
+) -> None:
+    if summary.get("single_run_profile") != CARMACK_SINGLE_RUN_PROFILE:
+        errors.append(f"run_summary.json single_run_profile must be '{CARMACK_SINGLE_RUN_PROFILE}'")
+    if summary.get("single_run_schema_version") != CARMACK_SINGLE_RUN_SCHEMA_VERSION:
+        errors.append(f"run_summary.json single_run_schema_version must be '{CARMACK_SINGLE_RUN_SCHEMA_VERSION}'")
+    if summary.get("runner_mode") != CARMACK_SINGLE_RUN_PROFILE:
+        errors.append(f"run_summary.json runner_mode must be '{CARMACK_SINGLE_RUN_PROFILE}'")
+
+    int_keys = (
+        "frames",
+        "episodes_completed",
+        "last_episode_idx",
+        "last_episode_length",
+        "pulse_count",
+        "life_loss_pulses",
+        "reset_count",
+        "game_over_resets",
+        "truncated_resets",
+        "timeout_resets",
+        "life_loss_resets",
+        "decided_action_change_count",
+        "applied_action_change_count",
+        "decided_applied_mismatch_count",
+        "applied_action_hold_run_count",
+        "applied_action_hold_run_max",
+    )
+    for key in int_keys:
+        if key not in summary:
+            errors.append(f"run_summary.json missing key: {key}")
+            continue
+        if not _is_int(summary.get(key)):
+            errors.append(f"run_summary.json key '{key}' must be int")
+
+    float_keys = (
+        "last_episode_return",
+        "decided_action_change_rate",
+        "applied_action_change_rate",
+        "decided_applied_mismatch_rate",
+        "applied_action_hold_run_mean",
+    )
+    for key in float_keys:
+        if key not in summary:
+            errors.append(f"run_summary.json missing key: {key}")
+            continue
+        if not _is_number(summary.get(key)):
+            errors.append(f"run_summary.json key '{key}' must be numeric")
+
+    dict_count_keys = ("boundary_cause_counts", "reset_cause_counts")
+    for key in dict_count_keys:
+        value = summary.get(key)
+        if not isinstance(value, dict):
+            errors.append(f"run_summary.json key '{key}' must be object")
+            continue
+        for sub_key, sub_value in value.items():
+            if not isinstance(sub_key, str):
+                errors.append(f"run_summary.json key '{key}' must map string keys")
+                break
+            if not _is_int(sub_value):
+                errors.append(f"run_summary.json key '{key}' must map to int values")
+                break
+
+    if config_frames is not None and _is_int(summary.get("frames")) and int(summary["frames"]) != int(config_frames):
+        errors.append("run_summary.json frames does not match config.json frames")
+
+
 def _is_carmack_single_run_config(config: Mapping[str, Any]) -> bool:
     return (
         str(config.get("runner_mode")) == CARMACK_SINGLE_RUN_PROFILE
@@ -460,6 +530,7 @@ def validate_contract(run_dir: Path, sample_event_lines: int = 0) -> Dict[str, A
 
     config_path = run_dir / "config.json"
     score_path = run_dir / "score.json"
+    run_summary_path = run_dir / "run_summary.json"
     events_path = run_dir / "events.jsonl"
     episodes_path = run_dir / "episodes.jsonl"
     segments_path = run_dir / "segments.jsonl"
@@ -476,6 +547,20 @@ def validate_contract(run_dir: Path, sample_event_lines: int = 0) -> Dict[str, A
 
     if _is_carmack_single_run_config(config):
         _check_carmack_single_run_config(config, errors)
+        if not run_summary_path.exists():
+            errors.append("run_summary.json not found")
+        else:
+            try:
+                run_summary = _load_json(run_summary_path)
+            except Exception as exc:  # pragma: no cover - invalid JSON path
+                errors.append(f"failed to load run_summary.json: {exc}")
+            else:
+                config_frames = config.get("frames")
+                _check_carmack_summary_schema(
+                    run_summary,
+                    errors,
+                    config_frames=int(config_frames) if _is_int(config_frames) else None,
+                )
         _check_carmack_events_sample(events_path, sample_lines, errors)
         _check_carmack_episodes_sample(episodes_path, sample_lines, errors)
     else:

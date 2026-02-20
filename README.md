@@ -178,6 +178,7 @@ Outputs are written to a timestamped run directory:
 - `config.json`
 - `events.jsonl` (one row per frame)
 - `episodes.jsonl` (one row per episode end)
+- `run_summary.json` (aggregated counters and cadence diagnostics)
 
 ### How to validate delay/frame-skip mechanics
 
