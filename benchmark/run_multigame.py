@@ -14,6 +14,13 @@ import numpy as np
 
 from benchmark.agents import RandomAgent, RepeatActionAgent
 from benchmark.ale_env import ALEAtariEnv, ALEEnvConfig
+from benchmark.carmack_multigame_runner import (
+    CARMACK_MULTI_RUN_PROFILE,
+    CARMACK_MULTI_RUN_SCHEMA_VERSION,
+    CarmackMultiGameRunner,
+    CarmackMultiGameRunnerConfig,
+    FrameFromStepAdapter,
+)
 from benchmark.contract import BENCHMARK_CONTRACT_VERSION, compute_contract_hash, resolve_scoring_defaults
 from benchmark.logging_utils import JsonlWriter, dump_json, make_run_dir
 from benchmark.multigame_runner import MultiGameRunner, MultiGameRunnerConfig
@@ -64,6 +71,7 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
     set_if_present("sticky", ["sticky", "sticky_prob"], float)
     set_if_present("full_action_space", ["full_action_space"], int)
     set_if_present("life_loss_termination", ["life_loss_termination"], int)
+    set_if_present("runner_mode", ["runner_mode"], str)
     set_if_present("agent", ["agent"], str)
     set_if_present("repeat_action_idx", ["repeat_action_idx"], int)
     set_if_present("delay_target_gpu", ["delay_target_gpu"], int)
@@ -77,6 +85,8 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
     runner_cfg = config_data.get("runner_config")
     if isinstance(runner_cfg, dict) and "episode_log_interval" in runner_cfg and runner_cfg["episode_log_interval"] is not None:
         defaults["log_episode_every"] = int(runner_cfg["episode_log_interval"])
+    if isinstance(runner_cfg, dict) and "runner_mode" in runner_cfg and runner_cfg["runner_mode"] is not None:
+        defaults["runner_mode"] = str(runner_cfg["runner_mode"])
 
     # TinyDQN keys can be top-level or nested under agent_config.
     agent_cfg = config_data.get("agent_config")
@@ -98,6 +108,7 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "dqn_replay_min",
         "dqn_use_replay",
         "dqn_device",
+        "dqn_decision_interval",
         "delay_target_gpu",
         "delay_target_use_cuda_graphs",
         "delay_target_load_file",
@@ -120,6 +131,7 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "dqn_replay_min": int,
         "dqn_use_replay": int,
         "dqn_device": str,
+        "dqn_decision_interval": int,
         "delay_target_gpu": int,
         "delay_target_use_cuda_graphs": int,
         "delay_target_load_file": str,
@@ -139,6 +151,7 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "dqn_replay_min",
         "dqn_use_replay",
         "dqn_device",
+        "dqn_decision_interval",
         "delay_target_gpu",
         "delay_target_use_cuda_graphs",
         "delay_target_load_file",
@@ -162,6 +175,7 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "replay_min_size": "dqn_replay_min",
         "use_replay": "dqn_use_replay",
         "device": "dqn_device",
+        "decision_interval": "dqn_decision_interval",
         "gpu": "delay_target_gpu",
         "use_cuda_graphs": "delay_target_use_cuda_graphs",
         "load_file": "delay_target_load_file",
@@ -225,6 +239,13 @@ def _build_parser(defaults: Optional[Dict[str, Any]] = None) -> argparse.Argumen
         choices=["random", "repeat", "tinydqn", "delay_target"],
         default="random",
         help="Agent type.",
+    )
+    parser.add_argument(
+        "--runner-mode",
+        type=str,
+        choices=["standard", "carmack_compat"],
+        default="standard",
+        help="Runner loop semantics.",
     )
     parser.add_argument("--repeat-action-idx", type=int, default=0, help="Action index for RepeatActionAgent.")
     parser.add_argument("--delay-target-gpu", type=int, default=0, help="GPU index for agent_delay_target adapter.")
@@ -298,6 +319,12 @@ def _build_parser(defaults: Optional[Dict[str, Any]] = None) -> argparse.Argumen
         help="TinyDQN device.",
     )
     parser.add_argument(
+        "--dqn-decision-interval",
+        type=int,
+        default=4,
+        help="TinyDQN decision interval in frames (agent-owned cadence in carmack_compat mode).",
+    )
+    parser.add_argument(
         "--default-action-idx",
         type=int,
         default=0,
@@ -339,6 +366,18 @@ def seed_everything(seed: int) -> None:
     np.random.seed(seed)
 
 
+def validate_args(args: argparse.Namespace) -> None:
+    if str(args.runner_mode) == "carmack_compat" and int(args.decision_interval) != 1:
+        raise ValueError(
+            "--runner-mode carmack_compat requires --decision-interval 1 "
+            "(agent-owned cadence; runner does not apply frame-skip)."
+        )
+    if str(args.agent) == "delay_target" and str(args.runner_mode) == "standard" and int(args.decision_interval) != 1:
+        raise ValueError("agent=delay_target currently requires --decision-interval 1 to avoid double frame-skipping.")
+    if str(args.agent) == "tinydqn" and int(args.dqn_decision_interval) <= 0:
+        raise ValueError("--dqn-decision-interval must be > 0 for --agent tinydqn.")
+
+
 def build_agent(args: argparse.Namespace, num_actions: int, total_frames: int):
     if args.agent == "random":
         return RandomAgent(num_actions=num_actions, seed=args.seed), {}
@@ -347,7 +386,8 @@ def build_agent(args: argparse.Namespace, num_actions: int, total_frames: int):
             raise ValueError(f"--repeat-action-idx must be in [0, {num_actions - 1}]")
         return RepeatActionAgent(action_idx=args.repeat_action_idx), {"action_idx": int(args.repeat_action_idx)}
     if args.agent == "delay_target":
-        if int(args.decision_interval) != 1:
+        runner_mode = str(getattr(args, "runner_mode", "standard"))
+        if runner_mode == "standard" and int(getattr(args, "decision_interval", 1)) != 1:
             raise ValueError("agent=delay_target currently requires --decision-interval 1 to avoid double frame-skipping.")
         try:
             from benchmark.agents_delay_target import DelayTargetAdapter  # pylint: disable=import-outside-toplevel
@@ -362,8 +402,9 @@ def build_agent(args: argparse.Namespace, num_actions: int, total_frames: int):
         }
         if args.delay_target_load_file:
             adapter_kwargs["load_file"] = str(args.delay_target_load_file)
-        if args.delay_target_ring_buffer_size is not None:
-            adapter_kwargs["ring_buffer_size"] = int(args.delay_target_ring_buffer_size)
+        ring_buffer_size = getattr(args, "delay_target_ring_buffer_size", None)
+        if ring_buffer_size is not None:
+            adapter_kwargs["ring_buffer_size"] = int(ring_buffer_size)
         agent = DelayTargetAdapter(
             data_dir=str(Path(args.logdir)),
             seed=int(args.seed),
@@ -393,6 +434,7 @@ def build_agent(args: argparse.Namespace, num_actions: int, total_frames: int):
         eps_decay_frames=int(args.dqn_eps_decay_frames),
         use_replay=bool(int(args.dqn_use_replay)),
         device=str(args.dqn_device),
+        decision_interval=int(args.dqn_decision_interval),
     )
     agent = TinyDQNAgent(action_space_n=num_actions, seed=int(args.seed), config=dqn_config)
     return agent, dqn_config.as_dict()
@@ -460,7 +502,7 @@ def build_config_payload(
     games: Sequence[str],
     run_dir: Path,
     schedule: Schedule,
-    runner_config: MultiGameRunnerConfig,
+    runner_config: MultiGameRunnerConfig | CarmackMultiGameRunnerConfig,
     resolved_action_sets: Dict[str, List[int]],
     agent_config: Dict[str, object],
     config_file_data: Dict[str, Any],
@@ -478,6 +520,7 @@ def build_config_payload(
         "sticky": float(args.sticky),
         "full_action_space": bool(args.full_action_space),
         "life_loss_termination": bool(args.life_loss_termination),
+        "runner_mode": str(args.runner_mode),
         "agent": str(args.agent),
         "agent_config": dict(agent_config),
         "repeat_action_idx": int(args.repeat_action_idx),
@@ -509,6 +552,19 @@ def build_config_payload(
         payload["config_path"] = str(args.config)
     if config_file_data:
         payload["config_file"] = dict(config_file_data)
+    if isinstance(runner_config, CarmackMultiGameRunnerConfig):
+        payload["multi_run_profile"] = CARMACK_MULTI_RUN_PROFILE
+        payload["multi_run_schema_version"] = CARMACK_MULTI_RUN_SCHEMA_VERSION
+        payload["runner_config"].update(
+            {
+                "runner_mode": CARMACK_MULTI_RUN_PROFILE,
+                "action_cadence_mode": "agent_owned",
+                "frame_skip_enforced": 1,
+                "multi_run_schema_version": CARMACK_MULTI_RUN_SCHEMA_VERSION,
+                "reset_delay_queue_on_reset": bool(runner_config.reset_delay_queue_on_reset),
+                "reset_delay_queue_on_visit_switch": bool(runner_config.reset_delay_queue_on_visit_switch),
+            }
+        )
     payload["benchmark_contract_version"] = BENCHMARK_CONTRACT_VERSION
     payload["benchmark_contract_hash"] = compute_contract_hash(payload, scoring_defaults=scoring_defaults)
     return payload
@@ -553,6 +609,7 @@ def collect_agent_stats(agent: object) -> Dict[str, Any]:
 
 def main() -> None:
     args = parse_args()
+    validate_args(args)
     config_file_data = dict(getattr(args, "_config_data", {}))
     games = parse_games_csv(args.games)
     seed_everything(args.seed)
@@ -581,15 +638,29 @@ def main() -> None:
     if args.default_action_idx < 0 or args.default_action_idx >= len(global_action_set):
         raise ValueError(f"--default-action-idx must be in [0, {len(global_action_set) - 1}]")
 
-    runner_config = MultiGameRunnerConfig(
-        decision_interval=args.decision_interval,
-        delay_frames=args.delay,
-        default_action_idx=args.default_action_idx,
-        episode_log_interval=int(args.log_episode_every),
-        include_timestamps=bool(args.timestamps),
-        global_action_set=global_action_set,
-    )
+    if str(args.runner_mode) == "carmack_compat":
+        runner_config = CarmackMultiGameRunnerConfig(
+            decision_interval=int(args.decision_interval),
+            delay_frames=args.delay,
+            default_action_idx=args.default_action_idx,
+            episode_log_interval=int(args.log_episode_every),
+            include_timestamps=bool(args.timestamps),
+            global_action_set=global_action_set,
+        )
+    else:
+        runner_config = MultiGameRunnerConfig(
+            decision_interval=args.decision_interval,
+            delay_frames=args.delay,
+            default_action_idx=args.default_action_idx,
+            episode_log_interval=int(args.log_episode_every),
+            include_timestamps=bool(args.timestamps),
+            global_action_set=global_action_set,
+        )
     agent, agent_config = build_agent(args, num_actions=len(global_action_set), total_frames=int(schedule.total_frames))
+    if str(args.runner_mode) == "carmack_compat":
+        if not (hasattr(agent, "frame") and callable(getattr(agent, "frame"))):
+            decision_interval = int(args.dqn_decision_interval) if str(args.agent) == "tinydqn" else 1
+            agent = FrameFromStepAdapter(agent, decision_interval=decision_interval)
 
     resolved_action_sets = resolve_action_sets(env, games)
     action_mappings = build_action_mappings(resolved_action_sets, global_action_set, args.default_action_idx)
@@ -613,15 +684,26 @@ def main() -> None:
     dump_json(run_dir / "config.json", config_payload)
 
     try:
-        summary = MultiGameRunner(
-            env=env,
-            agent=agent,
-            schedule=schedule,
-            config=runner_config,
-            event_writer=event_writer,
-            episode_writer=episode_writer,
-            segment_writer=segment_writer,
-        ).run()
+        if str(args.runner_mode) == "carmack_compat":
+            summary = CarmackMultiGameRunner(
+                env=env,
+                agent=agent,
+                schedule=schedule,
+                config=runner_config,
+                event_writer=event_writer,
+                episode_writer=episode_writer,
+                segment_writer=segment_writer,
+            ).run()
+        else:
+            summary = MultiGameRunner(
+                env=env,
+                agent=agent,
+                schedule=schedule,
+                config=runner_config,
+                event_writer=event_writer,
+                episode_writer=episode_writer,
+                segment_writer=segment_writer,
+            ).run()
     finally:
         event_writer.close()
         episode_writer.close()

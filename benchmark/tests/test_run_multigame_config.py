@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 
-from benchmark.run_multigame import collect_agent_stats, parse_args
+import pytest
+
+from benchmark.run_multigame import collect_agent_stats, parse_args, validate_args
 
 
 def test_run_multigame_config_defaults_and_cli_override(tmp_path):
@@ -115,3 +117,39 @@ def test_run_multigame_config_parses_delay_target_agent_config(tmp_path):
     assert args.delay_target_use_cuda_graphs == 0
     assert args.delay_target_load_file == "/tmp/example.model"
     assert args.delay_target_ring_buffer_size == 32768
+
+
+def test_run_multigame_config_parses_runner_mode_and_tinydqn_decision_interval(tmp_path):
+    config_path = tmp_path / "cfg_carmack_tiny.json"
+    payload = {
+        "games": ["ms_pacman"],
+        "runner_mode": "carmack_compat",
+        "decision_interval": 1,
+        "agent": "tinydqn",
+        "agent_config": {
+            "decision_interval": 7,
+        },
+    }
+    with config_path.open("w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
+
+    args = parse_args(["--config", str(config_path)])
+    assert args.runner_mode == "carmack_compat"
+    assert args.agent == "tinydqn"
+    assert args.decision_interval == 1
+    assert args.dqn_decision_interval == 7
+
+
+def test_validate_args_carmack_requires_decision_interval_one():
+    args = parse_args(
+        [
+            "--games",
+            "ms_pacman",
+            "--runner-mode",
+            "carmack_compat",
+            "--decision-interval",
+            "4",
+        ]
+    )
+    with pytest.raises(ValueError, match=r"carmack_compat requires --decision-interval 1"):
+        validate_args(args)
