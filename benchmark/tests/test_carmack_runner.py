@@ -77,6 +77,28 @@ class RecordingLegacyUnknownNameAgent:
         return int(self.action_idx)
 
 
+class RecordingBoundarySequenceAgent:
+    """Deterministic agent for golden-trace compatibility checks."""
+
+    def __init__(self, action_sequence):
+        self._seq = [int(x) for x in action_sequence]
+        self._idx = 0
+        self.calls = []
+
+    def frame(self, obs_rgb, reward, boundary) -> int:
+        marker = int(obs_rgb[0, 0, 0])
+        self.calls.append(
+            {
+                "obs_marker": marker,
+                "reward": float(reward),
+                "boundary": dict(boundary),
+            }
+        )
+        out = int(self._seq[self._idx % len(self._seq)])
+        self._idx += 1
+        return out
+
+
 @dataclass
 class ScriptedEnv:
     action_set: list
@@ -327,6 +349,158 @@ def test_carmack_runner_legacy_adapter_handles_unknown_third_arg_name():
     assert [call["flag"] for call in agent.calls] == [0, 1, 0]
     assert events[1]["terminated"] is True
     assert events[1]["truncated"] is False
+
+
+def test_carmack_runner_golden_trace_actions_and_boundaries():
+    env = ScriptedEnv(
+        action_set=list(range(4)),
+        rewards=[0.0, 2.0, 0.0, 0.0, 0.0, 0.0],
+        lives_seq=[3, 3, 3, 2, 2, 2],
+        terminated_at={1},
+        truncated_at={4},
+    )
+    agent = RecordingBoundarySequenceAgent(action_sequence=[1, 2, 3, 1, 2, 3])
+    config = CarmackRunnerConfig(
+        total_frames=6,
+        delay_frames=1,
+        include_timestamps=False,
+        lives_as_episodes=True,
+        reset_on_life_loss=False,
+        max_frames_without_reward=99,
+        progress_log_interval_frames=0,
+        pulse_log_interval=0,
+        reset_log_interval=0,
+    )
+    summary, events, episodes = run_with_memory(env, agent, config)
+
+    expected_events = [
+        {
+            "frame_idx": 0,
+            "decided_action_idx": 0,
+            "applied_action_idx": 0,
+            "next_policy_action_idx": 1,
+            "terminated": False,
+            "truncated": False,
+            "boundary_cause": None,
+            "reset_cause": None,
+            "end_of_episode_pulse": False,
+            "reset_performed": False,
+        },
+        {
+            "frame_idx": 1,
+            "decided_action_idx": 1,
+            "applied_action_idx": 0,
+            "next_policy_action_idx": 2,
+            "terminated": True,
+            "truncated": False,
+            "boundary_cause": "scripted_end",
+            "reset_cause": "terminated",
+            "end_of_episode_pulse": True,
+            "reset_performed": True,
+        },
+        {
+            "frame_idx": 2,
+            "decided_action_idx": 2,
+            "applied_action_idx": 1,
+            "next_policy_action_idx": 3,
+            "terminated": False,
+            "truncated": False,
+            "boundary_cause": None,
+            "reset_cause": None,
+            "end_of_episode_pulse": False,
+            "reset_performed": False,
+        },
+        {
+            "frame_idx": 3,
+            "decided_action_idx": 3,
+            "applied_action_idx": 2,
+            "next_policy_action_idx": 1,
+            "terminated": False,
+            "truncated": False,
+            "boundary_cause": "life_loss",
+            "reset_cause": None,
+            "end_of_episode_pulse": True,
+            "reset_performed": False,
+        },
+        {
+            "frame_idx": 4,
+            "decided_action_idx": 1,
+            "applied_action_idx": 3,
+            "next_policy_action_idx": 2,
+            "terminated": False,
+            "truncated": True,
+            "boundary_cause": "time_limit",
+            "reset_cause": "truncated",
+            "end_of_episode_pulse": True,
+            "reset_performed": True,
+        },
+        {
+            "frame_idx": 5,
+            "decided_action_idx": 2,
+            "applied_action_idx": 1,
+            "next_policy_action_idx": 3,
+            "terminated": False,
+            "truncated": False,
+            "boundary_cause": "life_loss",
+            "reset_cause": None,
+            "end_of_episode_pulse": True,
+            "reset_performed": False,
+        },
+    ]
+
+    actual_events = []
+    for row in events:
+        actual_events.append(
+            {
+                "frame_idx": row["frame_idx"],
+                "decided_action_idx": row["decided_action_idx"],
+                "applied_action_idx": row["applied_action_idx"],
+                "next_policy_action_idx": row["next_policy_action_idx"],
+                "terminated": row["terminated"],
+                "truncated": row["truncated"],
+                "boundary_cause": row["boundary_cause"],
+                "reset_cause": row["reset_cause"],
+                "end_of_episode_pulse": row["end_of_episode_pulse"],
+                "reset_performed": row["reset_performed"],
+            }
+        )
+    assert actual_events == expected_events
+
+    assert episodes == [
+        {
+            "episode_idx": 0,
+            "episode_return": 2.0,
+            "length": 2,
+            "termination_reason": "scripted_end",
+            "end_frame_idx": 1,
+            "ended_by_reset": True,
+        },
+        {
+            "episode_idx": 1,
+            "episode_return": 0.0,
+            "length": 3,
+            "termination_reason": "time_limit",
+            "end_frame_idx": 4,
+            "ended_by_reset": True,
+        },
+    ]
+
+    assert summary["frames"] == 6
+    assert summary["episodes_completed"] == 2
+    assert summary["life_loss_pulses"] == 2
+    assert summary["game_over_resets"] == 1
+    assert summary["truncated_resets"] == 1
+    assert summary["timeout_resets"] == 0
+    assert summary["life_loss_resets"] == 0
+
+    assert [call["boundary"]["boundary_cause"] for call in agent.calls] == [
+        None,
+        "scripted_end",
+        None,
+        "life_loss",
+        "time_limit",
+        "life_loss",
+    ]
 
 
 def test_carmack_runner_boundary_precedence_table():
