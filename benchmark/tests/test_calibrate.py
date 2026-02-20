@@ -9,6 +9,7 @@ from benchmark.calibrate import (
     _should_stream_line,
     aggregate_summary,
     evaluate_calib_expectations,
+    evaluate_rollout_acceptance,
     evaluate_smoke_expectations,
     merge_config,
     resolve_config_path,
@@ -385,3 +386,77 @@ def test_should_stream_line_filters_reset_spam_only():
     assert _should_stream_line("  Sending Reset...   ") is False
     assert _should_stream_line("[tinydqn] train_step=1000 replay_size=4996 loss=0.002520\n") is True
     assert _should_stream_line("Run complete: /tmp/run\n") is True
+
+
+def test_rollout_acceptance_passes_within_thresholds():
+    baseline = {
+        "runs": [
+            {"agent": "random", "seed": 0, "status": "success", "score": {"final_score": 10.0}},
+            {"agent": "random", "seed": 1, "status": "success", "score": {"final_score": 12.0}},
+            {"agent": "repeat", "seed": 0, "status": "success", "score": {"final_score": 4.0}},
+        ]
+    }
+    current = [
+        {"agent": "random", "seed": 0, "status": "success", "score": {"final_score": 9.95}},
+        {"agent": "random", "seed": 1, "status": "success", "score": {"final_score": 11.9}},
+        {"agent": "repeat", "seed": 0, "status": "success", "score": {"final_score": 3.9}},
+    ]
+
+    result = evaluate_rollout_acceptance(
+        current,
+        baseline,
+        metric="final_score",
+        mean_floor=-0.2,
+        worst_floor=-0.3,
+        min_overlap=2,
+    )
+    assert result["passed"] is True
+    assert result["errors"] == []
+    assert result["overlap_count"] == 3
+
+
+def test_rollout_acceptance_fails_on_worst_seed_delta():
+    baseline = {
+        "runs": [
+            {"agent": "random", "seed": 0, "status": "success", "score": {"final_score": 10.0}},
+            {"agent": "random", "seed": 1, "status": "success", "score": {"final_score": 12.0}},
+        ]
+    }
+    current = [
+        {"agent": "random", "seed": 0, "status": "success", "score": {"final_score": 9.0}},
+        {"agent": "random", "seed": 1, "status": "success", "score": {"final_score": 11.95}},
+    ]
+
+    result = evaluate_rollout_acceptance(
+        current,
+        baseline,
+        metric="final_score",
+        mean_floor=-0.3,
+        worst_floor=-0.5,
+        min_overlap=1,
+    )
+    assert result["passed"] is False
+    assert any("worst-seed final_score delta" in msg for msg in result["errors"])
+
+
+def test_rollout_acceptance_fails_on_insufficient_overlap():
+    baseline = {
+        "runs": [
+            {"agent": "random", "seed": 0, "status": "success", "score": {"final_score": 10.0}},
+            {"agent": "random", "seed": 1, "status": "success", "score": {"final_score": 12.0}},
+        ]
+    }
+    current = [
+        {"agent": "random", "seed": 0, "status": "success", "score": {"final_score": 10.1}},
+    ]
+
+    result = evaluate_rollout_acceptance(
+        current,
+        baseline,
+        metric="final_score",
+        mean_floor=-1.0,
+        worst_floor=-1.0,
+        min_overlap=2,
+    )
+    assert result["passed"] is False
+    assert any("Insufficient overlap" in msg for msg in result["errors"])

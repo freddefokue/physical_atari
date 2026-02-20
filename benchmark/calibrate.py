@@ -401,6 +401,144 @@ def evaluate_calib_expectations(run_results: Sequence[Dict[str, Any]]) -> Dict[s
     }
 
 
+def _success_metric_by_key(run_rows: Sequence[Dict[str, Any]], metric: str) -> Dict[Tuple[str, int], float]:
+    out: Dict[Tuple[str, int], float] = {}
+    for row in run_rows:
+        if row.get("status") != "success":
+            continue
+        agent = str(row.get("agent"))
+        seed_raw = row.get("seed")
+        if seed_raw is None:
+            continue
+        try:
+            seed = int(seed_raw)
+        except (TypeError, ValueError):
+            continue
+        score = row.get("score")
+        if not isinstance(score, dict):
+            continue
+        metric_val = _finite_or_none(score.get(metric))
+        if metric_val is None:
+            continue
+        out[(agent, seed)] = float(metric_val)
+    return out
+
+
+def evaluate_rollout_acceptance(
+    run_results: Sequence[Dict[str, Any]],
+    baseline_summary: Mapping[str, Any],
+    *,
+    metric: str,
+    mean_floor: float,
+    worst_floor: float,
+    min_overlap: int,
+) -> Dict[str, Any]:
+    errors: List[str] = []
+    warnings: List[str] = []
+
+    baseline_runs_raw = baseline_summary.get("runs")
+    if not isinstance(baseline_runs_raw, list):
+        return {
+            "passed": False,
+            "errors": ["Baseline summary missing list key: runs"],
+            "warnings": warnings,
+        }
+
+    current_map = _success_metric_by_key(run_results, metric=metric)
+    baseline_map = _success_metric_by_key(list(baseline_runs_raw), metric=metric)
+
+    current_keys = set(current_map.keys())
+    baseline_keys = set(baseline_map.keys())
+    overlap_keys = sorted(current_keys & baseline_keys)
+
+    missing_current = sorted(baseline_keys - current_keys)
+    if missing_current:
+        shown = ", ".join(f"{agent}:{seed}" for agent, seed in missing_current[:8])
+        errors.append(
+            f"Missing successful current runs for {len(missing_current)} baseline keys (first: {shown})"
+        )
+
+    missing_baseline = sorted(current_keys - baseline_keys)
+    if missing_baseline:
+        shown = ", ".join(f"{agent}:{seed}" for agent, seed in missing_baseline[:8])
+        warnings.append(
+            f"{len(missing_baseline)} successful current runs are not present in baseline (first: {shown})"
+        )
+
+    if len(overlap_keys) < int(min_overlap):
+        errors.append(f"Insufficient overlap: need >= {int(min_overlap)} successful run keys, got {len(overlap_keys)}")
+        return {
+            "passed": False,
+            "errors": errors,
+            "warnings": warnings,
+            "metric": str(metric),
+            "thresholds": {
+                "mean_floor": float(mean_floor),
+                "worst_floor": float(worst_floor),
+                "min_overlap": int(min_overlap),
+            },
+            "overlap_count": int(len(overlap_keys)),
+        }
+
+    delta_by_agent: Dict[str, List[float]] = {}
+    delta_rows: List[Dict[str, Any]] = []
+    for key in overlap_keys:
+        agent, seed = key
+        delta = float(current_map[key] - baseline_map[key])
+        delta_by_agent.setdefault(agent, []).append(delta)
+        delta_rows.append(
+            {
+                "agent": str(agent),
+                "seed": int(seed),
+                "baseline": float(baseline_map[key]),
+                "current": float(current_map[key]),
+                "delta": float(delta),
+            }
+        )
+
+    per_agent: Dict[str, Dict[str, Any]] = {}
+    for agent, deltas in sorted(delta_by_agent.items()):
+        arr = np.asarray(deltas, dtype=np.float64)
+        mean_delta = float(np.mean(arr))
+        worst_delta = float(np.min(arr))
+        per_agent[str(agent)] = {
+            "count": int(arr.shape[0]),
+            "mean_delta": mean_delta,
+            "worst_delta": worst_delta,
+        }
+        if mean_delta + EPS < float(mean_floor):
+            errors.append(
+                f"Rollout gate failed for agent={agent}: mean {metric} delta {mean_delta:.6f} < floor {float(mean_floor):.6f}"
+            )
+        if worst_delta + EPS < float(worst_floor):
+            errors.append(
+                f"Rollout gate failed for agent={agent}: worst-seed {metric} delta {worst_delta:.6f} < floor {float(worst_floor):.6f}"
+            )
+
+    all_deltas = [row["delta"] for row in delta_rows]
+    mean_all = float(np.mean(np.asarray(all_deltas, dtype=np.float64))) if all_deltas else None
+    worst_all = float(np.min(np.asarray(all_deltas, dtype=np.float64))) if all_deltas else None
+
+    return {
+        "passed": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+        "metric": str(metric),
+        "thresholds": {
+            "mean_floor": float(mean_floor),
+            "worst_floor": float(worst_floor),
+            "min_overlap": int(min_overlap),
+        },
+        "overlap_count": int(len(overlap_keys)),
+        "overlap_keys": [{"agent": str(agent), "seed": int(seed)} for agent, seed in overlap_keys],
+        "aggregate": {
+            "mean_delta": mean_all,
+            "worst_delta": worst_all,
+        },
+        "per_agent": per_agent,
+    }
+
+
 def _parse_run_dir_from_stdout(stdout: str) -> Optional[Path]:
     matches = re.findall(r"Run complete:\s*(.+)", stdout)
     if not matches:
@@ -487,6 +625,43 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--bottom-k-frac", type=float, default=None, help="Override scoring bottom_k_frac.")
     parser.add_argument("--revisit-episodes", type=int, default=None, help="Override scoring revisit_episodes.")
     parser.add_argument("--python", type=str, default=sys.executable, help="Python executable for launching runs.")
+    parser.add_argument(
+        "--rollout-baseline-summary",
+        type=str,
+        default=None,
+        help="Optional baseline summary.json path for rollout acceptance gates.",
+    )
+    parser.add_argument(
+        "--rollout-enforce",
+        type=int,
+        choices=[0, 1],
+        default=0,
+        help="When set, fail the suite if rollout_acceptance gates fail.",
+    )
+    parser.add_argument(
+        "--rollout-metric",
+        type=str,
+        default="final_score",
+        help="Score metric key used for rollout delta gates (default: final_score).",
+    )
+    parser.add_argument(
+        "--rollout-mean-floor",
+        type=float,
+        default=-0.10,
+        help="Minimum allowed mean metric delta per agent/current-baseline.",
+    )
+    parser.add_argument(
+        "--rollout-worst-floor",
+        type=float,
+        default=-0.25,
+        help="Minimum allowed worst-seed metric delta per agent/current-baseline.",
+    )
+    parser.add_argument(
+        "--rollout-min-overlap",
+        type=int,
+        default=1,
+        help="Minimum number of successful overlapping (agent, seed) keys required.",
+    )
     return parser.parse_args(args=argv)
 
 
@@ -658,19 +833,41 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         summary["smoke_expectations"] = expectations
     if suite.name == "calib":
         summary["calib_expectations"] = evaluate_calib_expectations(run_results)
+    if args.rollout_baseline_summary:
+        baseline_path = Path(str(args.rollout_baseline_summary)).expanduser().resolve()
+        rollout_result: Dict[str, Any]
+        if not baseline_path.exists():
+            rollout_result = {
+                "passed": False,
+                "errors": [f"rollout baseline summary not found: {baseline_path}"],
+                "warnings": [],
+            }
+        else:
+            baseline_summary = load_json(baseline_path)
+            rollout_result = evaluate_rollout_acceptance(
+                run_results,
+                baseline_summary,
+                metric=str(args.rollout_metric),
+                mean_floor=float(args.rollout_mean_floor),
+                worst_floor=float(args.rollout_worst_floor),
+                min_overlap=int(args.rollout_min_overlap),
+            )
+        rollout_result["baseline_summary_path"] = str(baseline_path)
+        summary["rollout_acceptance"] = rollout_result
 
     summary_path = out_dir / "summary.json"
     _write_json(summary_path, summary)
     print(json.dumps(summary, indent=2, sort_keys=True))
 
+    failed = False
     if suite.enforce_smoke_expectations:
-        passed = bool(summary["smoke_expectations"].get("passed", False))
-        return 0 if passed else 1
+        failed = failed or (not bool(summary["smoke_expectations"].get("passed", False)))
     if suite.name == "calib":
-        passed = bool(summary["calib_expectations"].get("passed", False))
-        return 0 if passed else 1
+        failed = failed or (not bool(summary["calib_expectations"].get("passed", False)))
+    if bool(int(args.rollout_enforce)) and "rollout_acceptance" in summary:
+        failed = failed or (not bool(summary["rollout_acceptance"].get("passed", False)))
 
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

@@ -420,12 +420,16 @@ Suite behavior:
 - Scores each run with `benchmark.score_run`, writing per-run `score.json`.
 - Writes aggregate `summary.json` under the suite output directory with per-agent stats.
 - `smoke` enforces lightweight expectations and exits non-zero on failures (mechanics/logging checks + robust ordering checks).
+- Optional rollout gates compare current runs against a fixed baseline `summary.json`:
+  `--rollout-baseline-summary <path> --rollout-enforce 1`
+  with numeric thresholds `--rollout-mean-floor`, `--rollout-worst-floor`, and overlap requirement `--rollout-min-overlap`.
 
 `summary.json` reports:
 - per-agent score stats (`final_score`, `mean_score`, `bottom_k_score`: mean/median/std/min/max/CV),
 - runtime (`fps` and `frames` means),
 - forgetting/plasticity aggregates when available,
-- skipped/failed run counts and smoke expectation results.
+- skipped/failed run counts and smoke expectation results,
+- optional `rollout_acceptance` gate results (baseline path, overlap, per-agent deltas, pass/fail).
 
 
 ---
