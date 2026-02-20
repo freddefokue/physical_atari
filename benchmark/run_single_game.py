@@ -55,7 +55,7 @@ def parse_args() -> argparse.Namespace:
         "--default-action-idx",
         type=int,
         default=0,
-        help="Default action index used to initialize delay queue on each reset.",
+        help="Default action index used to seed delayed-action queue state.",
     )
     parser.add_argument(
         "--runner-mode",
@@ -83,6 +83,13 @@ def parse_args() -> argparse.Namespace:
         choices=[0, 1],
         default=0,
         help="Carmack compat mode: reset environment on life-loss pulse.",
+    )
+    parser.add_argument(
+        "--compat-reset-delay-queue-on-reset",
+        type=int,
+        choices=[0, 1],
+        default=0,
+        help="Carmack compat mode: 1 resets delay queue to default on each episode reset, 0 keeps queue persistent.",
     )
     parser.add_argument(
         "--compat-log-every-frames",
@@ -224,6 +231,7 @@ def build_config_payload(
         "lives_as_episodes": bool(args.lives_as_episodes),
         "max_frames_without_reward": int(args.max_frames_without_reward),
         "reset_on_life_loss": bool(args.reset_on_life_loss),
+        "compat_reset_delay_queue_on_reset": bool(args.compat_reset_delay_queue_on_reset),
         "compat_log_every_frames": int(args.compat_log_every_frames),
         "compat_log_pulses_every": int(args.compat_log_pulses_every),
         "compat_log_resets_every": int(args.compat_log_resets_every),
@@ -251,6 +259,7 @@ def build_config_payload(
                 "lives_as_episodes": bool(runner_config.lives_as_episodes),
                 "max_frames_without_reward": int(runner_config.max_frames_without_reward),
                 "reset_on_life_loss": bool(runner_config.reset_on_life_loss),
+                "reset_delay_queue_on_reset": bool(runner_config.reset_delay_queue_on_reset),
                 "log_rank": int(runner_config.log_rank),
                 "log_name": str(runner_config.log_name),
                 "rolling_average_frames": int(runner_config.rolling_average_frames),
@@ -298,6 +307,7 @@ def main() -> None:
             lives_as_episodes=bool(args.lives_as_episodes),
             max_frames_without_reward=int(args.max_frames_without_reward),
             reset_on_life_loss=bool(args.reset_on_life_loss),
+            reset_delay_queue_on_reset=bool(args.compat_reset_delay_queue_on_reset),
             progress_log_interval_frames=int(args.compat_log_every_frames),
             pulse_log_interval=int(args.compat_log_pulses_every),
             reset_log_interval=int(args.compat_log_resets_every),

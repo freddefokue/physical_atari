@@ -105,6 +105,8 @@ class CarmackRunnerConfig:
     lives_as_episodes: bool = True
     max_frames_without_reward: int = 18_000
     reset_on_life_loss: bool = False
+    # Explicit policy knob: default preserves queue across episode resets.
+    reset_delay_queue_on_reset: bool = False
     progress_log_interval_frames: int = 0
     pulse_log_interval: int = 0
     reset_log_interval: int = 1
@@ -374,6 +376,8 @@ class CarmackCompatRunner:
                 frames_without_reward = 0
                 reset_performed = True
                 reset_count += 1
+                if bool(self.config.reset_delay_queue_on_reset):
+                    delayed_actions = deque([int(self.config.default_action_idx)] * int(self.config.delay_frames))
                 episode_end.append(int(frame_idx))
                 episode_scores.append(float(event_episode_return))
                 if self.config.reset_log_interval > 0 and (episodes_completed % self.config.reset_log_interval == 0):

@@ -503,6 +503,54 @@ def test_carmack_runner_golden_trace_actions_and_boundaries():
     ]
 
 
+def test_carmack_runner_delay_queue_policy_persist_vs_reset():
+    env_kwargs = dict(
+        action_set=list(range(4)),
+        rewards=[0.0, 0.0, 0.0, 0.0],
+        lives_seq=[3, 3, 3, 3],
+        terminated_at={2},
+        truncated_at=set(),
+    )
+
+    # Persist policy (default): delayed actions from pre-reset queue carry over.
+    env_persist = ScriptedEnv(**env_kwargs)
+    agent_persist = RecordingBoundarySequenceAgent(action_sequence=[1, 2, 3, 1, 2])
+    config_persist = CarmackRunnerConfig(
+        total_frames=4,
+        delay_frames=2,
+        default_action_idx=0,
+        include_timestamps=False,
+        max_frames_without_reward=999,
+        reset_delay_queue_on_reset=False,
+        progress_log_interval_frames=0,
+        pulse_log_interval=0,
+        reset_log_interval=0,
+    )
+    _, events_persist, _ = run_with_memory(env_persist, agent_persist, config_persist)
+
+    # Reset policy: queue is re-seeded to default on reset.
+    env_reset = ScriptedEnv(**env_kwargs)
+    agent_reset = RecordingBoundarySequenceAgent(action_sequence=[1, 2, 3, 1, 2])
+    config_reset = CarmackRunnerConfig(
+        total_frames=4,
+        delay_frames=2,
+        default_action_idx=0,
+        include_timestamps=False,
+        max_frames_without_reward=999,
+        reset_delay_queue_on_reset=True,
+        progress_log_interval_frames=0,
+        pulse_log_interval=0,
+        reset_log_interval=0,
+    )
+    _, events_reset, _ = run_with_memory(env_reset, agent_reset, config_reset)
+
+    # After reset at frame 2, frame 3 applied action differs by policy.
+    assert events_persist[2]["reset_performed"] is True
+    assert events_reset[2]["reset_performed"] is True
+    assert events_persist[3]["applied_action_idx"] == 1
+    assert events_reset[3]["applied_action_idx"] == 0
+
+
 def test_carmack_runner_boundary_precedence_table():
     # timeout dominates all
     timeout = CarmackCompatRunner._resolve_boundary_and_reset(
