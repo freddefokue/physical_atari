@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
 from benchmark.carmack_runner import CARMACK_SINGLE_RUN_PROFILE, CARMACK_SINGLE_RUN_SCHEMA_VERSION
 from benchmark.contract import BENCHMARK_CONTRACT_VERSION, compute_contract_hash
+
+VALIDATION_MODE_SAMPLE = "sample"
+VALIDATION_MODE_STRATIFIED = "stratified"
+VALIDATION_MODE_FULL = "full"
 
 
 def _is_int(value: Any) -> bool:
@@ -244,36 +249,101 @@ def _check_jsonl_schema_sample(
     record_name: str,
     required_keys: Sequence[str],
     field_validators: Optional[Mapping[str, Callable[[Any], bool]]] = None,
+    validation_mode: str = VALIDATION_MODE_SAMPLE,
+    stratified_seed: int = 0,
+    stratified_selectors: Optional[Sequence[Callable[[Mapping[str, Any]], Optional[str]]]] = None,
 ) -> None:
-    if sample_lines <= 0:
-        return
-    if not path.exists():
-        errors.append(f"{record_name} not found")
-        return
+    _collect_jsonl_schema_sample(
+        path,
+        sample_lines,
+        errors,
+        record_name=record_name,
+        required_keys=required_keys,
+        field_validators=field_validators,
+        validation_mode=validation_mode,
+        stratified_seed=stratified_seed,
+        stratified_selectors=stratified_selectors,
+    )
 
-    checked = 0
+
+def _row_schema_error(
+    row: Any,
+    *,
+    record_name: str,
+    required_keys: Sequence[str],
+    field_validators: Optional[Mapping[str, Callable[[Any], bool]]] = None,
+) -> Optional[str]:
+    if not isinstance(row, dict):
+        return f"{record_name} contains a non-object row"
     required = set(required_keys)
-    for row in _iter_jsonl(path):
-        if not isinstance(row, dict):
-            errors.append(f"{record_name} contains a non-object row")
-            return
-        missing = required - set(row.keys())
-        if missing:
-            errors.append(f"{record_name} row missing required keys: {sorted(missing)}")
-            return
-        if field_validators:
-            for key, validator in field_validators.items():
-                if key not in row:
-                    continue
-                if not validator(row[key]):
-                    errors.append(f"{record_name} row has invalid type/value for '{key}'")
-                    return
-        checked += 1
-        if checked >= sample_lines:
-            break
+    missing = required - set(row.keys())
+    if missing:
+        return f"{record_name} row missing required keys: {sorted(missing)}"
+    if field_validators:
+        for key, validator in field_validators.items():
+            if key not in row:
+                continue
+            if not validator(row[key]):
+                return f"{record_name} row has invalid type/value for '{key}'"
+    return None
 
-    if checked == 0:
-        errors.append(f"{record_name} had no readable rows in sample")
+
+def _row_frame_idx_or_default(row: Mapping[str, Any]) -> int:
+    frame_idx = row.get("frame_idx")
+    if _is_int(frame_idx):
+        return int(frame_idx)
+    global_frame_idx = row.get("global_frame_idx")
+    if _is_int(global_frame_idx):
+        return int(global_frame_idx)
+    return -1
+
+
+def _stable_row_rank(*, seed: int, row_idx: int, row: Mapping[str, Any]) -> str:
+    basis = f"{int(seed)}:{int(row_idx)}:{_row_frame_idx_or_default(row)}"
+    return hashlib.sha256(basis.encode("utf-8")).hexdigest()
+
+
+def _select_sample_indices(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    validation_mode: str,
+    sample_lines: int,
+    stratified_seed: int,
+    stratified_selectors: Optional[Sequence[Callable[[Mapping[str, Any]], Optional[str]]]] = None,
+) -> List[int]:
+    total = len(rows)
+    if total == 0:
+        return []
+    if validation_mode == VALIDATION_MODE_FULL:
+        return list(range(total))
+    if sample_lines <= 0:
+        return []
+    if validation_mode == VALIDATION_MODE_SAMPLE:
+        return list(range(min(sample_lines, total)))
+
+    mandatory_indices: set[int] = {0, total - 1}
+    if stratified_selectors:
+        for selector in stratified_selectors:
+            first_by_label: Dict[str, int] = {}
+            for row_idx, row in enumerate(rows):
+                label = selector(row)
+                if label is None or label in first_by_label:
+                    continue
+                first_by_label[label] = row_idx
+            mandatory_indices.update(first_by_label.values())
+
+    if len(mandatory_indices) >= sample_lines:
+        return sorted(mandatory_indices)
+
+    ranked_remaining: List[tuple[str, int]] = []
+    for row_idx, row in enumerate(rows):
+        if row_idx in mandatory_indices:
+            continue
+        ranked_remaining.append((_stable_row_rank(seed=stratified_seed, row_idx=row_idx, row=row), row_idx))
+    ranked_remaining.sort()
+    needed = sample_lines - len(mandatory_indices)
+    chosen = {row_idx for _, row_idx in ranked_remaining[:needed]}
+    return sorted(mandatory_indices | chosen)
 
 
 def _collect_jsonl_schema_sample(
@@ -284,43 +354,75 @@ def _collect_jsonl_schema_sample(
     record_name: str,
     required_keys: Sequence[str],
     field_validators: Optional[Mapping[str, Callable[[Any], bool]]] = None,
+    validation_mode: str = VALIDATION_MODE_SAMPLE,
+    stratified_seed: int = 0,
+    stratified_selectors: Optional[Sequence[Callable[[Mapping[str, Any]], Optional[str]]]] = None,
 ) -> List[Mapping[str, Any]]:
-    if sample_lines <= 0:
-        return []
     if not path.exists():
         errors.append(f"{record_name} not found")
         return []
 
-    checked = 0
-    required = set(required_keys)
-    rows: List[Mapping[str, Any]] = []
-    for row in _iter_jsonl(path):
-        if not isinstance(row, dict):
-            errors.append(f"{record_name} contains a non-object row")
-            return []
-        missing = required - set(row.keys())
-        if missing:
-            errors.append(f"{record_name} row missing required keys: {sorted(missing)}")
-            return []
-        if field_validators:
-            for key, validator in field_validators.items():
-                if key not in row:
-                    continue
-                if not validator(row[key]):
-                    errors.append(f"{record_name} row has invalid type/value for '{key}'")
-                    return []
-        rows.append(dict(row))
-        checked += 1
-        if checked >= sample_lines:
-            break
-
-    if checked == 0:
-        errors.append(f"{record_name} had no readable rows in sample")
+    requires_full_read = validation_mode in {VALIDATION_MODE_STRATIFIED, VALIDATION_MODE_FULL}
+    if not requires_full_read and sample_lines <= 0:
         return []
-    return rows
+
+    rows: List[Mapping[str, Any]] = []
+    if requires_full_read:
+        for row in _iter_jsonl(path):
+            if not isinstance(row, dict):
+                errors.append(f"{record_name} contains a non-object row")
+                return []
+            rows.append(dict(row))
+    else:
+        checked = 0
+        for row in _iter_jsonl(path):
+            if not isinstance(row, dict):
+                errors.append(f"{record_name} contains a non-object row")
+                return []
+            rows.append(dict(row))
+            checked += 1
+            if checked >= sample_lines:
+                break
+
+    if not rows:
+        errors.append(f"{record_name} had no readable rows in validation scope")
+        return []
+
+    selected_indices = _select_sample_indices(
+        rows,
+        validation_mode=validation_mode,
+        sample_lines=sample_lines,
+        stratified_seed=stratified_seed,
+        stratified_selectors=stratified_selectors,
+    )
+    sampled_rows: List[Mapping[str, Any]] = []
+    for row_idx in selected_indices:
+        row = rows[row_idx]
+        schema_error = _row_schema_error(
+            row,
+            record_name=record_name,
+            required_keys=required_keys,
+            field_validators=field_validators,
+        )
+        if schema_error is not None:
+            errors.append(schema_error)
+            return []
+        sampled_rows.append(row)
+
+    if not sampled_rows:
+        errors.append(f"{record_name} had no readable rows in validation scope")
+        return []
+    return sampled_rows
 
 
-def _check_events_sample(events_path: Path, sample_lines: int, errors: List[str]) -> None:
+def _check_events_sample(
+    events_path: Path,
+    sample_lines: int,
+    errors: List[str],
+    *,
+    validation_mode: str,
+    stratified_seed: int,
+) -> None:
     _check_jsonl_schema_sample(
         events_path,
         sample_lines,
@@ -356,10 +458,19 @@ def _check_events_sample(events_path: Path, sample_lines: int, errors: List[str]
             "terminated": lambda value: isinstance(value, bool),
             "truncated": lambda value: isinstance(value, bool),
         },
+        validation_mode=validation_mode,
+        stratified_seed=stratified_seed,
     )
 
 
-def _check_episodes_sample(episodes_path: Path, sample_lines: int, errors: List[str]) -> None:
+def _check_episodes_sample(
+    episodes_path: Path,
+    sample_lines: int,
+    errors: List[str],
+    *,
+    validation_mode: str,
+    stratified_seed: int,
+) -> None:
     _check_jsonl_schema_sample(
         episodes_path,
         sample_lines,
@@ -383,10 +494,19 @@ def _check_episodes_sample(episodes_path: Path, sample_lines: int, errors: List[
             "return": _is_number,
             "ended_by": lambda value: str(value) in {"terminated", "truncated"},
         },
+        validation_mode=validation_mode,
+        stratified_seed=stratified_seed,
     )
 
 
-def _check_segments_sample(segments_path: Path, sample_lines: int, errors: List[str]) -> None:
+def _check_segments_sample(
+    segments_path: Path,
+    sample_lines: int,
+    errors: List[str],
+    *,
+    validation_mode: str,
+    stratified_seed: int,
+) -> None:
     _check_jsonl_schema_sample(
         segments_path,
         sample_lines,
@@ -410,10 +530,41 @@ def _check_segments_sample(segments_path: Path, sample_lines: int, errors: List[
             "return": _is_number,
             "ended_by": lambda value: str(value) in {"terminated", "truncated"},
         },
+        validation_mode=validation_mode,
+        stratified_seed=stratified_seed,
     )
 
 
-def _check_carmack_events_sample(events_path: Path, sample_lines: int, errors: List[str]) -> List[Mapping[str, Any]]:
+def _stratify_boundary_cause_label(row: Mapping[str, Any]) -> Optional[str]:
+    boundary_cause = row.get("boundary_cause")
+    if isinstance(boundary_cause, str):
+        return f"boundary:{boundary_cause}"
+    return None
+
+
+def _stratify_reset_cause_label(row: Mapping[str, Any]) -> Optional[str]:
+    reset_cause = row.get("reset_cause")
+    if isinstance(reset_cause, str):
+        return f"reset:{reset_cause}"
+    return None
+
+
+def _stratify_pulse_reset_pair_label(row: Mapping[str, Any]) -> Optional[str]:
+    pulse = row.get("end_of_episode_pulse")
+    reset_performed = row.get("reset_performed")
+    if isinstance(pulse, bool) and isinstance(reset_performed, bool):
+        return f"pulse={int(pulse)}|reset={int(reset_performed)}"
+    return None
+
+
+def _check_carmack_events_sample(
+    events_path: Path,
+    sample_lines: int,
+    errors: List[str],
+    *,
+    validation_mode: str,
+    stratified_seed: int,
+) -> List[Mapping[str, Any]]:
     return _collect_jsonl_schema_sample(
         events_path,
         sample_lines,
@@ -473,10 +624,24 @@ def _check_carmack_events_sample(events_path: Path, sample_lines: int, errors: L
             "reset_performed": lambda value: isinstance(value, bool),
             "frames_without_reward": _is_int,
         },
+        validation_mode=validation_mode,
+        stratified_seed=stratified_seed,
+        stratified_selectors=(
+            _stratify_boundary_cause_label,
+            _stratify_reset_cause_label,
+            _stratify_pulse_reset_pair_label,
+        ),
     )
 
 
-def _check_carmack_episodes_sample(episodes_path: Path, sample_lines: int, errors: List[str]) -> List[Mapping[str, Any]]:
+def _check_carmack_episodes_sample(
+    episodes_path: Path,
+    sample_lines: int,
+    errors: List[str],
+    *,
+    validation_mode: str,
+    stratified_seed: int,
+) -> List[Mapping[str, Any]]:
     return _collect_jsonl_schema_sample(
         episodes_path,
         sample_lines,
@@ -502,6 +667,8 @@ def _check_carmack_episodes_sample(episodes_path: Path, sample_lines: int, error
             "end_frame_idx": _is_int,
             "ended_by_reset": lambda value: isinstance(value, bool),
         },
+        validation_mode=validation_mode,
+        stratified_seed=stratified_seed,
     )
 
 
@@ -697,7 +864,20 @@ def _is_carmack_single_run_config(config: Mapping[str, Any]) -> bool:
     )
 
 
-def validate_contract(run_dir: Path, sample_event_lines: int = 0) -> Dict[str, Any]:
+def _normalize_validation_mode(raw_mode: Any) -> Optional[str]:
+    mode = str(raw_mode or VALIDATION_MODE_SAMPLE).strip().lower()
+    if mode in {VALIDATION_MODE_SAMPLE, VALIDATION_MODE_STRATIFIED, VALIDATION_MODE_FULL}:
+        return mode
+    return None
+
+
+def validate_contract(
+    run_dir: Path,
+    sample_event_lines: int = 0,
+    *,
+    validation_mode: str = VALIDATION_MODE_SAMPLE,
+    stratified_seed: int = 0,
+) -> Dict[str, Any]:
     run_dir = Path(run_dir)
     errors: List[str] = []
 
@@ -716,7 +896,17 @@ def validate_contract(run_dir: Path, sample_event_lines: int = 0) -> Dict[str, A
     except Exception as exc:  # pragma: no cover - invalid JSON path
         return {"ok": False, "errors": [f"failed to load config.json: {exc}"]}
 
+    mode = _normalize_validation_mode(validation_mode)
+    if mode is None:
+        return {
+            "ok": False,
+            "errors": [
+                "validation_mode must be one of: sample, stratified, full",
+            ],
+        }
+
     sample_lines = int(sample_event_lines)
+    seed = int(stratified_seed)
 
     if _is_carmack_single_run_config(config):
         _check_carmack_single_run_config(config, errors)
@@ -735,8 +925,20 @@ def validate_contract(run_dir: Path, sample_event_lines: int = 0) -> Dict[str, A
                     errors,
                     config_frames=int(config_frames) if _is_int(config_frames) else None,
                 )
-        event_rows = _check_carmack_events_sample(events_path, sample_lines, errors)
-        episode_rows = _check_carmack_episodes_sample(episodes_path, sample_lines, errors)
+        event_rows = _check_carmack_events_sample(
+            events_path,
+            sample_lines,
+            errors,
+            validation_mode=mode,
+            stratified_seed=seed,
+        )
+        episode_rows = _check_carmack_episodes_sample(
+            episodes_path,
+            sample_lines,
+            errors,
+            validation_mode=mode,
+            stratified_seed=seed,
+        )
         _check_carmack_event_semantics(event_rows, errors)
         _check_carmack_episode_semantics(episode_rows, errors)
         if run_summary is not None:
@@ -753,9 +955,9 @@ def validate_contract(run_dir: Path, sample_event_lines: int = 0) -> Dict[str, A
         _check_config_hash_integrity(config, errors)
         _check_score_schema(score, errors)
         _check_score_tags(config, score, errors)
-        _check_events_sample(events_path, sample_lines, errors)
-        _check_episodes_sample(episodes_path, sample_lines, errors)
-        _check_segments_sample(segments_path, sample_lines, errors)
+        _check_events_sample(events_path, sample_lines, errors, validation_mode=mode, stratified_seed=seed)
+        _check_episodes_sample(episodes_path, sample_lines, errors, validation_mode=mode, stratified_seed=seed)
+        _check_segments_sample(segments_path, sample_lines, errors, validation_mode=mode, stratified_seed=seed)
 
     return {"ok": len(errors) == 0, "errors": errors}
 
@@ -769,14 +971,32 @@ def parse_args() -> argparse.Namespace:
         "--sample-event-lines",
         type=int,
         default=0,
-        help="Sample N lines from events/episodes/segments logs for required-key checks.",
+        help="Validation row budget for sample/stratified modes; full mode scans all rows.",
+    )
+    parser.add_argument(
+        "--validation-mode",
+        type=str,
+        default=VALIDATION_MODE_SAMPLE,
+        choices=[VALIDATION_MODE_SAMPLE, VALIDATION_MODE_STRATIFIED, VALIDATION_MODE_FULL],
+        help="Validation mode: sample (first N), stratified (coverage + deterministic rank), or full scan.",
+    )
+    parser.add_argument(
+        "--stratified-seed",
+        type=int,
+        default=0,
+        help="Deterministic seed used by stratified mode row ranking.",
     )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    result = validate_contract(Path(args.run_dir), sample_event_lines=int(args.sample_event_lines))
+    result = validate_contract(
+        Path(args.run_dir),
+        sample_event_lines=int(args.sample_event_lines),
+        validation_mode=str(args.validation_mode),
+        stratified_seed=int(args.stratified_seed),
+    )
     print(json.dumps(result, indent=2, sort_keys=True))
     if not result["ok"]:
         raise SystemExit(1)

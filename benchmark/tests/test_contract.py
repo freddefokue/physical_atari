@@ -432,3 +432,85 @@ def test_validate_contract_fails_for_carmack_bad_config_combination(tmp_path):
     result = validate_contract(run_dir, sample_event_lines=1)
     assert result["ok"] is False
     assert any("config.json frame_skip must be int 1" in err for err in result["errors"])
+
+
+def test_validate_contract_full_mode_catches_unsampled_bad_row(tmp_path):
+    run_dir = tmp_path / "run_carmack_full_mode"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    events = [_make_carmack_event_row(), _make_carmack_event_row()]
+    events[1]["decided_action_changed"] = "bad_type"
+
+    with (run_dir / "config.json").open("w", encoding="utf-8") as fh:
+        json.dump(_make_carmack_config(), fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    with (run_dir / "events.jsonl").open("w", encoding="utf-8") as fh:
+        for row in events:
+            fh.write(json.dumps(row, sort_keys=True) + "\n")
+    with (run_dir / "episodes.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_make_carmack_episode_row(), sort_keys=True) + "\n")
+    with (run_dir / "run_summary.json").open("w", encoding="utf-8") as fh:
+        json.dump(_make_carmack_summary(), fh, indent=2, sort_keys=True)
+        fh.write("\n")
+
+    sample_result = validate_contract(run_dir, sample_event_lines=1, validation_mode="sample")
+    assert sample_result["ok"] is True, sample_result["errors"]
+
+    full_result = validate_contract(run_dir, sample_event_lines=1, validation_mode="full")
+    assert full_result["ok"] is False
+    assert any("events.jsonl row has invalid type/value for 'decided_action_changed'" in err for err in full_result["errors"])
+
+
+def test_validate_contract_stratified_mode_catches_rare_boundary_cause_row(tmp_path):
+    run_dir = tmp_path / "run_carmack_stratified_mode"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    normal = _make_carmack_event_row()
+    terminated = _make_carmack_event_row()
+    terminated["frame_idx"] = 1
+    terminated["end_of_episode_pulse"] = True
+    terminated["boundary_cause"] = "terminated"
+    terminated["reset_cause"] = "terminated"
+    terminated["reset_performed"] = True
+    terminated["terminated"] = True
+    terminated["env_terminated"] = True
+    terminated["truncated"] = False
+
+    timeout_bad = _make_carmack_event_row()
+    timeout_bad["frame_idx"] = 2
+    timeout_bad["end_of_episode_pulse"] = True
+    timeout_bad["boundary_cause"] = "no_reward_timeout"
+    timeout_bad["reset_cause"] = "no_reward_timeout"
+    timeout_bad["reset_performed"] = True
+    timeout_bad["truncated"] = False
+    timeout_bad["env_truncated"] = False
+
+    summary = _make_carmack_summary()
+    summary["pulse_count"] = 2
+    summary["reset_count"] = 2
+    summary["boundary_cause_counts"] = {"terminated": 1, "no_reward_timeout": 1}
+    summary["reset_cause_counts"] = {"terminated": 1, "no_reward_timeout": 1}
+
+    with (run_dir / "config.json").open("w", encoding="utf-8") as fh:
+        json.dump(_make_carmack_config(), fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    with (run_dir / "events.jsonl").open("w", encoding="utf-8") as fh:
+        for row in (normal, terminated, timeout_bad):
+            fh.write(json.dumps(row, sort_keys=True) + "\n")
+    with (run_dir / "episodes.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_make_carmack_episode_row(), sort_keys=True) + "\n")
+    with (run_dir / "run_summary.json").open("w", encoding="utf-8") as fh:
+        json.dump(summary, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+
+    sample_result = validate_contract(run_dir, sample_event_lines=1, validation_mode="sample")
+    assert sample_result["ok"] is True, sample_result["errors"]
+
+    stratified_result = validate_contract(
+        run_dir,
+        sample_event_lines=1,
+        validation_mode="stratified",
+        stratified_seed=123,
+    )
+    assert stratified_result["ok"] is False
+    assert any("no_reward_timeout reset requires truncated=true" in err for err in stratified_result["errors"])
