@@ -9,7 +9,7 @@ import platform
 import random
 import sys
 from pathlib import Path
-from typing import Dict, Mapping
+from typing import Dict, Mapping, Optional
 
 import numpy as np
 
@@ -302,7 +302,12 @@ def build_config_payload(
     return payload
 
 
-def build_run_summary_payload(args: argparse.Namespace, summary: Mapping[str, object]) -> Dict[str, object]:
+def build_run_summary_payload(
+    args: argparse.Namespace,
+    summary: Mapping[str, object],
+    *,
+    runtime_fingerprint: Optional[Mapping[str, object]] = None,
+) -> Dict[str, object]:
     payload: Dict[str, object] = {
         "runner_mode": str(args.runner_mode),
         **dict(summary),
@@ -310,6 +315,8 @@ def build_run_summary_payload(args: argparse.Namespace, summary: Mapping[str, ob
     if str(args.runner_mode) == CARMACK_SINGLE_RUN_PROFILE:
         payload["single_run_profile"] = CARMACK_SINGLE_RUN_PROFILE
         payload["single_run_schema_version"] = CARMACK_SINGLE_RUN_SCHEMA_VERSION
+    if runtime_fingerprint is not None:
+        payload["runtime_fingerprint"] = dict(runtime_fingerprint)
     return payload
 
 
@@ -371,7 +378,10 @@ def build_runtime_fingerprint_payload(
         "single_run_schema_version": str(config_payload.get("single_run_schema_version", "n/a")),
         "game": str(args.game),
         "seed": int(args.seed),
+        "seed_policy": "global_seed_python_numpy_ale",
         "frames": int(args.frames),
+        "config_sha256_algorithm": "sha256",
+        "config_sha256_scope": "config_without_runtime_fingerprint",
         "config_sha256": _stable_payload_sha256(config_payload),
         "python_version": str(sys.version.split()[0]),
         "ale_py_version": _try_version("ale_py"),
@@ -444,8 +454,12 @@ def main() -> None:
             include_timestamps=bool(args.timestamps),
         )
     config_payload = build_config_payload(args, env, runner_config, run_dir)
-    dump_json(run_dir / "config.json", config_payload)
-    dump_json(run_dir / "runtime_fingerprint.json", build_runtime_fingerprint_payload(args, config_payload))
+    runtime_fingerprint = build_runtime_fingerprint_payload(args, config_payload)
+    config_payload_with_fingerprint = dict(config_payload)
+    config_payload_with_fingerprint["runtime_fingerprint"] = dict(runtime_fingerprint)
+    dump_json(run_dir / "config.json", config_payload_with_fingerprint)
+    # Sidecar mirror remains useful for external tooling and backwards compatibility.
+    dump_json(run_dir / "runtime_fingerprint.json", dict(runtime_fingerprint))
 
     try:
         if args.runner_mode == "carmack_compat":
@@ -468,7 +482,7 @@ def main() -> None:
         event_writer.close()
         episode_writer.close()
 
-    dump_json(run_dir / "run_summary.json", build_run_summary_payload(args, summary))
+    dump_json(run_dir / "run_summary.json", build_run_summary_payload(args, summary, runtime_fingerprint=runtime_fingerprint))
     print(f"Run complete: {run_dir}")
     print(f"Summary: {summary}")
 

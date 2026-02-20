@@ -166,6 +166,9 @@ def test_build_runtime_fingerprint_payload_contains_required_keys():
     assert payload["single_run_schema_version"] == CARMACK_SINGLE_RUN_SCHEMA_VERSION
     assert payload["game"] == "breakout"
     assert payload["seed"] == 3
+    assert payload["seed_policy"] == "global_seed_python_numpy_ale"
     assert payload["frames"] == 200
+    assert payload["config_sha256_algorithm"] == "sha256"
+    assert payload["config_sha256_scope"] == "config_without_runtime_fingerprint"
     assert isinstance(payload["config_sha256"], str) and len(payload["config_sha256"]) == 64
     assert isinstance(payload["rom_sha256"], str) and len(payload["rom_sha256"]) == 64

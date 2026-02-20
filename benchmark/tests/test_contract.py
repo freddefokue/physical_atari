@@ -283,7 +283,10 @@ def _make_carmack_runtime_fingerprint(config: dict) -> dict:
         "single_run_schema_version": CARMACK_SINGLE_RUN_SCHEMA_VERSION,
         "game": str(config["game"]),
         "seed": int(config["seed"]),
+        "seed_policy": "global_seed_python_numpy_ale",
         "frames": int(config["frames"]),
+        "config_sha256_algorithm": "sha256",
+        "config_sha256_scope": "config_without_runtime_fingerprint",
         "config_sha256": config_sha,
         "python_version": "3.12.0",
         "ale_py_version": "0.10.1",
@@ -306,6 +309,22 @@ def _write_carmack_runtime_fingerprint_from_run_dir(run_dir: Path, *, drop_keys:
     fingerprint = _make_carmack_runtime_fingerprint(config)
     for key in drop_keys:
         fingerprint.pop(key, None)
+    config_with_fp = dict(config)
+    config_with_fp["runtime_fingerprint"] = dict(fingerprint)
+    with (run_dir / "config.json").open("w", encoding="utf-8") as fh:
+        json.dump(config_with_fp, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+
+    run_summary_path = run_dir / "run_summary.json"
+    if run_summary_path.exists():
+        with run_summary_path.open("r", encoding="utf-8") as fh:
+            summary = json.load(fh)
+        summary_with_fp = dict(summary)
+        summary_with_fp["runtime_fingerprint"] = dict(fingerprint)
+        with run_summary_path.open("w", encoding="utf-8") as fh:
+            json.dump(summary_with_fp, fh, indent=2, sort_keys=True)
+            fh.write("\n")
+
     with (run_dir / "runtime_fingerprint.json").open("w", encoding="utf-8") as fh:
         json.dump(fingerprint, fh, indent=2, sort_keys=True)
         fh.write("\n")
@@ -631,7 +650,7 @@ def test_validate_contract_runtime_fingerprint_missing_informational_keys_warns(
     result = validate_contract(run_dir, sample_event_lines=1)
     assert result["ok"] is True
     assert result["errors"] == []
-    assert any("runtime_fingerprint.json missing informational key: torch_version" in warn for warn in result["warnings"])
+    assert any("runtime_fingerprint missing informational key: torch_version" in warn for warn in result["warnings"])
 
 
 def test_validate_contract_fail_on_warnings_rejects_informational_warning(tmp_path):
@@ -653,4 +672,4 @@ def test_validate_contract_fail_on_warnings_rejects_informational_warning(tmp_pa
     result = validate_contract(run_dir, sample_event_lines=1, fail_on_warnings=True)
     assert result["ok"] is False
     assert result["errors"] == []
-    assert any("runtime_fingerprint.json missing informational key: torch_version" in warn for warn in result["warnings"])
+    assert any("runtime_fingerprint missing informational key: torch_version" in warn for warn in result["warnings"])

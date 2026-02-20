@@ -183,6 +183,8 @@ def _check_carmack_runtime_fingerprint(
     config: Mapping[str, Any],
     errors: List[str],
     warnings: List[str],
+    *,
+    source_name: str = "runtime_fingerprint",
 ) -> None:
     required_str_keys = (
         "fingerprint_schema_version",
@@ -190,6 +192,9 @@ def _check_carmack_runtime_fingerprint(
         "single_run_profile",
         "single_run_schema_version",
         "game",
+        "seed_policy",
+        "config_sha256_algorithm",
+        "config_sha256_scope",
         "python_version",
         "ale_py_version",
         "rom_sha256",
@@ -197,46 +202,52 @@ def _check_carmack_runtime_fingerprint(
     )
     for key in required_str_keys:
         if not isinstance(fingerprint.get(key), str):
-            errors.append(f"runtime_fingerprint.json missing string key: {key}")
+            errors.append(f"{source_name} missing string key: {key}")
 
     required_int_keys = ("seed", "frames")
     for key in required_int_keys:
         if not _is_int(fingerprint.get(key)):
-            errors.append(f"runtime_fingerprint.json missing int key: {key}")
+            errors.append(f"{source_name} missing int key: {key}")
 
     if fingerprint.get("fingerprint_schema_version") != RUNTIME_FINGERPRINT_SCHEMA_VERSION:
         errors.append(
-            f"runtime_fingerprint.json fingerprint_schema_version must be '{RUNTIME_FINGERPRINT_SCHEMA_VERSION}'"
+            f"{source_name} fingerprint_schema_version must be '{RUNTIME_FINGERPRINT_SCHEMA_VERSION}'"
         )
     if fingerprint.get("runner_mode") != CARMACK_SINGLE_RUN_PROFILE:
-        errors.append(f"runtime_fingerprint.json runner_mode must be '{CARMACK_SINGLE_RUN_PROFILE}'")
+        errors.append(f"{source_name} runner_mode must be '{CARMACK_SINGLE_RUN_PROFILE}'")
     if fingerprint.get("single_run_profile") != CARMACK_SINGLE_RUN_PROFILE:
-        errors.append(f"runtime_fingerprint.json single_run_profile must be '{CARMACK_SINGLE_RUN_PROFILE}'")
+        errors.append(f"{source_name} single_run_profile must be '{CARMACK_SINGLE_RUN_PROFILE}'")
     if fingerprint.get("single_run_schema_version") != CARMACK_SINGLE_RUN_SCHEMA_VERSION:
         errors.append(
-            f"runtime_fingerprint.json single_run_schema_version must be '{CARMACK_SINGLE_RUN_SCHEMA_VERSION}'"
+            f"{source_name} single_run_schema_version must be '{CARMACK_SINGLE_RUN_SCHEMA_VERSION}'"
         )
+    if fingerprint.get("config_sha256_algorithm") != "sha256":
+        errors.append(f"{source_name} config_sha256_algorithm must be 'sha256'")
+    if fingerprint.get("config_sha256_scope") != "config_without_runtime_fingerprint":
+        errors.append(f"{source_name} config_sha256_scope must be 'config_without_runtime_fingerprint'")
 
     if isinstance(fingerprint.get("game"), str) and isinstance(config.get("game"), str):
         if str(fingerprint.get("game")) != str(config.get("game")):
-            errors.append("runtime_fingerprint.json game does not match config.json")
+            errors.append(f"{source_name} game does not match config.json")
     if _is_int(fingerprint.get("seed")) and _is_int(config.get("seed")):
         if int(fingerprint.get("seed")) != int(config.get("seed")):
-            errors.append("runtime_fingerprint.json seed does not match config.json")
+            errors.append(f"{source_name} seed does not match config.json")
     if _is_int(fingerprint.get("frames")) and _is_int(config.get("frames")):
         if int(fingerprint.get("frames")) != int(config.get("frames")):
-            errors.append("runtime_fingerprint.json frames does not match config.json")
+            errors.append(f"{source_name} frames does not match config.json")
 
-    expected_config_sha = _stable_payload_sha256(config)
+    config_without_fingerprint = dict(config)
+    config_without_fingerprint.pop("runtime_fingerprint", None)
+    expected_config_sha = _stable_payload_sha256(config_without_fingerprint)
     observed_config_sha = fingerprint.get("config_sha256")
     if isinstance(observed_config_sha, str):
         if observed_config_sha != expected_config_sha:
-            errors.append("runtime_fingerprint.json config_sha256 does not match config.json canonical hash")
+            errors.append(f"{source_name} config_sha256 does not match config.json canonical hash")
 
     rom_sha = fingerprint.get("rom_sha256")
     if isinstance(rom_sha, str):
         if re.fullmatch(r"[0-9a-f]{64}", rom_sha) is None:
-            errors.append("runtime_fingerprint.json rom_sha256 must be a lowercase 64-char hex digest")
+            errors.append(f"{source_name} rom_sha256 must be a lowercase 64-char hex digest")
 
     informational_keys = (
         "platform",
@@ -251,7 +262,7 @@ def _check_carmack_runtime_fingerprint(
     )
     for key in informational_keys:
         if key not in fingerprint:
-            warnings.append(f"runtime_fingerprint.json missing informational key: {key}")
+            warnings.append(f"{source_name} missing informational key: {key}")
 
 
 def _check_score_tags(config: Mapping[str, Any], score: Mapping[str, Any], errors: List[str]) -> None:
@@ -1028,15 +1039,46 @@ def validate_contract(
                     errors,
                     config_frames=int(config_frames) if _is_int(config_frames) else None,
                 )
-        if not runtime_fingerprint_path.exists():
-            errors.append("runtime_fingerprint.json not found")
-        else:
+        embedded_fingerprint_config = config.get("runtime_fingerprint")
+        if not isinstance(embedded_fingerprint_config, dict):
+            errors.append("config.json missing object key: runtime_fingerprint")
+            embedded_fingerprint_config = None
+        embedded_fingerprint_summary = None
+        if run_summary is not None:
+            embedded_fingerprint_summary = run_summary.get("runtime_fingerprint")
+            if not isinstance(embedded_fingerprint_summary, dict):
+                errors.append("run_summary.json missing object key: runtime_fingerprint")
+                embedded_fingerprint_summary = None
+
+        sidecar_fingerprint: Optional[Mapping[str, Any]] = None
+        if runtime_fingerprint_path.exists():
             try:
-                runtime_fingerprint = _load_json(runtime_fingerprint_path)
+                sidecar_fingerprint = _load_json(runtime_fingerprint_path)
             except Exception as exc:  # pragma: no cover - invalid JSON path
                 errors.append(f"failed to load runtime_fingerprint.json: {exc}")
-            else:
-                _check_carmack_runtime_fingerprint(runtime_fingerprint, config, errors, warnings)
+
+        if isinstance(embedded_fingerprint_config, dict):
+            _check_carmack_runtime_fingerprint(
+                embedded_fingerprint_config,
+                config,
+                errors,
+                warnings,
+                source_name="config.json runtime_fingerprint",
+            )
+        if isinstance(embedded_fingerprint_summary, dict):
+            _check_carmack_runtime_fingerprint(
+                embedded_fingerprint_summary,
+                config,
+                errors,
+                warnings,
+                source_name="run_summary.json runtime_fingerprint",
+            )
+        if isinstance(embedded_fingerprint_config, dict) and isinstance(embedded_fingerprint_summary, dict):
+            if dict(embedded_fingerprint_config) != dict(embedded_fingerprint_summary):
+                errors.append("config.json and run_summary.json runtime_fingerprint payloads do not match")
+        if isinstance(sidecar_fingerprint, dict) and isinstance(embedded_fingerprint_config, dict):
+            if dict(sidecar_fingerprint) != dict(embedded_fingerprint_config):
+                errors.append("runtime_fingerprint.json does not match embedded config runtime_fingerprint")
         event_rows = _check_carmack_events_sample(
             events_path,
             sample_lines,
