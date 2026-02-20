@@ -631,3 +631,38 @@ def test_carmack_runner_boundary_precedence_table():
     assert life_loss_reset["should_reset"] is True
     assert life_loss_reset["terminated"] is False
     assert life_loss_reset["truncated"] is True
+
+
+def test_carmack_runner_cadence_summary_stats():
+    env = ScriptedEnv(
+        action_set=list(range(4)),
+        rewards=[0.0] * 6,
+        lives_seq=[3] * 6,
+        terminated_at=set(),
+        truncated_at=set(),
+    )
+    # decided action sequence is [0, 1, 1, 2, 2, 2] because frame i uses action from frame i-1.
+    agent = RecordingBoundarySequenceAgent(action_sequence=[1, 1, 2, 2, 2, 1])
+    config = CarmackRunnerConfig(
+        total_frames=6,
+        delay_frames=0,
+        include_timestamps=False,
+        lives_as_episodes=False,
+        max_frames_without_reward=999,
+        progress_log_interval_frames=0,
+        pulse_log_interval=0,
+        reset_log_interval=0,
+    )
+    summary, events, _ = run_with_memory(env, agent, config)
+
+    assert [row["decided_action_idx"] for row in events] == [0, 1, 1, 2, 2, 2]
+    assert [row["applied_action_idx"] for row in events] == [0, 1, 1, 2, 2, 2]
+    assert summary["decided_action_change_count"] == 2
+    assert summary["applied_action_change_count"] == 2
+    assert summary["decided_applied_mismatch_count"] == 0
+    assert summary["decided_action_change_rate"] == 0.4
+    assert summary["applied_action_change_rate"] == 0.4
+    assert summary["decided_applied_mismatch_rate"] == 0.0
+    assert summary["applied_action_hold_run_count"] == 3
+    assert summary["applied_action_hold_run_mean"] == 2.0
+    assert summary["applied_action_hold_run_max"] == 3

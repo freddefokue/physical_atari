@@ -241,6 +241,15 @@ class CarmackCompatRunner:
         truncated_resets = 0
         timeout_resets = 0
         life_loss_resets = 0
+        decided_action_change_count = 0
+        applied_action_change_count = 0
+        decided_applied_mismatch_count = 0
+        prev_decided_action_idx: Optional[int] = None
+        prev_applied_action_idx: Optional[int] = None
+        applied_hold_run_count = 0
+        applied_hold_run_length_sum = 0
+        applied_hold_run_length_max = 0
+        current_applied_hold_run_length = 0
         episode_scores = []
         episode_end = []
         environment_start = 0
@@ -281,6 +290,24 @@ class CarmackCompatRunner:
             decided_action_idx = int(taken_action)
             delayed_actions.append(int(decided_action_idx))
             applied_action_idx = int(delayed_actions.popleft()) if self.config.delay_frames > 0 else int(decided_action_idx)
+
+            if prev_decided_action_idx is not None and int(decided_action_idx) != int(prev_decided_action_idx):
+                decided_action_change_count += 1
+            if prev_applied_action_idx is None:
+                current_applied_hold_run_length = 1
+            elif int(applied_action_idx) == int(prev_applied_action_idx):
+                current_applied_hold_run_length += 1
+            else:
+                applied_action_change_count += 1
+                applied_hold_run_count += 1
+                applied_hold_run_length_sum += int(current_applied_hold_run_length)
+                applied_hold_run_length_max = max(applied_hold_run_length_max, int(current_applied_hold_run_length))
+                current_applied_hold_run_length = 1
+            if int(applied_action_idx) != int(decided_action_idx):
+                decided_applied_mismatch_count += 1
+            prev_decided_action_idx = int(decided_action_idx)
+            prev_applied_action_idx = int(applied_action_idx)
+
             step = self.env.step(applied_action_idx)
 
             reward = float(step.reward)
@@ -493,6 +520,20 @@ class CarmackCompatRunner:
             if self.event_writer is not None:
                 self.event_writer.write(event)
 
+        if current_applied_hold_run_length > 0:
+            applied_hold_run_count += 1
+            applied_hold_run_length_sum += int(current_applied_hold_run_length)
+            applied_hold_run_length_max = max(applied_hold_run_length_max, int(current_applied_hold_run_length))
+
+        frame_count = int(self.config.total_frames)
+        transition_count = max(frame_count - 1, 1)
+        decided_action_change_rate = float(decided_action_change_count / transition_count)
+        applied_action_change_rate = float(applied_action_change_count / transition_count)
+        decided_applied_mismatch_rate = float(decided_applied_mismatch_count / max(frame_count, 1))
+        applied_action_hold_run_mean = (
+            float(applied_hold_run_length_sum / applied_hold_run_count) if applied_hold_run_count > 0 else 0.0
+        )
+
         return {
             "frames": int(self.config.total_frames),
             "episodes_completed": int(episodes_completed),
@@ -505,4 +546,13 @@ class CarmackCompatRunner:
             "truncated_resets": int(truncated_resets),
             "timeout_resets": int(timeout_resets),
             "life_loss_resets": int(life_loss_resets),
+            "decided_action_change_count": int(decided_action_change_count),
+            "decided_action_change_rate": float(decided_action_change_rate),
+            "applied_action_change_count": int(applied_action_change_count),
+            "applied_action_change_rate": float(applied_action_change_rate),
+            "decided_applied_mismatch_count": int(decided_applied_mismatch_count),
+            "decided_applied_mismatch_rate": float(decided_applied_mismatch_rate),
+            "applied_action_hold_run_count": int(applied_hold_run_count),
+            "applied_action_hold_run_mean": float(applied_action_hold_run_mean),
+            "applied_action_hold_run_max": int(applied_hold_run_length_max),
         }

@@ -21,7 +21,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--game", type=str, required=True, help="ALE ROM key, e.g. ms_pacman, pong, breakout.")
     parser.add_argument("--seed", type=int, default=0, help="Global random seed.")
     parser.add_argument("--frames", type=int, default=200_000, help="Total environment frames to run.")
-    parser.add_argument("--frame-skip", type=int, default=4, help="Decision update interval in frames.")
+    parser.add_argument(
+        "--frame-skip",
+        type=int,
+        default=4,
+        help="Decision update interval in frames (carmack_compat requires 1).",
+    )
     parser.add_argument("--delay", type=int, default=0, help="Action latency queue length in frames.")
     parser.add_argument("--sticky", type=float, default=0.25, help="ALE repeat_action_probability.")
     parser.add_argument(
@@ -143,6 +148,14 @@ def parse_args() -> argparse.Namespace:
 def seed_everything(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
+
+
+def validate_args(args: argparse.Namespace) -> None:
+    if str(args.runner_mode) == "carmack_compat" and int(args.frame_skip) != 1:
+        raise ValueError(
+            "--runner-mode carmack_compat requires --frame-skip 1 "
+            "(agent-owned cadence; runner does not apply frame-skip)."
+        )
 
 
 class _FrameFromStepAdapter:
@@ -270,6 +283,7 @@ def build_config_payload(
 
 def main() -> None:
     args = parse_args()
+    validate_args(args)
     seed_everything(args.seed)
 
     env_config = ALEEnvConfig(
