@@ -165,6 +165,9 @@ def _make_carmack_multigame_segment_row() -> dict:
 
 def _make_carmack_multigame_summary() -> dict:
     return {
+        "runner_mode": CARMACK_MULTI_RUN_PROFILE,
+        "multi_run_profile": CARMACK_MULTI_RUN_PROFILE,
+        "multi_run_schema_version": CARMACK_MULTI_RUN_SCHEMA_VERSION,
         "frames": 4,
         "episodes_completed": 1,
         "segments_completed": 1,
@@ -445,6 +448,68 @@ def test_validate_contract_fails_for_carmack_multigame_reset_consistency(tmp_pat
     result = validate_contract(run_dir, sample_event_lines=1)
     assert result["ok"] is False
     assert any("reset_performed must match" in err for err in result["errors"])
+
+
+def test_validate_contract_fails_for_carmack_multigame_missing_summary_identity(tmp_path):
+    run_dir = tmp_path / "run_carmack_multigame_bad_summary_identity"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    config = _make_carmack_multigame_config()
+    score = _make_multigame_score(config["benchmark_contract_hash"])
+    event = _make_carmack_multigame_event_row()
+    summary = _make_carmack_multigame_summary()
+    summary.pop("multi_run_profile")
+
+    with (run_dir / "config.json").open("w", encoding="utf-8") as fh:
+        json.dump(config, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    with (run_dir / "score.json").open("w", encoding="utf-8") as fh:
+        json.dump(score, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    with (run_dir / "events.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(event, sort_keys=True) + "\n")
+    with (run_dir / "episodes.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_make_carmack_multigame_episode_row(), sort_keys=True) + "\n")
+    with (run_dir / "segments.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_make_carmack_multigame_segment_row(), sort_keys=True) + "\n")
+    with (run_dir / "run_summary.json").open("w", encoding="utf-8") as fh:
+        json.dump(summary, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+
+    result = validate_contract(run_dir, sample_event_lines=1)
+    assert result["ok"] is False
+    assert any("run_summary.json multi_run_profile must be" in err for err in result["errors"])
+
+
+def test_validate_contract_fails_for_carmack_multigame_mismatched_runner_decision_interval(tmp_path):
+    run_dir = tmp_path / "run_carmack_multigame_bad_cfg_decision_interval"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    config = _make_carmack_multigame_config()
+    config["runner_config"]["decision_interval"] = 2
+    config["benchmark_contract_hash"] = compute_contract_hash(config)
+    score = _make_multigame_score(config["benchmark_contract_hash"])
+    event = _make_carmack_multigame_event_row()
+
+    with (run_dir / "config.json").open("w", encoding="utf-8") as fh:
+        json.dump(config, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    with (run_dir / "score.json").open("w", encoding="utf-8") as fh:
+        json.dump(score, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    with (run_dir / "events.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(event, sort_keys=True) + "\n")
+    with (run_dir / "episodes.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_make_carmack_multigame_episode_row(), sort_keys=True) + "\n")
+    with (run_dir / "segments.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_make_carmack_multigame_segment_row(), sort_keys=True) + "\n")
+    with (run_dir / "run_summary.json").open("w", encoding="utf-8") as fh:
+        json.dump(_make_carmack_multigame_summary(), fh, indent=2, sort_keys=True)
+        fh.write("\n")
+
+    result = validate_contract(run_dir, sample_event_lines=1)
+    assert result["ok"] is False
+    assert any("runner_config.decision_interval must be int 1" in err for err in result["errors"])
 
 
 def _make_carmack_config() -> dict:

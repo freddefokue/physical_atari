@@ -550,6 +550,9 @@ class CarmackMultiGameRunner:
                 self._reset_control_state(reset_delay_queue=bool(self.config.reset_delay_queue_on_visit_switch))
 
         return {
+            "runner_mode": CARMACK_MULTI_RUN_PROFILE,
+            "multi_run_profile": CARMACK_MULTI_RUN_PROFILE,
+            "multi_run_schema_version": CARMACK_MULTI_RUN_SCHEMA_VERSION,
             "frames": int(global_frame_idx),
             "episodes_completed": int(episodes_completed),
             "segments_completed": int(segments_completed),

@@ -191,6 +191,7 @@ def _check_carmack_multigame_config(config: Mapping[str, Any], errors: List[str]
         errors.append("config.json decision_interval must be int")
     elif int(config.get("decision_interval")) != 1:
         errors.append("config.json decision_interval must be int 1 for carmack_compat multi-game")
+    top_level_decision_interval: Optional[int] = int(config.get("decision_interval")) if _is_int(config.get("decision_interval")) else None
 
     runner_cfg = config.get("runner_config")
     if not isinstance(runner_cfg, dict):
@@ -206,6 +207,13 @@ def _check_carmack_multigame_config(config: Mapping[str, Any], errors: List[str]
         errors.append("config.json runner_config.action_cadence_mode must be 'agent_owned'")
     if not _is_int(runner_cfg.get("frame_skip_enforced")) or int(runner_cfg.get("frame_skip_enforced")) != 1:
         errors.append("config.json runner_config.frame_skip_enforced must be int 1")
+    if not _is_int(runner_cfg.get("decision_interval")):
+        errors.append("config.json runner_config.decision_interval must be int")
+    elif int(runner_cfg.get("decision_interval")) != 1:
+        errors.append("config.json runner_config.decision_interval must be int 1 for carmack_compat multi-game")
+    if top_level_decision_interval is not None and _is_int(runner_cfg.get("decision_interval")):
+        if int(runner_cfg.get("decision_interval")) != int(top_level_decision_interval):
+            errors.append("config.json runner_config.decision_interval must match config.json decision_interval")
     if not _is_int(runner_cfg.get("delay_frames")):
         errors.append("config.json runner_config.delay_frames must be int")
     elif int(runner_cfg.get("delay_frames")) < 0:
@@ -1059,6 +1067,13 @@ def _check_carmack_multigame_summary_schema(
     *,
     config_total_scheduled_frames: Optional[int] = None,
 ) -> None:
+    if str(summary.get("runner_mode")) != CARMACK_MULTI_RUN_PROFILE:
+        errors.append(f"run_summary.json runner_mode must be '{CARMACK_MULTI_RUN_PROFILE}'")
+    if str(summary.get("multi_run_profile")) != CARMACK_MULTI_RUN_PROFILE:
+        errors.append(f"run_summary.json multi_run_profile must be '{CARMACK_MULTI_RUN_PROFILE}'")
+    if str(summary.get("multi_run_schema_version")) != CARMACK_MULTI_RUN_SCHEMA_VERSION:
+        errors.append(f"run_summary.json multi_run_schema_version must be '{CARMACK_MULTI_RUN_SCHEMA_VERSION}'")
+
     int_keys = (
         "frames",
         "episodes_completed",
