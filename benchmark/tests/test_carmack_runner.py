@@ -121,6 +121,18 @@ class RecordingObsOnlyFrameAgent:
         return int(self.action_idx)
 
 
+class RecordingVariadicFrameAgent:
+    """Variadic signature should remain pass-through and receive full payload."""
+
+    def __init__(self, action_idx: int = 1) -> None:
+        self.action_idx = int(action_idx)
+        self.calls = []
+
+    def frame(self, *args) -> int:
+        self.calls.append(tuple(args))
+        return int(self.action_idx)
+
+
 class RecordingStepAgentWithMalformedStats:
     def __init__(self, action_idx: int = 1) -> None:
         self.action_idx = int(action_idx)
@@ -481,6 +493,27 @@ def test_carmack_runner_legacy_adapter_handles_obs_only_frame_signature():
 
     assert summary["frames"] == 2
     assert len(agent.calls) == 2
+
+
+def test_carmack_runner_variadic_frame_signature_remains_passthrough():
+    env = ScriptedEnv(
+        action_set=list(range(4)),
+        rewards=[0.0, 0.0],
+        lives_seq=[3, 3],
+        terminated_at={1},
+        truncated_at=set(),
+    )
+    agent = RecordingVariadicFrameAgent(action_idx=1)
+    config = CarmackRunnerConfig(total_frames=2, delay_frames=0, include_timestamps=False, max_frames_without_reward=999)
+    summary, events, _ = run_with_memory(env, agent, config)
+
+    assert summary["frames"] == 2
+    assert len(agent.calls) == 2
+    first_call = agent.calls[0]
+    assert len(first_call) == 3
+    assert isinstance(first_call[2], dict)
+    assert set(first_call[2].keys()) == {"terminated", "truncated", "end_of_episode_pulse"}
+    assert events[1]["terminated"] is True
 
 
 def test_carmack_runner_step_adapter_malformed_stats_do_not_crash_logging(capsys):

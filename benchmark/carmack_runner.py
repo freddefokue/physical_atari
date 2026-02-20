@@ -105,6 +105,9 @@ def _adapt_carmack_agent(agent: Any) -> Any:
         return agent
 
     params = list(sig.parameters.values())
+    # Variadic handlers are intentionally generic; keep pass-through behavior.
+    if any(param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD) for param in params):
+        return agent
     if len(params) < 3:
         if len(params) == 2:
             return _LegacyObsRewardFrameAdapter(agent)
