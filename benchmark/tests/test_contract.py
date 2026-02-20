@@ -352,3 +352,83 @@ def test_validate_contract_fails_for_carmack_bad_summary_type(tmp_path):
     result = validate_contract(run_dir, sample_event_lines=1)
     assert result["ok"] is False
     assert any("run_summary.json key 'frames' must be int" in err for err in result["errors"])
+
+
+def test_validate_contract_fails_for_carmack_bad_event_semantics(tmp_path):
+    run_dir = tmp_path / "run_carmack_bad_semantics"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    bad_event = _make_carmack_event_row()
+    bad_event["reset_performed"] = True
+    bad_event["reset_cause"] = None
+
+    with (run_dir / "config.json").open("w", encoding="utf-8") as fh:
+        json.dump(_make_carmack_config(), fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    with (run_dir / "events.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(bad_event, sort_keys=True) + "\n")
+    with (run_dir / "episodes.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_make_carmack_episode_row(), sort_keys=True) + "\n")
+    with (run_dir / "run_summary.json").open("w", encoding="utf-8") as fh:
+        json.dump(_make_carmack_summary(), fh, indent=2, sort_keys=True)
+        fh.write("\n")
+
+    result = validate_contract(run_dir, sample_event_lines=1)
+    assert result["ok"] is False
+    assert any("reset_performed must match" in err for err in result["errors"])
+
+
+def test_validate_contract_fails_for_carmack_sample_vs_summary_inconsistency(tmp_path):
+    run_dir = tmp_path / "run_carmack_bad_consistency"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    event = _make_carmack_event_row()
+    event["end_of_episode_pulse"] = True
+    event["boundary_cause"] = "terminated"
+    event["reset_cause"] = "terminated"
+    event["reset_performed"] = True
+    event["terminated"] = True
+
+    summary = _make_carmack_summary()
+    summary["pulse_count"] = 0
+    summary["reset_count"] = 0
+    summary["boundary_cause_counts"] = {}
+    summary["reset_cause_counts"] = {}
+
+    with (run_dir / "config.json").open("w", encoding="utf-8") as fh:
+        json.dump(_make_carmack_config(), fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    with (run_dir / "events.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(event, sort_keys=True) + "\n")
+    with (run_dir / "episodes.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_make_carmack_episode_row(), sort_keys=True) + "\n")
+    with (run_dir / "run_summary.json").open("w", encoding="utf-8") as fh:
+        json.dump(summary, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+
+    result = validate_contract(run_dir, sample_event_lines=1)
+    assert result["ok"] is False
+    assert any("pulse_count is smaller than sampled event pulse count" in err for err in result["errors"])
+
+
+def test_validate_contract_fails_for_carmack_bad_config_combination(tmp_path):
+    run_dir = tmp_path / "run_carmack_bad_config"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    config = _make_carmack_config()
+    config["frame_skip"] = 4
+
+    with (run_dir / "config.json").open("w", encoding="utf-8") as fh:
+        json.dump(config, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    with (run_dir / "events.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_make_carmack_event_row(), sort_keys=True) + "\n")
+    with (run_dir / "episodes.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_make_carmack_episode_row(), sort_keys=True) + "\n")
+    with (run_dir / "run_summary.json").open("w", encoding="utf-8") as fh:
+        json.dump(_make_carmack_summary(), fh, indent=2, sort_keys=True)
+        fh.write("\n")
+
+    result = validate_contract(run_dir, sample_event_lines=1)
+    assert result["ok"] is False
+    assert any("config.json frame_skip must be int 1" in err for err in result["errors"])

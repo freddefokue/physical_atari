@@ -100,6 +100,17 @@ Required keys:
   - decided/applied mismatch counts/rates
   - applied-action hold run count/mean/max
 
+## Validator Semantic Rules (Sampled)
+
+In addition to key/type checks, validator enforces sampled semantic invariants:
+
+- `reset_performed` must match whether `reset_cause` is null/non-null.
+- non-pulse rows must have null `boundary_cause` and `reset_cause`.
+- pulse rows must set `boundary_cause`.
+- reset causes must be legal: `no_reward_timeout`, `terminated`, `truncated`, `life_loss_reset`.
+- cause/flag consistency (for example, `reset_cause=truncated` implies `truncated=true`).
+- sampled event cause counts and pulse/reset counts must not exceed `run_summary.json` counters.
+
 ## Versioning Rules
 
 Bump schema version when changing:

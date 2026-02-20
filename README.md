@@ -232,6 +232,8 @@ python -m benchmark.validate_contract \
   --sample-event-lines 10
 ```
 
+Validator checks include sampled semantic invariants (reset/pulse/cause consistency) in addition to schema shape.
+
 The frozen contract spec is in:
 - `benchmark/contracts/carmack_single_v1_contract.md`
 

@@ -129,6 +129,16 @@ def _check_carmack_single_run_config(config: Mapping[str, Any], errors: List[str
         errors.append("config.json seed must be int")
     if not _is_int(config.get("frames")):
         errors.append("config.json frames must be int")
+    elif int(config.get("frames")) <= 0:
+        errors.append("config.json frames must be > 0")
+    frame_skip = config.get("frame_skip")
+    if frame_skip is not None:
+        if not _is_int(frame_skip) or int(frame_skip) != 1:
+            errors.append("config.json frame_skip must be int 1 for carmack_compat")
+    max_frames_without_reward = config.get("max_frames_without_reward")
+    if max_frames_without_reward is not None:
+        if not _is_int(max_frames_without_reward) or int(max_frames_without_reward) <= 0:
+            errors.append("config.json max_frames_without_reward must be int > 0")
     if not _is_int(config.get("default_action_idx")):
         errors.append("config.json default_action_idx must be int")
 
@@ -148,8 +158,12 @@ def _check_carmack_single_run_config(config: Mapping[str, Any], errors: List[str
         errors.append("config.json runner_config.frame_skip_enforced must be int 1")
     if not _is_int(runner_cfg.get("total_frames")):
         errors.append("config.json runner_config.total_frames must be int")
+    elif _is_int(config.get("frames")) and int(runner_cfg.get("total_frames")) != int(config.get("frames")):
+        errors.append("config.json runner_config.total_frames must match config.json frames")
     if not _is_int(runner_cfg.get("delay_frames")):
         errors.append("config.json runner_config.delay_frames must be int")
+    elif int(runner_cfg.get("delay_frames")) < 0:
+        errors.append("config.json runner_config.delay_frames must be >= 0")
 
 
 def _check_score_tags(config: Mapping[str, Any], score: Mapping[str, Any], errors: List[str]) -> None:
@@ -262,6 +276,50 @@ def _check_jsonl_schema_sample(
         errors.append(f"{record_name} had no readable rows in sample")
 
 
+def _collect_jsonl_schema_sample(
+    path: Path,
+    sample_lines: int,
+    errors: List[str],
+    *,
+    record_name: str,
+    required_keys: Sequence[str],
+    field_validators: Optional[Mapping[str, Callable[[Any], bool]]] = None,
+) -> List[Mapping[str, Any]]:
+    if sample_lines <= 0:
+        return []
+    if not path.exists():
+        errors.append(f"{record_name} not found")
+        return []
+
+    checked = 0
+    required = set(required_keys)
+    rows: List[Mapping[str, Any]] = []
+    for row in _iter_jsonl(path):
+        if not isinstance(row, dict):
+            errors.append(f"{record_name} contains a non-object row")
+            return []
+        missing = required - set(row.keys())
+        if missing:
+            errors.append(f"{record_name} row missing required keys: {sorted(missing)}")
+            return []
+        if field_validators:
+            for key, validator in field_validators.items():
+                if key not in row:
+                    continue
+                if not validator(row[key]):
+                    errors.append(f"{record_name} row has invalid type/value for '{key}'")
+                    return []
+        rows.append(dict(row))
+        checked += 1
+        if checked >= sample_lines:
+            break
+
+    if checked == 0:
+        errors.append(f"{record_name} had no readable rows in sample")
+        return []
+    return rows
+
+
 def _check_events_sample(events_path: Path, sample_lines: int, errors: List[str]) -> None:
     _check_jsonl_schema_sample(
         events_path,
@@ -355,8 +413,8 @@ def _check_segments_sample(segments_path: Path, sample_lines: int, errors: List[
     )
 
 
-def _check_carmack_events_sample(events_path: Path, sample_lines: int, errors: List[str]) -> None:
-    _check_jsonl_schema_sample(
+def _check_carmack_events_sample(events_path: Path, sample_lines: int, errors: List[str]) -> List[Mapping[str, Any]]:
+    return _collect_jsonl_schema_sample(
         events_path,
         sample_lines,
         errors,
@@ -418,8 +476,8 @@ def _check_carmack_events_sample(events_path: Path, sample_lines: int, errors: L
     )
 
 
-def _check_carmack_episodes_sample(episodes_path: Path, sample_lines: int, errors: List[str]) -> None:
-    _check_jsonl_schema_sample(
+def _check_carmack_episodes_sample(episodes_path: Path, sample_lines: int, errors: List[str]) -> List[Mapping[str, Any]]:
+    return _collect_jsonl_schema_sample(
         episodes_path,
         sample_lines,
         errors,
@@ -517,6 +575,121 @@ def _check_carmack_summary_schema(
         errors.append("run_summary.json frames does not match config.json frames")
 
 
+def _check_carmack_event_semantics(rows: Sequence[Mapping[str, Any]], errors: List[str]) -> None:
+    allowed_reset_causes = {"no_reward_timeout", "terminated", "truncated", "life_loss_reset"}
+    for idx, row in enumerate(rows):
+        prefix = f"events.jsonl semantic error at sampled row {idx}"
+
+        pulse = bool(row["end_of_episode_pulse"])
+        boundary_cause = row.get("boundary_cause")
+        reset_cause = row.get("reset_cause")
+        reset_performed = bool(row["reset_performed"])
+        terminated = bool(row["terminated"])
+        truncated = bool(row["truncated"])
+
+        if not pulse and (boundary_cause is not None or reset_cause is not None):
+            errors.append(f"{prefix}: non-pulse row must have boundary_cause/reset_cause = null")
+        if pulse and boundary_cause is None:
+            errors.append(f"{prefix}: pulse row must set boundary_cause")
+
+        if reset_performed != (reset_cause is not None):
+            errors.append(f"{prefix}: reset_performed must match (reset_cause is not null)")
+
+        if reset_cause is not None and str(reset_cause) not in allowed_reset_causes:
+            errors.append(f"{prefix}: reset_cause must be one of {sorted(allowed_reset_causes)}")
+
+        if str(reset_cause) == "no_reward_timeout":
+            if str(boundary_cause) != "no_reward_timeout":
+                errors.append(f"{prefix}: no_reward_timeout reset requires boundary_cause=no_reward_timeout")
+            if not truncated:
+                errors.append(f"{prefix}: no_reward_timeout reset requires truncated=true")
+        if str(reset_cause) == "terminated" and not terminated:
+            errors.append(f"{prefix}: terminated reset requires terminated=true")
+        if str(reset_cause) == "truncated" and not truncated:
+            errors.append(f"{prefix}: truncated reset requires truncated=true")
+        if str(reset_cause) == "life_loss_reset":
+            if str(boundary_cause) != "life_loss":
+                errors.append(f"{prefix}: life_loss_reset requires boundary_cause=life_loss")
+            if terminated:
+                errors.append(f"{prefix}: life_loss_reset requires terminated=false")
+            if not truncated:
+                errors.append(f"{prefix}: life_loss_reset requires truncated=true")
+
+        if str(boundary_cause) == "life_loss":
+            if terminated:
+                errors.append(f"{prefix}: boundary_cause=life_loss requires terminated=false")
+            if reset_cause is not None and str(reset_cause) != "life_loss_reset":
+                errors.append(f"{prefix}: boundary_cause=life_loss allows only reset_cause=null or life_loss_reset")
+
+        if terminated and reset_cause is not None and str(reset_cause) not in {"no_reward_timeout", "terminated"}:
+            errors.append(f"{prefix}: terminated=true allows reset_cause only no_reward_timeout or terminated")
+        if (str(reset_cause) in {"no_reward_timeout", "truncated", "life_loss_reset"}) and not truncated:
+            errors.append(f"{prefix}: reset_cause={reset_cause} requires truncated=true")
+
+
+def _check_carmack_episode_semantics(rows: Sequence[Mapping[str, Any]], errors: List[str]) -> None:
+    prev_episode_idx: Optional[int] = None
+    prev_end_frame_idx: Optional[int] = None
+    for idx, row in enumerate(rows):
+        prefix = f"episodes.jsonl semantic error at sampled row {idx}"
+        episode_idx = int(row["episode_idx"])
+        end_frame_idx = int(row["end_frame_idx"])
+        length = int(row["length"])
+
+        if not bool(row["ended_by_reset"]):
+            errors.append(f"{prefix}: ended_by_reset must be true in Carmack profile")
+        if length <= 0:
+            errors.append(f"{prefix}: length must be > 0")
+        if prev_episode_idx is not None and episode_idx != prev_episode_idx + 1:
+            errors.append(f"{prefix}: episode_idx must increase by 1 in sampled order")
+        if prev_end_frame_idx is not None and end_frame_idx <= prev_end_frame_idx:
+            errors.append(f"{prefix}: end_frame_idx must be strictly increasing in sampled order")
+
+        prev_episode_idx = episode_idx
+        prev_end_frame_idx = end_frame_idx
+
+
+def _check_carmack_sample_consistency(
+    event_rows: Sequence[Mapping[str, Any]],
+    episode_rows: Sequence[Mapping[str, Any]],
+    summary: Mapping[str, Any],
+    errors: List[str],
+) -> None:
+    if not event_rows:
+        return
+    pulse_count_sample = sum(1 for row in event_rows if bool(row["end_of_episode_pulse"]))
+    reset_count_sample = sum(1 for row in event_rows if bool(row["reset_performed"]))
+    if _is_int(summary.get("pulse_count")) and pulse_count_sample > int(summary["pulse_count"]):
+        errors.append("run_summary.json pulse_count is smaller than sampled event pulse count")
+    if _is_int(summary.get("reset_count")) and reset_count_sample > int(summary["reset_count"]):
+        errors.append("run_summary.json reset_count is smaller than sampled event reset count")
+
+    boundary_counts_sample: Dict[str, int] = {}
+    reset_counts_sample: Dict[str, int] = {}
+    for row in event_rows:
+        boundary_cause = row.get("boundary_cause")
+        reset_cause = row.get("reset_cause")
+        if isinstance(boundary_cause, str):
+            boundary_counts_sample[boundary_cause] = int(boundary_counts_sample.get(boundary_cause, 0) + 1)
+        if isinstance(reset_cause, str):
+            reset_counts_sample[reset_cause] = int(reset_counts_sample.get(reset_cause, 0) + 1)
+
+    summary_boundary = summary.get("boundary_cause_counts")
+    if isinstance(summary_boundary, dict):
+        for cause, count in boundary_counts_sample.items():
+            value = summary_boundary.get(cause)
+            if not _is_int(value) or int(value) < int(count):
+                errors.append(f"run_summary.json boundary_cause_counts['{cause}'] is smaller than sampled events")
+    summary_reset = summary.get("reset_cause_counts")
+    if isinstance(summary_reset, dict):
+        for cause, count in reset_counts_sample.items():
+            value = summary_reset.get(cause)
+            if not _is_int(value) or int(value) < int(count):
+                errors.append(f"run_summary.json reset_cause_counts['{cause}'] is smaller than sampled events")
+
+    if episode_rows and _is_int(summary.get("episodes_completed")) and len(episode_rows) > int(summary["episodes_completed"]):
+        errors.append("run_summary.json episodes_completed is smaller than sampled episode row count")
+
 def _is_carmack_single_run_config(config: Mapping[str, Any]) -> bool:
     return (
         str(config.get("runner_mode")) == CARMACK_SINGLE_RUN_PROFILE
@@ -547,6 +720,7 @@ def validate_contract(run_dir: Path, sample_event_lines: int = 0) -> Dict[str, A
 
     if _is_carmack_single_run_config(config):
         _check_carmack_single_run_config(config, errors)
+        run_summary: Optional[Mapping[str, Any]] = None
         if not run_summary_path.exists():
             errors.append("run_summary.json not found")
         else:
@@ -561,8 +735,12 @@ def validate_contract(run_dir: Path, sample_event_lines: int = 0) -> Dict[str, A
                     errors,
                     config_frames=int(config_frames) if _is_int(config_frames) else None,
                 )
-        _check_carmack_events_sample(events_path, sample_lines, errors)
-        _check_carmack_episodes_sample(episodes_path, sample_lines, errors)
+        event_rows = _check_carmack_events_sample(events_path, sample_lines, errors)
+        episode_rows = _check_carmack_episodes_sample(episodes_path, sample_lines, errors)
+        _check_carmack_event_semantics(event_rows, errors)
+        _check_carmack_episode_semantics(episode_rows, errors)
+        if run_summary is not None:
+            _check_carmack_sample_consistency(event_rows, episode_rows, run_summary, errors)
     else:
         if not score_path.exists():
             return {"ok": False, "errors": ["score.json not found"]}
