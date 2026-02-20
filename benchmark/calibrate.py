@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import math
@@ -11,7 +12,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -424,6 +425,11 @@ def _success_metric_by_key(run_rows: Sequence[Dict[str, Any]], metric: str) -> D
     return out
 
 
+def _stable_json_sha256(payload: Mapping[str, Any]) -> str:
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def evaluate_rollout_acceptance(
     run_results: Sequence[Dict[str, Any]],
     baseline_summary: Mapping[str, Any],
@@ -432,6 +438,7 @@ def evaluate_rollout_acceptance(
     mean_floor: float,
     worst_floor: float,
     min_overlap: int,
+    require_full_baseline_coverage: bool = False,
 ) -> Dict[str, Any]:
     errors: List[str] = []
     warnings: List[str] = []
@@ -454,9 +461,11 @@ def evaluate_rollout_acceptance(
     missing_current = sorted(baseline_keys - current_keys)
     if missing_current:
         shown = ", ".join(f"{agent}:{seed}" for agent, seed in missing_current[:8])
-        errors.append(
-            f"Missing successful current runs for {len(missing_current)} baseline keys (first: {shown})"
-        )
+        msg = f"Missing successful current runs for {len(missing_current)} baseline keys (first: {shown})"
+        if require_full_baseline_coverage:
+            errors.append(msg)
+        else:
+            warnings.append(msg)
 
     missing_baseline = sorted(current_keys - baseline_keys)
     if missing_baseline:
@@ -476,6 +485,7 @@ def evaluate_rollout_acceptance(
                 "mean_floor": float(mean_floor),
                 "worst_floor": float(worst_floor),
                 "min_overlap": int(min_overlap),
+                "require_full_baseline_coverage": bool(require_full_baseline_coverage),
             },
             "overlap_count": int(len(overlap_keys)),
         }
@@ -528,8 +538,11 @@ def evaluate_rollout_acceptance(
             "mean_floor": float(mean_floor),
             "worst_floor": float(worst_floor),
             "min_overlap": int(min_overlap),
+            "require_full_baseline_coverage": bool(require_full_baseline_coverage),
         },
         "overlap_count": int(len(overlap_keys)),
+        "missing_current_count": int(len(missing_current)),
+        "missing_baseline_count": int(len(missing_baseline)),
         "overlap_keys": [{"agent": str(agent), "seed": int(seed)} for agent, seed in overlap_keys],
         "aggregate": {
             "mean_delta": mean_all,
@@ -661,6 +674,13 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         type=int,
         default=1,
         help="Minimum number of successful overlapping (agent, seed) keys required.",
+    )
+    parser.add_argument(
+        "--rollout-require-full-baseline-coverage",
+        type=int,
+        choices=[0, 1],
+        default=0,
+        help="If set, fail rollout when any baseline successful (agent, seed) key is missing in current runs.",
     )
     return parser.parse_args(args=argv)
 
@@ -851,7 +871,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 mean_floor=float(args.rollout_mean_floor),
                 worst_floor=float(args.rollout_worst_floor),
                 min_overlap=int(args.rollout_min_overlap),
+                require_full_baseline_coverage=bool(int(args.rollout_require_full_baseline_coverage)),
             )
+            rollout_result["baseline_summary_sha256"] = _stable_json_sha256(baseline_summary)
         rollout_result["baseline_summary_path"] = str(baseline_path)
         summary["rollout_acceptance"] = rollout_result
 

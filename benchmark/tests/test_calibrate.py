@@ -460,3 +460,52 @@ def test_rollout_acceptance_fails_on_insufficient_overlap():
     )
     assert result["passed"] is False
     assert any("Insufficient overlap" in msg for msg in result["errors"])
+
+
+def test_rollout_acceptance_allows_partial_baseline_with_warning_when_overlap_satisfied():
+    baseline = {
+        "runs": [
+            {"agent": "random", "seed": 0, "status": "success", "score": {"final_score": 10.0}},
+            {"agent": "random", "seed": 1, "status": "success", "score": {"final_score": 11.0}},
+            {"agent": "repeat", "seed": 0, "status": "success", "score": {"final_score": 3.0}},
+        ]
+    }
+    current = [
+        {"agent": "random", "seed": 0, "status": "success", "score": {"final_score": 10.2}},
+        {"agent": "repeat", "seed": 0, "status": "success", "score": {"final_score": 2.9}},
+    ]
+    result = evaluate_rollout_acceptance(
+        current,
+        baseline,
+        metric="final_score",
+        mean_floor=-1.0,
+        worst_floor=-1.0,
+        min_overlap=2,
+    )
+    assert result["passed"] is True
+    assert result["errors"] == []
+    assert result["missing_current_count"] == 1
+    assert any("Missing successful current runs" in msg for msg in result["warnings"])
+
+
+def test_rollout_acceptance_can_require_full_baseline_coverage():
+    baseline = {
+        "runs": [
+            {"agent": "random", "seed": 0, "status": "success", "score": {"final_score": 10.0}},
+            {"agent": "random", "seed": 1, "status": "success", "score": {"final_score": 11.0}},
+        ]
+    }
+    current = [
+        {"agent": "random", "seed": 0, "status": "success", "score": {"final_score": 10.1}},
+    ]
+    result = evaluate_rollout_acceptance(
+        current,
+        baseline,
+        metric="final_score",
+        mean_floor=-1.0,
+        worst_floor=-1.0,
+        min_overlap=1,
+        require_full_baseline_coverage=True,
+    )
+    assert result["passed"] is False
+    assert any("Missing successful current runs" in msg for msg in result["errors"])

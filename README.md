@@ -423,13 +423,14 @@ Suite behavior:
 - Optional rollout gates compare current runs against a fixed baseline `summary.json`:
   `--rollout-baseline-summary <path> --rollout-enforce 1`
   with numeric thresholds `--rollout-mean-floor`, `--rollout-worst-floor`, and overlap requirement `--rollout-min-overlap`.
+  Use `--rollout-require-full-baseline-coverage 1` to make missing baseline `(agent, seed)` keys a hard failure (default is warning-only when overlap passes).
 
 `summary.json` reports:
 - per-agent score stats (`final_score`, `mean_score`, `bottom_k_score`: mean/median/std/min/max/CV),
 - runtime (`fps` and `frames` means),
 - forgetting/plasticity aggregates when available,
 - skipped/failed run counts and smoke expectation results,
-- optional `rollout_acceptance` gate results (baseline path, overlap, per-agent deltas, pass/fail).
+- optional `rollout_acceptance` gate results (baseline path + hash, overlap, per-agent deltas, pass/fail).
 
 
 ---
