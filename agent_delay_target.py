@@ -442,7 +442,7 @@ class Agent:
         self.online_loss_scale = 2
         self.train_steps = 4  # run training after this many 60 fps frames
 
-        self.ring_buffer_size = 200 * 1024
+        self.ring_buffer_size = 16_384  # ~768 MB VRAM; safe for <=11 GB GPUs (200*1024 needs ~9.4 GB)
 
         self.weight_decay = 0
         self.beta1 = 0.9
@@ -463,6 +463,8 @@ class Agent:
 
         # force the ring buffer to be an exact multiple of frame_skip
         self.ring_buffer_size -= self.ring_buffer_size % self.frame_skip
+        ring_vram_mb = self.ring_buffer_size * self.obs_channels * self.obs_height * self.obs_width / (1024**2)
+        print(f'ring_buffer_size: {self.ring_buffer_size:,}  (~{ring_vram_mb:.0f} MB VRAM)')
 
         # set CuBLAS environment variable so matmuls can be deterministic
         os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
