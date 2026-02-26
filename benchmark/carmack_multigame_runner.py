@@ -401,16 +401,18 @@ class CarmackMultiGameRunner:
                 f'frame:{end_global_frame_idx:7d} {episode_fps:4.0f}/s '
                 f'eps {self._episode_id:3d},{self._episode_length:5d}={int(self._episode_return):5d} '
             )
+            train_steps = stats.get("train_updates", stats.get("train_steps_estimate", None))
+            train_steps_str = f'u {train_steps} ' if train_steps is not None else ''
             if "policy_entropy" in stats:
                 def _f(v: Any) -> str:
                     return "n/a" if v is None else f"{float(v):.3f}"
                 print(
                     f'0:ppo_multigame {common_prefix}'
+                    f'{train_steps_str}'
                     f'ploss {_f(stats.get("last_policy_loss"))} '
                     f'vloss {_f(stats.get("last_value_loss"))} '
                     f'ent {_f(stats.get("policy_entropy"))} '
                     f'kl {_f(stats.get("approx_kl"))} '
-                    f'updates {stats.get("train_updates", 0)} '
                     f'{common_suffix}',
                     flush=True,
                 )
@@ -421,6 +423,7 @@ class CarmackMultiGameRunner:
                 target = float(stats.get("target_ema", 0.0))
                 print(
                     f'0:delay_multigame {common_prefix}'
+                    f'{train_steps_str}'
                     f'err {err_avg:.1f} {err_max:.1f} '
                     f'loss {loss:.1f} targ {target:.1f} '
                     f'{common_suffix}',
@@ -480,6 +483,7 @@ class CarmackMultiGameRunner:
         reset_count = 0
         run_start_time = float(self.time_fn())
         rolling_average_frames = 100_000
+        rolling_avg = -999.0
         episode_scores: list[float] = []
         episode_end: list[int] = []
         environment_start_time = float(self.time_fn())
@@ -629,14 +633,15 @@ class CarmackMultiGameRunner:
                     if "policy_entropy" in stats:
                         def _ft(v: Any) -> str:
                             return "n/a" if v is None else f"{float(v):.3f}"
+                        ra = rolling_avg if rolling_avg > -999.0 else 0.0
                         print(
                             f'0:ppo_multigame frame:{fr:7d} {fps:4.0f}/s '
+                            f'eps {self._episode_id:3d} ret {int(self._episode_return):5d} avg {ra:4.1f} '
+                            f'u {stats.get("train_updates", 0)} '
                             f'ploss {_ft(stats.get("last_policy_loss"))} '
                             f'vloss {_ft(stats.get("last_value_loss"))} '
                             f'ent {_ft(stats.get("policy_entropy"))} '
                             f'kl {_ft(stats.get("approx_kl"))} '
-                            f'updates {stats.get("train_updates", 0)} '
-                            f'buf {stats.get("buffer_fill", 0)}/{self.config.decision_interval * int(stats.get("decision_steps", 0)) or fr} '
                             f'game {gm} cycle {ci} visit {vi}',
                             flush=True,
                         )
