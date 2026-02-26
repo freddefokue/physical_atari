@@ -487,9 +487,9 @@ def _build_parser(defaults: Optional[Dict[str, Any]] = None) -> argparse.Argumen
     parser.add_argument(
         "--ppo-device",
         type=str,
-        choices=["cpu", "cuda"],
-        default="cpu",
-        help="PPO compute device preference.",
+        choices=["cpu", "cuda", "auto"],
+        default="auto",
+        help="PPO compute device: 'auto' uses CUDA if available, else CPU.",
     )
     parser.add_argument(
         "--default-action-idx",

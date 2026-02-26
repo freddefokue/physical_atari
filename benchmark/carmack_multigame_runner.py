@@ -617,6 +617,16 @@ class CarmackMultiGameRunner:
                         "max_error_ema",
                         "target_ema",
                         "train_steps_estimate",
+                        "decision_steps",
+                        "train_steps",
+                        "train_updates",
+                        "buffer_fill",
+                        "policy_entropy",
+                        "approx_kl",
+                        "last_policy_loss",
+                        "last_value_loss",
+                        "last_total_loss",
+                        "nan_guard_trigger_count",
                     ):
                         if key not in stats:
                             continue

@@ -46,7 +46,7 @@ class PPOConfig:
     grayscale: bool = True
     normalize_advantages: bool = True
     deterministic_actions: bool = False
-    device: str = "cpu"
+    device: str = "auto"
 
     def __post_init__(self) -> None:
         if self.learning_rate <= 0.0:
@@ -77,8 +77,8 @@ class PPOConfig:
             raise ValueError("obs_size must be > 0")
         if self.frame_stack <= 0:
             raise ValueError("frame_stack must be > 0")
-        if self.device not in {"cpu", "cuda"}:
-            raise ValueError("device must be 'cpu' or 'cuda'")
+        if self.device not in {"cpu", "cuda", "auto"}:
+            raise ValueError("device must be 'cpu', 'cuda', or 'auto'")
 
     def as_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -144,7 +144,10 @@ class PPOAgent:
             torch.cuda.manual_seed_all(self.seed)
 
         self._rng = np.random.default_rng(self.seed)
-        self.device = torch.device("cuda" if self.config.device == "cuda" and torch.cuda.is_available() else "cpu")
+        if self.config.device == "auto":
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            self.device = torch.device("cuda" if self.config.device == "cuda" and torch.cuda.is_available() else "cpu")
 
         channels_per_frame = 1 if self.config.grayscale else 3
         in_channels = int(self.config.frame_stack * channels_per_frame)
