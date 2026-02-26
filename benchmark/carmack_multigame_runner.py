@@ -370,7 +370,18 @@ class CarmackMultiGameRunner:
             return "terminated"
         return None
 
-    def _write_episode(self, game_id: str, end_global_frame_idx: int, ended_by: str, boundary_cause: Optional[str]) -> None:
+    def _write_episode(
+        self,
+        game_id: str,
+        end_global_frame_idx: int,
+        ended_by: str,
+        boundary_cause: Optional[str],
+        *,
+        visit_idx: int,
+        cycle_idx: int,
+        episode_fps: float,
+        rolling_avg: float,
+    ) -> None:
         if self.config.episode_log_interval > 0 and (self._episode_id % self.config.episode_log_interval == 0):
             stats: Dict[str, Any] = {}
             stats_fn = getattr(self.agent, "get_stats", None)
@@ -381,37 +392,17 @@ class CarmackMultiGameRunner:
                         stats = payload
                 except Exception:  # pragma: no cover - defensive
                     stats = {}
-            train_suffix = ""
-            for key in (
-                "frame_count",
-                "u",
-                "episode_number",
-                "train_loss_ema",
-                "avg_error_ema",
-                "max_error_ema",
-                "target_ema",
-                "train_steps_estimate",
-            ):
-                if key not in stats:
-                    continue
-                value = stats[key]
-                if isinstance(value, int):
-                    train_suffix += f" {key}={value}"
-                else:
-                    try:
-                        train_suffix += f" {key}={float(value):.3f}"
-                    except (TypeError, ValueError):
-                        train_suffix += f" {key}={value}"
+            err_avg = float(stats.get("avg_error_ema", 0.0))
+            err_max = float(stats.get("max_error_ema", 0.0))
+            loss = float(stats.get("train_loss_ema", 0.0))
+            target = float(stats.get("target_ema", 0.0))
             print(
-                "[episode] "
-                f"episode_id={self._episode_id} "
-                f"game={game_id} "
-                f"return={self._episode_return:.6f} "
-                f"length={self._episode_length} "
-                f"ended_by={ended_by} "
-                f"boundary_cause={boundary_cause} "
-                f"end_global_frame_idx={end_global_frame_idx}"
-                f"{train_suffix}",
+                f'0:delay_multigame frame:{end_global_frame_idx:7d} {episode_fps:4.0f}/s '
+                f'eps {self._episode_id:3d},{self._episode_length:5d}={int(self._episode_return):5d} '
+                f'err {err_avg:.1f} {err_max:.1f} '
+                f'loss {loss:.1f} targ {target:.1f} avg {rolling_avg:4.1f} '
+                f'game {game_id} cycle {cycle_idx} visit {visit_idx} '
+                f'ended_by {ended_by} boundary {boundary_cause}',
                 flush=True,
             )
         if self.episode_writer is None:
@@ -467,6 +458,10 @@ class CarmackMultiGameRunner:
         reset_cause_counts: Dict[str, int] = {}
         reset_count = 0
         run_start_time = float(self.time_fn())
+        rolling_average_frames = 100_000
+        episode_scores: list[float] = []
+        episode_end: list[int] = []
+        environment_start_time = float(self.time_fn())
 
         taken_action = int(self.config.default_action_idx)
         for visit_idx, visit in enumerate(visits):
@@ -553,7 +548,29 @@ class CarmackMultiGameRunner:
                     segments_completed += 1
                     self._segment_id += 1
 
-                    self._write_episode(visit.game_id, global_frame_idx, ended_by, boundary.get("boundary_cause"))
+                    episode_scores.append(float(self._episode_return))
+                    episode_end.append(int(global_frame_idx))
+                    now = float(self.time_fn())
+                    episode_fps = float(self._episode_length / max(now - environment_start_time, 1e-9))
+                    environment_start_time = float(now)
+                    count = 0
+                    total = 0.0
+                    for j in range(len(episode_scores) - 1, -1, -1):
+                        if episode_end[j] < int(global_frame_idx) - int(rolling_average_frames):
+                            break
+                        count += 1
+                        total += float(episode_scores[j])
+                    rolling_avg = -999.0 if count == 0 else float(total / count)
+                    self._write_episode(
+                        visit.game_id,
+                        global_frame_idx,
+                        ended_by,
+                        boundary.get("boundary_cause"),
+                        visit_idx=int(visit.visit_idx),
+                        cycle_idx=int(visit.cycle_idx),
+                        episode_fps=float(episode_fps),
+                        rolling_avg=float(rolling_avg),
+                    )
                     episodes_completed += 1
                     self._episode_id += 1
 
