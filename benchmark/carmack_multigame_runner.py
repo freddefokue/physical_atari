@@ -372,6 +372,36 @@ class CarmackMultiGameRunner:
 
     def _write_episode(self, game_id: str, end_global_frame_idx: int, ended_by: str, boundary_cause: Optional[str]) -> None:
         if self.config.episode_log_interval > 0 and (self._episode_id % self.config.episode_log_interval == 0):
+            stats: Dict[str, Any] = {}
+            stats_fn = getattr(self.agent, "get_stats", None)
+            if callable(stats_fn):
+                try:
+                    payload = stats_fn()
+                    if isinstance(payload, dict):
+                        stats = payload
+                except Exception:  # pragma: no cover - defensive
+                    stats = {}
+            train_suffix = ""
+            for key in (
+                "frame_count",
+                "u",
+                "episode_number",
+                "train_loss_ema",
+                "avg_error_ema",
+                "max_error_ema",
+                "target_ema",
+                "train_steps_estimate",
+            ):
+                if key not in stats:
+                    continue
+                value = stats[key]
+                if isinstance(value, int):
+                    train_suffix += f" {key}={value}"
+                else:
+                    try:
+                        train_suffix += f" {key}={float(value):.3f}"
+                    except (TypeError, ValueError):
+                        train_suffix += f" {key}={value}"
             print(
                 "[episode] "
                 f"episode_id={self._episode_id} "
@@ -380,7 +410,8 @@ class CarmackMultiGameRunner:
                 f"length={self._episode_length} "
                 f"ended_by={ended_by} "
                 f"boundary_cause={boundary_cause} "
-                f"end_global_frame_idx={end_global_frame_idx}",
+                f"end_global_frame_idx={end_global_frame_idx}"
+                f"{train_suffix}",
                 flush=True,
             )
         if self.episode_writer is None:
