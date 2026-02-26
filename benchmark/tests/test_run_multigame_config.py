@@ -153,3 +153,66 @@ def test_validate_args_carmack_requires_decision_interval_one():
     )
     with pytest.raises(ValueError, match=r"carmack_compat requires --decision-interval 1"):
         validate_args(args)
+
+
+def test_run_multigame_cli_accepts_ppo_agent():
+    args = parse_args(["--games", "pong", "--agent", "ppo"])
+    assert args.agent == "ppo"
+    assert args.ppo_lr == pytest.approx(2.5e-4)
+    assert args.ppo_rollout_steps == 128
+
+
+def test_run_multigame_config_parses_ppo_agent_config(tmp_path):
+    config_path = tmp_path / "cfg_ppo.json"
+    payload = {
+        "games": ["pong"],
+        "agent": "ppo",
+        "agent_config": {
+            "learning_rate": 0.0001,
+            "clip_range": 0.15,
+            "rollout_steps": 64,
+            "train_interval": 64,
+            "batch_size": 16,
+            "epochs": 3,
+            "device": "cpu",
+            "grayscale": 1,
+        },
+    }
+    with config_path.open("w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
+
+    args = parse_args(["--config", str(config_path)])
+    assert args.agent == "ppo"
+    assert args.ppo_lr == pytest.approx(1e-4)
+    assert args.ppo_clip_range == pytest.approx(0.15)
+    assert args.ppo_rollout_steps == 64
+    assert args.ppo_train_interval == 64
+    assert args.ppo_batch_size == 16
+    assert args.ppo_epochs == 3
+    assert args.ppo_device == "cpu"
+    assert args.ppo_grayscale == 1
+
+
+def test_run_multigame_config_ppo_fields_apply_when_agent_overridden_on_cli(tmp_path):
+    config_path = tmp_path / "cfg_mixed_agent.json"
+    payload = {
+        "games": ["pong"],
+        "agent": "tinydqn",
+        "agent_config": {
+            "learning_rate": 0.0002,
+            "rollout_steps": 96,
+            "train_interval": 96,
+            "batch_size": 24,
+            "epochs": 2,
+        },
+    }
+    with config_path.open("w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
+
+    args = parse_args(["--config", str(config_path), "--agent", "ppo"])
+    assert args.agent == "ppo"
+    assert args.ppo_lr == pytest.approx(2e-4)
+    assert args.ppo_rollout_steps == 96
+    assert args.ppo_train_interval == 96
+    assert args.ppo_batch_size == 24
+    assert args.ppo_epochs == 2

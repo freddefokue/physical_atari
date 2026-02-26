@@ -336,6 +336,25 @@ python -m benchmark.run_multigame \
 
 TinyDQN hyperparameters are saved under `agent_config` in the run `config.json`.
 
+### PPO baseline agent
+
+`--agent ppo` adds a streaming PPO baseline with online rollouts and defensive NaN guards.
+
+Example (short Carmack-compatible smoke run):
+
+```bash
+python -m benchmark.run_multigame \
+  --games pong \
+  --num-cycles 1 \
+  --base-visit-frames 256 \
+  --decision-interval 1 \
+  --runner-mode carmack_compat \
+  --agent ppo \
+  --ppo-rollout-steps 64 \
+  --ppo-train-interval 64 \
+  --logdir /tmp/ppo_smoke
+```
+
 ### How to validate multi-game mechanics
 
 ```bash
@@ -360,9 +379,9 @@ Use `benchmark.score_run` to compute benchmark metrics from an existing run dire
 ```bash
 python -m benchmark.score_run \
   --run-dir ./runs/v1/<run_dir> \
-  --window-episodes 20 \
+  --window-frames 5000 \
   --bottom-k-frac 0.25 \
-  --revisit-episodes 5
+  --revisit-frames 2000
 ```
 
 This writes `score.json` into the run directory and prints the same JSON to stdout.

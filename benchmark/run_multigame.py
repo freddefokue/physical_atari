@@ -80,6 +80,24 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
     set_if_present("delay_target_ring_buffer_size", ["delay_target_ring_buffer_size"], int)
     set_if_present("delay_target_lr_log2", ["delay_target_lr_log2"], int)
     set_if_present("delay_target_base_lr_log2", ["delay_target_base_lr_log2"], int)
+    set_if_present("ppo_lr", ["ppo_lr"], float)
+    set_if_present("ppo_gamma", ["ppo_gamma"], float)
+    set_if_present("ppo_gae_lambda", ["ppo_gae_lambda"], float)
+    set_if_present("ppo_clip_range", ["ppo_clip_range"], float)
+    set_if_present("ppo_ent_coef", ["ppo_ent_coef"], float)
+    set_if_present("ppo_vf_coef", ["ppo_vf_coef"], float)
+    set_if_present("ppo_max_grad_norm", ["ppo_max_grad_norm"], float)
+    set_if_present("ppo_rollout_steps", ["ppo_rollout_steps"], int)
+    set_if_present("ppo_train_interval", ["ppo_train_interval"], int)
+    set_if_present("ppo_batch_size", ["ppo_batch_size"], int)
+    set_if_present("ppo_epochs", ["ppo_epochs"], int)
+    set_if_present("ppo_reward_clip", ["ppo_reward_clip"], float)
+    set_if_present("ppo_obs_size", ["ppo_obs_size"], int)
+    set_if_present("ppo_frame_stack", ["ppo_frame_stack"], int)
+    set_if_present("ppo_grayscale", ["ppo_grayscale"], int)
+    set_if_present("ppo_normalize_advantages", ["ppo_normalize_advantages"], int)
+    set_if_present("ppo_deterministic_actions", ["ppo_deterministic_actions"], int)
+    set_if_present("ppo_device", ["ppo_device"], str)
     set_if_present("default_action_idx", ["default_action_idx"], int)
     set_if_present("log_episode_every", ["log_episode_every", "episode_log_interval"], int)
     set_if_present("log_train_every", ["log_train_every", "train_log_interval"], int)
@@ -120,6 +138,24 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "delay_target_ring_buffer_size",
         "delay_target_lr_log2",
         "delay_target_base_lr_log2",
+        "ppo_lr",
+        "ppo_gamma",
+        "ppo_gae_lambda",
+        "ppo_clip_range",
+        "ppo_ent_coef",
+        "ppo_vf_coef",
+        "ppo_max_grad_norm",
+        "ppo_rollout_steps",
+        "ppo_train_interval",
+        "ppo_batch_size",
+        "ppo_epochs",
+        "ppo_reward_clip",
+        "ppo_obs_size",
+        "ppo_frame_stack",
+        "ppo_grayscale",
+        "ppo_normalize_advantages",
+        "ppo_deterministic_actions",
+        "ppo_device",
     ]:
         if key in config_data and config_data[key] is not None:
             merged_cfg[key] = config_data[key]
@@ -145,6 +181,24 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "delay_target_ring_buffer_size": int,
         "delay_target_lr_log2": int,
         "delay_target_base_lr_log2": int,
+        "ppo_lr": float,
+        "ppo_gamma": float,
+        "ppo_gae_lambda": float,
+        "ppo_clip_range": float,
+        "ppo_ent_coef": float,
+        "ppo_vf_coef": float,
+        "ppo_max_grad_norm": float,
+        "ppo_rollout_steps": int,
+        "ppo_train_interval": int,
+        "ppo_batch_size": int,
+        "ppo_epochs": int,
+        "ppo_reward_clip": float,
+        "ppo_obs_size": int,
+        "ppo_frame_stack": int,
+        "ppo_grayscale": int,
+        "ppo_normalize_advantages": int,
+        "ppo_deterministic_actions": int,
+        "ppo_device": str,
     }
     for arg_name in [
         "dqn_gamma",
@@ -167,6 +221,24 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "delay_target_ring_buffer_size",
         "delay_target_lr_log2",
         "delay_target_base_lr_log2",
+        "ppo_lr",
+        "ppo_gamma",
+        "ppo_gae_lambda",
+        "ppo_clip_range",
+        "ppo_ent_coef",
+        "ppo_vf_coef",
+        "ppo_max_grad_norm",
+        "ppo_rollout_steps",
+        "ppo_train_interval",
+        "ppo_batch_size",
+        "ppo_epochs",
+        "ppo_reward_clip",
+        "ppo_obs_size",
+        "ppo_frame_stack",
+        "ppo_grayscale",
+        "ppo_normalize_advantages",
+        "ppo_deterministic_actions",
+        "ppo_device",
     ]:
         if arg_name in merged_cfg and merged_cfg[arg_name] is not None:
             defaults[arg_name] = arg_cast[arg_name](merged_cfg[arg_name])
@@ -198,6 +270,34 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         if field_name in merged_cfg and merged_cfg[field_name] is not None:
             value = merged_cfg[field_name]
             if arg_name in {"dqn_use_replay", "delay_target_use_cuda_graphs"}:
+                defaults[arg_name] = int(value)
+            else:
+                defaults[arg_name] = value
+
+    ppo_field_to_arg = {
+        "learning_rate": "ppo_lr",
+        "gamma": "ppo_gamma",
+        "gae_lambda": "ppo_gae_lambda",
+        "clip_range": "ppo_clip_range",
+        "ent_coef": "ppo_ent_coef",
+        "vf_coef": "ppo_vf_coef",
+        "max_grad_norm": "ppo_max_grad_norm",
+        "rollout_steps": "ppo_rollout_steps",
+        "train_interval": "ppo_train_interval",
+        "batch_size": "ppo_batch_size",
+        "epochs": "ppo_epochs",
+        "reward_clip": "ppo_reward_clip",
+        "obs_size": "ppo_obs_size",
+        "frame_stack": "ppo_frame_stack",
+        "grayscale": "ppo_grayscale",
+        "normalize_advantages": "ppo_normalize_advantages",
+        "deterministic_actions": "ppo_deterministic_actions",
+        "device": "ppo_device",
+    }
+    for field_name, arg_name in ppo_field_to_arg.items():
+        if field_name in merged_cfg and merged_cfg[field_name] is not None:
+            value = merged_cfg[field_name]
+            if arg_name in {"ppo_grayscale", "ppo_normalize_advantages", "ppo_deterministic_actions"}:
                 defaults[arg_name] = int(value)
             else:
                 defaults[arg_name] = value
@@ -249,7 +349,7 @@ def _build_parser(defaults: Optional[Dict[str, Any]] = None) -> argparse.Argumen
     parser.add_argument(
         "--agent",
         type=str,
-        choices=["random", "repeat", "tinydqn", "delay_target"],
+        choices=["random", "repeat", "tinydqn", "delay_target", "ppo"],
         default="random",
         help="Agent type.",
     )
@@ -348,6 +448,48 @@ def _build_parser(defaults: Optional[Dict[str, Any]] = None) -> argparse.Argumen
         type=int,
         default=4,
         help="TinyDQN decision interval in frames (agent-owned cadence in carmack_compat mode).",
+    )
+    parser.add_argument("--ppo-lr", type=float, default=2.5e-4, help="PPO optimizer learning rate.")
+    parser.add_argument("--ppo-gamma", type=float, default=0.99, help="PPO discount factor.")
+    parser.add_argument("--ppo-gae-lambda", type=float, default=0.95, help="PPO GAE lambda.")
+    parser.add_argument("--ppo-clip-range", type=float, default=0.2, help="PPO clipping epsilon.")
+    parser.add_argument("--ppo-ent-coef", type=float, default=0.01, help="PPO entropy bonus coefficient.")
+    parser.add_argument("--ppo-vf-coef", type=float, default=0.5, help="PPO value-loss coefficient.")
+    parser.add_argument("--ppo-max-grad-norm", type=float, default=0.5, help="PPO gradient clipping norm (0 disables).")
+    parser.add_argument("--ppo-rollout-steps", type=int, default=128, help="PPO rollout length before training.")
+    parser.add_argument("--ppo-train-interval", type=int, default=128, help="PPO training cadence in decision steps.")
+    parser.add_argument("--ppo-batch-size", type=int, default=32, help="PPO minibatch size.")
+    parser.add_argument("--ppo-epochs", type=int, default=4, help="PPO epochs per training update.")
+    parser.add_argument("--ppo-reward-clip", type=float, default=1.0, help="Symmetric reward clipping value (0 disables).")
+    parser.add_argument("--ppo-obs-size", type=int, default=84, help="PPO resized square observation size.")
+    parser.add_argument("--ppo-frame-stack", type=int, default=4, help="PPO number of stacked preprocessed frames.")
+    parser.add_argument(
+        "--ppo-grayscale",
+        type=int,
+        choices=[0, 1],
+        default=1,
+        help="PPO preprocessing: 1=grayscale, 0=RGB channel stacking.",
+    )
+    parser.add_argument(
+        "--ppo-normalize-advantages",
+        type=int,
+        choices=[0, 1],
+        default=1,
+        help="PPO normalize advantages per update.",
+    )
+    parser.add_argument(
+        "--ppo-deterministic-actions",
+        type=int,
+        choices=[0, 1],
+        default=0,
+        help="PPO action selection: 1=argmax policy, 0=sample.",
+    )
+    parser.add_argument(
+        "--ppo-device",
+        type=str,
+        choices=["cpu", "cuda"],
+        default="cpu",
+        help="PPO compute device preference.",
     )
     parser.add_argument(
         "--default-action-idx",
@@ -450,6 +592,36 @@ def build_agent(args: argparse.Namespace, num_actions: int, total_frames: int):
             agent_kwargs=adapter_kwargs,
         )
         return agent, agent.get_config()
+    if args.agent == "ppo":
+        try:
+            from benchmark.agents_ppo import PPOAgent, PPOConfig  # pylint: disable=import-outside-toplevel
+        except ImportError as exc:  # pragma: no cover - optional dependency path
+            raise ImportError(
+                "agent=ppo requires torch. Install torch (CPU/CUDA build) or use --agent random/--agent repeat."
+            ) from exc
+
+        ppo_config = PPOConfig(
+            learning_rate=float(args.ppo_lr),
+            gamma=float(args.ppo_gamma),
+            gae_lambda=float(args.ppo_gae_lambda),
+            clip_range=float(args.ppo_clip_range),
+            ent_coef=float(args.ppo_ent_coef),
+            vf_coef=float(args.ppo_vf_coef),
+            max_grad_norm=float(args.ppo_max_grad_norm),
+            rollout_steps=int(args.ppo_rollout_steps),
+            train_interval=int(args.ppo_train_interval),
+            batch_size=int(args.ppo_batch_size),
+            epochs=int(args.ppo_epochs),
+            reward_clip=float(args.ppo_reward_clip),
+            obs_size=int(args.ppo_obs_size),
+            frame_stack=int(args.ppo_frame_stack),
+            grayscale=bool(int(args.ppo_grayscale)),
+            normalize_advantages=bool(int(args.ppo_normalize_advantages)),
+            deterministic_actions=bool(int(args.ppo_deterministic_actions)),
+            device=str(args.ppo_device),
+        )
+        agent = PPOAgent(action_space_n=num_actions, seed=int(args.seed), config=ppo_config)
+        return agent, ppo_config.as_dict()
     try:
         from benchmark.agents_tinydqn import TinyDQNAgent, TinyDQNConfig  # pylint: disable=import-outside-toplevel
     except ImportError as exc:  # pragma: no cover - depends on optional torch dependency
