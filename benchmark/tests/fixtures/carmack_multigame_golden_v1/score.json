@@ -1,0 +1,24 @@
+{
+  "benchmark_contract_hash": "939f458ac90d2a4bc3d7a940dd67880e266e424c1cbced452986526231f7d82c",
+  "benchmark_contract_version": "v1",
+  "bottom_k_score": 0.0,
+  "final_score": 0.25,
+  "forgetting_index_mean": null,
+  "forgetting_index_median": null,
+  "fps": 60.0,
+  "frames": 4,
+  "mean_score": 0.5,
+  "per_game_episode_counts": {
+    "breakout": 1
+  },
+  "per_game_visit_frames": {
+    "breakout": 4
+  },
+  "per_game_forgetting": {},
+  "per_game_plasticity": {},
+  "per_game_scores": {
+    "breakout": 0.5
+  },
+  "plasticity_mean": null,
+  "plasticity_median": null
+}

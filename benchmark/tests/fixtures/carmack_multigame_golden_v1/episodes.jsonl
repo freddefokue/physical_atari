@@ -1,0 +1,1 @@
+{"boundary_cause": "visit_switch", "end_global_frame_idx": 3, "ended_by": "truncated", "episode_id": 0, "game_id": "breakout", "length": 4, "multi_run_profile": "carmack_compat", "multi_run_schema_version": "carmack_multi_v1", "return": 1.0, "start_global_frame_idx": 0}

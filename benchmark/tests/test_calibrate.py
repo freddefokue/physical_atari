@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from benchmark.calibrate import (
+    _build_run_multigame_cmd,
     _stable_json_sha256,
     _should_stream_line,
     aggregate_summary,
@@ -387,6 +388,37 @@ def test_should_stream_line_filters_reset_spam_only():
     assert _should_stream_line("  Sending Reset...   ") is False
     assert _should_stream_line("[tinydqn] train_step=1000 replay_size=4996 loss=0.002520\n") is True
     assert _should_stream_line("Run complete: /tmp/run\n") is True
+
+
+def test_build_run_multigame_cmd_standard_mode():
+    cmd = _build_run_multigame_cmd(
+        python_exe="python3",
+        resolved_config_path=Path("/tmp/resolved.json"),
+        seed=7,
+        agent="repeat",
+        run_base=Path("/tmp/out"),
+        runner_mode="standard",
+    )
+    assert "--runner-mode" in cmd
+    assert "standard" in cmd
+    assert "--repeat-action-idx" in cmd
+    assert "--decision-interval" not in cmd
+
+
+def test_build_run_multigame_cmd_carmack_mode_forces_decision_interval_one():
+    cmd = _build_run_multigame_cmd(
+        python_exe="python3",
+        resolved_config_path=Path("/tmp/resolved.json"),
+        seed=3,
+        agent="tinydqn",
+        run_base=Path("/tmp/out"),
+        runner_mode="carmack_compat",
+    )
+    assert "--runner-mode" in cmd
+    assert "carmack_compat" in cmd
+    assert "--decision-interval" in cmd
+    idx = cmd.index("--decision-interval")
+    assert cmd[idx + 1] == "1"
 
 
 def test_rollout_acceptance_passes_within_thresholds():

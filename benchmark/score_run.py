@@ -42,6 +42,12 @@ class VisitRecord:
     cycle_idx: Optional[int] = None
 
 
+@dataclass
+class FrameRewardTable:
+    frame_indices: np.ndarray
+    prefix_rewards: np.ndarray
+
+
 def _read_json(path: Path) -> Dict[str, Any]:
     with path.open("r", encoding="utf-8") as fh:
         return json.load(fh)
@@ -252,48 +258,6 @@ def _derive_visits_from_segments(segments: Sequence[SegmentRecord]) -> List[Visi
     return visits
 
 
-def _episodes_from_terminated_segments(segments: Sequence[SegmentRecord]) -> List[EpisodeRecord]:
-    return [
-        EpisodeRecord(
-            game_id=segment.game_id,
-            start_frame=segment.start_frame,
-            end_frame=segment.end_frame,
-            return_value=segment.return_value,
-            ended_by="terminated",
-        )
-        for segment in segments
-        if segment.ended_by == "terminated"
-    ]
-
-
-def _select_true_episodes(
-    episodes_rows: Sequence[Dict[str, Any]],
-    segments: Sequence[SegmentRecord],
-) -> Tuple[List[EpisodeRecord], Dict[str, Any]]:
-    notes: Dict[str, Any] = {}
-    parsed_episodes = _parse_episodes(episodes_rows)
-    parsed_segments_episodes = _episodes_from_terminated_segments(segments)
-
-    if not parsed_episodes:
-        notes["episode_source"] = "segments_terminated"
-        return parsed_segments_episodes, notes
-
-    has_truncated_in_episodes = any(ep.ended_by == "truncated" for ep in parsed_episodes)
-    if has_truncated_in_episodes and parsed_segments_episodes:
-        notes["episode_source"] = "segments_terminated_fallback_due_truncated_entries"
-        notes["episodes_jsonl_truncated_entries_detected"] = True
-        return parsed_segments_episodes, notes
-
-    true_episodes = [ep for ep in parsed_episodes if ep.ended_by == "terminated"]
-    if true_episodes:
-        notes["episode_source"] = "episodes_jsonl_terminated_only"
-        notes["episodes_jsonl_truncated_entries_detected"] = has_truncated_in_episodes
-        return true_episodes, notes
-
-    notes["episode_source"] = "segments_terminated_fallback_no_usable_episodes"
-    return parsed_segments_episodes, notes
-
-
 def _mean_or_none(values: Sequence[float]) -> Optional[float]:
     if not values:
         return None
@@ -327,7 +291,78 @@ def _assign_episodes_to_visits(
     return by_visit, unassigned
 
 
-def _compute_runtime(events_path: Path, fallback_frames: int) -> Tuple[int, Optional[float], Optional[float], str]:
+def _build_frame_reward_table(frame_indices: Sequence[int], rewards: Sequence[float]) -> FrameRewardTable:
+    if not frame_indices:
+        return FrameRewardTable(
+            frame_indices=np.array([], dtype=np.int64),
+            prefix_rewards=np.array([0.0], dtype=np.float64),
+        )
+
+    frame_array = np.asarray(frame_indices, dtype=np.int64)
+    reward_array = np.asarray(rewards, dtype=np.float64)
+    order = np.argsort(frame_array, kind="mergesort")
+    frame_array = frame_array[order]
+    reward_array = reward_array[order]
+
+    unique_frames, first_indices = np.unique(frame_array, return_index=True)
+    summed_rewards = np.add.reduceat(reward_array, first_indices)
+    prefix = np.empty(len(summed_rewards) + 1, dtype=np.float64)
+    prefix[0] = 0.0
+    np.cumsum(summed_rewards, out=prefix[1:])
+    return FrameRewardTable(frame_indices=unique_frames, prefix_rewards=prefix)
+
+
+def _sum_reward_range(reward_table: FrameRewardTable, start_frame: int, end_frame: int) -> float:
+    if start_frame > end_frame or reward_table.frame_indices.size == 0:
+        return 0.0
+    left = int(np.searchsorted(reward_table.frame_indices, int(start_frame), side="left"))
+    right = int(np.searchsorted(reward_table.frame_indices, int(end_frame), side="right"))
+    if right <= left:
+        return 0.0
+    return float(reward_table.prefix_rewards[right] - reward_table.prefix_rewards[left])
+
+
+def _visit_frame_count(visit: VisitRecord) -> int:
+    return max(0, int(visit.end_frame) - int(visit.start_frame) + 1)
+
+
+def _tail_rate(
+    visit: VisitRecord,
+    n: int,
+    reward_tables: Dict[str, FrameRewardTable],
+) -> float:
+    n_eff = min(int(n), _visit_frame_count(visit))
+    if n_eff <= 0:
+        return 0.0
+    start = max(int(visit.end_frame) - int(n) + 1, int(visit.start_frame))
+    end = int(visit.end_frame)
+    reward_table = reward_tables.get(visit.game_id)
+    total = 0.0 if reward_table is None else _sum_reward_range(reward_table, start, end)
+    return float(total / n_eff)
+
+
+def _head_rate(
+    visit: VisitRecord,
+    n: int,
+    reward_tables: Dict[str, FrameRewardTable],
+) -> float:
+    n_eff = min(int(n), _visit_frame_count(visit))
+    if n_eff <= 0:
+        return 0.0
+    start = int(visit.start_frame)
+    end = min(int(visit.start_frame) + int(n) - 1, int(visit.end_frame))
+    reward_table = reward_tables.get(visit.game_id)
+    total = 0.0 if reward_table is None else _sum_reward_range(reward_table, start, end)
+    return float(total / n_eff)
+
+
+def _load_reward_tables_and_runtime(
+    events_path: Path,
+    fallback_frames: int,
+) -> Tuple[Dict[str, FrameRewardTable], int, Optional[float], Optional[float], str]:
+    per_game_frame_indices: Dict[str, List[int]] = {}
+    per_game_rewards: Dict[str, List[float]] = {}
+
     frames = 0
     first_time: Optional[float] = None
     last_time: Optional[float] = None
@@ -337,18 +372,25 @@ def _compute_runtime(events_path: Path, fallback_frames: int) -> Tuple[int, Opti
 
     for row in _iter_jsonl(events_path):
         frames += 1
-        if "wallclock_time" not in row or row["wallclock_time"] is None:
+        if "wallclock_time" in row and row["wallclock_time"] is not None:
+            t = float(row["wallclock_time"])
+            if first_time is None:
+                first_time = t
+            last_time = t
+            if prev_time is not None:
+                dt = t - prev_time
+                if dt >= 0.0:
+                    total_step_dt += dt
+                    step_dt_count += 1
+            prev_time = t
+
+        frame_idx = _pick_int(row, ["global_frame_idx"])
+        if frame_idx is None:
             continue
-        t = float(row["wallclock_time"])
-        if first_time is None:
-            first_time = t
-        last_time = t
-        if prev_time is not None:
-            dt = t - prev_time
-            if dt >= 0.0:
-                total_step_dt += dt
-                step_dt_count += 1
-        prev_time = t
+        game_id = _pick_str(row, ["game_id"], default="unknown") or "unknown"
+        reward = _pick_float(row, ["reward"], default=0.0)
+        per_game_frame_indices.setdefault(game_id, []).append(int(frame_idx))
+        per_game_rewards.setdefault(game_id, []).append(float(reward or 0.0))
 
     source = "events"
     if frames == 0:
@@ -365,21 +407,29 @@ def _compute_runtime(events_path: Path, fallback_frames: int) -> Tuple[int, Opti
     if step_dt_count > 0:
         mean_step_time = float(total_step_dt / step_dt_count)
 
-    return frames, fps, mean_step_time, source
+    reward_tables = {
+        game_id: _build_frame_reward_table(
+            frame_indices=per_game_frame_indices[game_id],
+            rewards=per_game_rewards[game_id],
+        )
+        for game_id in per_game_frame_indices
+    }
+
+    return reward_tables, frames, fps, mean_step_time, source
 
 
 def score_run(
     run_dir: Path,
-    window_episodes: int = 20,
+    window_frames: int = 5000,
     bottom_k_frac: float = 0.25,
-    revisit_episodes: int = 5,
+    revisit_frames: int = 2000,
     final_score_weights: Tuple[float, float] = (0.5, 0.5),
 ) -> Dict[str, Any]:
     run_dir = Path(run_dir)
-    if window_episodes <= 0:
-        raise ValueError("window_episodes must be > 0")
-    if revisit_episodes <= 0:
-        raise ValueError("revisit_episodes must be > 0")
+    if window_frames <= 0:
+        raise ValueError("window_frames must be > 0")
+    if revisit_frames <= 0:
+        raise ValueError("revisit_frames must be > 0")
     if bottom_k_frac <= 0.0 or bottom_k_frac > 1.0:
         raise ValueError("bottom_k_frac must be in (0.0, 1.0]")
 
@@ -401,8 +451,12 @@ def score_run(
         visits = _derive_visits_from_segments(segments)
         notes["visit_source"] = "segments"
 
-    episodes, episode_notes = _select_true_episodes(episodes_rows, segments)
-    notes.update(episode_notes)
+    parsed_episodes = _parse_episodes(episodes_rows)
+    episodes = [ep for ep in parsed_episodes if ep.ended_by == "terminated"]
+    notes["episode_source"] = "episodes_jsonl_terminated_only"
+    notes["episodes_jsonl_truncated_entries_detected"] = any(ep.ended_by == "truncated" for ep in parsed_episodes)
+    if not episodes_rows:
+        notes["episode_source"] = "episodes_jsonl_missing_or_empty"
 
     games_config = config.get("games")
     if isinstance(games_config, list) and games_config:
@@ -433,6 +487,14 @@ def score_run(
     for game_visits in visits_by_game.values():
         game_visits.sort(key=lambda v: (v.start_frame, v.end_frame, v.visit_idx))
 
+    fallback_frames = int(config.get("total_scheduled_frames", 0) or 0)
+    reward_tables, frames, fps, mean_step_time, fps_source = _load_reward_tables_and_runtime(
+        run_dir / "events.jsonl",
+        fallback_frames=fallback_frames,
+    )
+    notes["mean_step_time"] = mean_step_time
+    notes["fps_source"] = fps_source
+
     cycle_values = [visit.cycle_idx for visit in visits if visit.cycle_idx is not None]
     if cycle_values:
         last_cycle = max(cycle_values)
@@ -446,28 +508,37 @@ def score_run(
                 last_cycle_visits.append(game_visits[-1])
         notes["cycle_selection"] = "approx_last_visit_per_game"
 
-    last_cycle_visit_ids = {visit.visit_idx for visit in last_cycle_visits}
+    last_cycle_visits_by_game: Dict[str, List[VisitRecord]] = {game: [] for game in games}
+    for visit in last_cycle_visits:
+        last_cycle_visits_by_game.setdefault(visit.game_id, []).append(visit)
+    for game_visits in last_cycle_visits_by_game.values():
+        game_visits.sort(key=lambda v: (v.start_frame, v.end_frame, v.visit_idx))
+
+    selected_last_visit_by_game: Dict[str, VisitRecord] = {}
+    for game in games:
+        game_visits = last_cycle_visits_by_game.get(game, [])
+        if game_visits:
+            selected_last_visit_by_game[game] = game_visits[-1]
+
     visit_order = sorted(visits, key=lambda v: (v.start_frame, v.end_frame, v.visit_idx))
     visit_pos = {visit.visit_idx: pos for pos, visit in enumerate(visit_order)}
 
     per_game_scores: Dict[str, float] = {}
     per_game_episode_counts: Dict[str, int] = {}
+    per_game_visit_frames: Dict[str, int] = {}
 
     for game in games:
-        game_returns: List[float] = []
-        for visit in visits_by_game.get(game, []):
-            if visit.visit_idx not in last_cycle_visit_ids:
-                continue
-            for ep in episodes_by_visit.get(visit.visit_idx, []):
-                if ep.game_id == game:
-                    game_returns.append(float(ep.return_value))
-
-        if game_returns:
-            selected = game_returns[-window_episodes:]
-            per_game_scores[game] = float(np.mean(selected))
-            per_game_episode_counts[game] = int(len(selected))
-        else:
+        last_visit = selected_last_visit_by_game.get(game)
+        if last_visit is None:
             per_game_episode_counts[game] = 0
+            per_game_visit_frames[game] = 0
+            continue
+
+        per_game_scores[game] = _tail_rate(last_visit, window_frames, reward_tables)
+        per_game_visit_frames[game] = _visit_frame_count(last_visit)
+        per_game_episode_counts[game] = int(
+            sum(1 for ep in episodes_by_visit.get(last_visit.visit_idx, []) if ep.game_id == game)
+        )
     notes["games_with_zero_last_cycle_episodes"] = [game for game in games if per_game_episode_counts.get(game, 0) == 0]
 
     scored_values = [per_game_scores[game] for game in games if game in per_game_scores]
@@ -497,13 +568,8 @@ def score_run(
             if prev_pos is not None and next_pos is not None and (next_pos - prev_pos) <= 1:
                 continue
 
-            prev_returns = [ep.return_value for ep in episodes_by_visit.get(prev_visit.visit_idx, []) if ep.game_id == game]
-            next_returns = [ep.return_value for ep in episodes_by_visit.get(next_visit.visit_idx, []) if ep.game_id == game]
-            if len(prev_returns) < revisit_episodes or len(next_returns) < revisit_episodes:
-                continue
-
-            pre = float(np.mean(prev_returns[-revisit_episodes:]))
-            post = float(np.mean(next_returns[:revisit_episodes]))
+            pre = _tail_rate(prev_visit, revisit_frames, reward_tables)
+            post = _head_rate(next_visit, revisit_frames, reward_tables)
             drops.append(pre - post)
 
         if drops:
@@ -538,15 +604,8 @@ def score_run(
             continue
 
         first_visit = game_visits[0]
-        last_visit = game_visits[-1]
-        first_returns = [ep.return_value for ep in episodes_by_visit.get(first_visit.visit_idx, []) if ep.game_id == game]
-        last_returns = [ep.return_value for ep in episodes_by_visit.get(last_visit.visit_idx, []) if ep.game_id == game]
-
-        if len(first_returns) < revisit_episodes or len(last_returns) < revisit_episodes:
-            continue
-
-        early = float(np.mean(first_returns[:revisit_episodes]))
-        late = float(np.mean(last_returns[-revisit_episodes:]))
+        early = _head_rate(first_visit, revisit_frames, reward_tables)
+        late = _tail_rate(first_visit, revisit_frames, reward_tables)
         value = float(late - early)
         per_game_plasticity[game] = value
         plasticity_values.append(value)
@@ -554,17 +613,13 @@ def score_run(
     plasticity_mean = _mean_or_none(plasticity_values)
     plasticity_median = float(np.median(plasticity_values)) if plasticity_values else None
 
-    fallback_frames = int(config.get("total_scheduled_frames", 0) or 0)
-    frames, fps, mean_step_time, fps_source = _compute_runtime(run_dir / "events.jsonl", fallback_frames=fallback_frames)
-    notes["mean_step_time"] = mean_step_time
-    notes["fps_source"] = fps_source
-
     result: Dict[str, Any] = {
         "final_score": final_score,
         "mean_score": mean_score,
         "bottom_k_score": bottom_k_score,
         "per_game_scores": per_game_scores,
         "per_game_episode_counts": per_game_episode_counts,
+        "per_game_visit_frames": per_game_visit_frames,
         "forgetting_index_mean": forgetting_index_mean,
         "forgetting_index_median": forgetting_index_median,
         "per_game_forgetting": per_game_forgetting,
@@ -583,9 +638,9 @@ def score_run(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Score a continual benchmark run directory.")
     parser.add_argument("--run-dir", type=str, required=True, help="Path to run directory containing config/events/episodes/segments logs.")
-    parser.add_argument("--window-episodes", type=int, default=20, help="Recent episode window for online per-game scoring.")
+    parser.add_argument("--window-frames", type=int, default=5000, help="Trailing frame window for online per-game scoring.")
     parser.add_argument("--bottom-k-frac", type=float, default=0.25, help="Bottom-k fraction used for robustness aggregation.")
-    parser.add_argument("--revisit-episodes", type=int, default=5, help="Episode count for forgetting/plasticity local averages.")
+    parser.add_argument("--revisit-frames", type=int, default=2000, help="Frame window for forgetting/plasticity local averages.")
     return parser.parse_args()
 
 
@@ -594,9 +649,9 @@ def main() -> None:
     run_dir = Path(args.run_dir)
     summary = score_run(
         run_dir=run_dir,
-        window_episodes=args.window_episodes,
+        window_frames=args.window_frames,
         bottom_k_frac=args.bottom_k_frac,
-        revisit_episodes=args.revisit_episodes,
+        revisit_frames=args.revisit_frames,
     )
 
     score_path = run_dir / "score.json"

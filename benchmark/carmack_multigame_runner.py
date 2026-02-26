@@ -304,18 +304,22 @@ class CarmackMultiGameRunner:
         local_idx = self._local_action_to_idx.get(ale_action, self._local_default_idx)
         return int(local_idx), int(self._local_action_set[local_idx])
 
-    def _boundary_payload(self, *, terminated: bool, truncated: bool, global_frame_idx: int) -> Dict[str, Any]:
-        prev_action = (
-            int(self._last_applied_action_idx_global)
-            if self._has_prev_applied_action and self._last_applied_action_idx_global is not None
-            else int(self.config.default_action_idx)
-        )
+    def _boundary_payload(
+        self,
+        *,
+        terminated: bool,
+        truncated: bool,
+        global_frame_idx: int,
+        applied_action_idx: int,
+    ) -> Dict[str, Any]:
         return {
             "terminated": bool(terminated),
             "truncated": bool(truncated),
             "end_of_episode_pulse": bool(terminated or truncated),
-            "has_prev_applied_action": bool(self._has_prev_applied_action),
-            "prev_applied_action_idx": int(prev_action),
+            # In post-step mode, boundary payload must reference the action that
+            # produced the current (obs, reward) transition.
+            "has_prev_applied_action": True,
+            "prev_applied_action_idx": int(applied_action_idx),
             "global_frame_idx": int(global_frame_idx),
         }
 
@@ -429,6 +433,7 @@ class CarmackMultiGameRunner:
         reset_cause_counts: Dict[str, int] = {}
         reset_count = 0
 
+        taken_action = int(self.config.default_action_idx)
         for visit_idx, visit in enumerate(visits):
             local_actions = self.env.load_game(visit.game_id)
             self._set_local_action_set(local_actions)
@@ -437,8 +442,6 @@ class CarmackMultiGameRunner:
             self._reset_control_state(reset_delay_queue=bool(self.config.reset_delay_queue_on_visit_switch))
             self._start_episode(global_frame_idx)
             self._start_segment(global_frame_idx)
-
-            taken_action = int(self.config.default_action_idx)
 
             for visit_frame_idx in range(int(visit.visit_frames)):
                 decided_action_idx = int(taken_action)
@@ -460,6 +463,7 @@ class CarmackMultiGameRunner:
                     terminated=bool(boundary["terminated"]),
                     truncated=bool(boundary["truncated"]),
                     global_frame_idx=int(global_frame_idx),
+                    applied_action_idx=int(applied_action_idx),
                 )
 
                 event = {

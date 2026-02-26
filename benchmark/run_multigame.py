@@ -78,6 +78,8 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
     set_if_present("delay_target_use_cuda_graphs", ["delay_target_use_cuda_graphs"], int)
     set_if_present("delay_target_load_file", ["delay_target_load_file"], str)
     set_if_present("delay_target_ring_buffer_size", ["delay_target_ring_buffer_size"], int)
+    set_if_present("delay_target_lr_log2", ["delay_target_lr_log2"], int)
+    set_if_present("delay_target_base_lr_log2", ["delay_target_base_lr_log2"], int)
     set_if_present("default_action_idx", ["default_action_idx"], int)
     set_if_present("log_episode_every", ["log_episode_every", "episode_log_interval"], int)
     set_if_present("timestamps", ["timestamps", "include_timestamps"], int)
@@ -113,6 +115,8 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "delay_target_use_cuda_graphs",
         "delay_target_load_file",
         "delay_target_ring_buffer_size",
+        "delay_target_lr_log2",
+        "delay_target_base_lr_log2",
     ]:
         if key in config_data and config_data[key] is not None:
             merged_cfg[key] = config_data[key]
@@ -136,6 +140,8 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "delay_target_use_cuda_graphs": int,
         "delay_target_load_file": str,
         "delay_target_ring_buffer_size": int,
+        "delay_target_lr_log2": int,
+        "delay_target_base_lr_log2": int,
     }
     for arg_name in [
         "dqn_gamma",
@@ -156,6 +162,8 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "delay_target_use_cuda_graphs",
         "delay_target_load_file",
         "delay_target_ring_buffer_size",
+        "delay_target_lr_log2",
+        "delay_target_base_lr_log2",
     ]:
         if arg_name in merged_cfg and merged_cfg[arg_name] is not None:
             defaults[arg_name] = arg_cast[arg_name](merged_cfg[arg_name])
@@ -180,6 +188,8 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "use_cuda_graphs": "delay_target_use_cuda_graphs",
         "load_file": "delay_target_load_file",
         "ring_buffer_size": "delay_target_ring_buffer_size",
+        "lr_log2": "delay_target_lr_log2",
+        "base_lr_log2": "delay_target_base_lr_log2",
     }
     for field_name, arg_name in field_to_arg.items():
         if field_name in merged_cfg and merged_cfg[field_name] is not None:
@@ -267,6 +277,18 @@ def _build_parser(defaults: Optional[Dict[str, Any]] = None) -> argparse.Argumen
         type=int,
         default=None,
         help="Optional override for agent_delay_target ring_buffer_size (frames).",
+    )
+    parser.add_argument(
+        "--delay-target-lr-log2",
+        type=int,
+        default=None,
+        help="Optional override for agent_delay_target lr_log2 (linear head LR = 2**lr_log2).",
+    )
+    parser.add_argument(
+        "--delay-target-base-lr-log2",
+        type=int,
+        default=None,
+        help="Optional override for agent_delay_target base_lr_log2 (CNN backbone LR = 2**base_lr_log2).",
     )
     parser.add_argument("--dqn-gamma", type=float, default=0.99, help="TinyDQN discount factor.")
     parser.add_argument("--dqn-lr", type=float, default=1e-4, help="TinyDQN Adam learning rate.")
@@ -405,6 +427,12 @@ def build_agent(args: argparse.Namespace, num_actions: int, total_frames: int):
         ring_buffer_size = getattr(args, "delay_target_ring_buffer_size", None)
         if ring_buffer_size is not None:
             adapter_kwargs["ring_buffer_size"] = int(ring_buffer_size)
+        lr_log2 = getattr(args, "delay_target_lr_log2", None)
+        if lr_log2 is not None:
+            adapter_kwargs["lr_log2"] = int(lr_log2)
+        base_lr_log2 = getattr(args, "delay_target_base_lr_log2", None)
+        if base_lr_log2 is not None:
+            adapter_kwargs["base_lr_log2"] = int(base_lr_log2)
         agent = DelayTargetAdapter(
             data_dir=str(Path(args.logdir)),
             seed=int(args.seed),

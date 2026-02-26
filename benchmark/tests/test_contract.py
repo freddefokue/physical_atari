@@ -29,9 +29,9 @@ def _make_config() -> dict:
             "global_action_set": list(range(18)),
         },
         "scoring_defaults": {
-            "window_episodes": 20,
+            "window_frames": 20,
             "bottom_k_frac": 0.25,
-            "revisit_episodes": 5,
+            "revisit_frames": 5,
             "final_score_weights": [0.5, 0.5],
         },
     }
@@ -52,6 +52,7 @@ def _make_multigame_score(contract_hash: str) -> dict:
         "frames": 4,
         "per_game_scores": {"breakout": 0.0},
         "per_game_episode_counts": {"breakout": 2},
+        "per_game_visit_frames": {"breakout": 4},
         "per_game_forgetting": {},
         "per_game_plasticity": {},
     }
@@ -87,9 +88,9 @@ def _make_carmack_multigame_config() -> dict:
             "reset_delay_queue_on_visit_switch": True,
         },
         "scoring_defaults": {
-            "window_episodes": 20,
+            "window_frames": 20,
             "bottom_k_frac": 0.25,
-            "revisit_episodes": 5,
+            "revisit_frames": 5,
             "final_score_weights": [0.5, 0.5],
         },
         "total_scheduled_frames": 4,
@@ -276,6 +277,15 @@ def test_validate_contract_passes_for_real_smoke_run(tmp_path):
     result = validate_contract(run_dir, sample_event_lines=sample_lines)
     assert result["ok"] is True, result["errors"]
     assert result["errors"] == []
+
+
+def test_validate_contract_passes_for_carmack_multigame_golden_fixture():
+    run_dir = Path("benchmark/tests/fixtures/carmack_multigame_golden_v1")
+    if not run_dir.exists():
+        pytest.skip(f"missing golden fixture run directory: {run_dir}")
+    result = validate_contract(run_dir, sample_event_lines=4, validation_mode="full")
+    assert result["ok"] is True, result["errors"]
+    assert result["warnings"] == []
 
 
 def test_validate_contract_fails_on_stale_hash(tmp_path):

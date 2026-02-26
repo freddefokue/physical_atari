@@ -145,6 +145,18 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional override for agent_delay_target ring_buffer_size (frames).",
     )
+    parser.add_argument(
+        "--delay-target-lr-log2",
+        type=int,
+        default=None,
+        help="Optional override for agent_delay_target lr_log2 (linear head LR = 2**lr_log2).",
+    )
+    parser.add_argument(
+        "--delay-target-base-lr-log2",
+        type=int,
+        default=None,
+        help="Optional override for agent_delay_target base_lr_log2 (CNN backbone LR = 2**base_lr_log2).",
+    )
     parser.add_argument("--dqn-gamma", type=float, default=0.99, help="TinyDQN discount factor.")
     parser.add_argument("--dqn-lr", type=float, default=1e-4, help="TinyDQN Adam learning rate.")
     parser.add_argument("--dqn-buffer-size", type=int, default=10000, help="TinyDQN replay buffer size.")
@@ -301,6 +313,10 @@ def build_agent(args: argparse.Namespace, num_actions: int, total_frames: int):
             kwargs["load_file"] = str(args.delay_target_load_file)
         if args.delay_target_ring_buffer_size is not None:
             kwargs["ring_buffer_size"] = int(args.delay_target_ring_buffer_size)
+        if args.delay_target_lr_log2 is not None:
+            kwargs["lr_log2"] = int(args.delay_target_lr_log2)
+        if args.delay_target_base_lr_log2 is not None:
+            kwargs["base_lr_log2"] = int(args.delay_target_base_lr_log2)
         base = DelayTargetAdapter(
             data_dir=str(Path(args.logdir)),
             seed=int(args.seed),

@@ -127,7 +127,10 @@ def test_carmack_multigame_runner_emits_required_boundary_payload():
         "prev_applied_action_idx",
         "global_frame_idx",
     }
-    assert first_boundary["has_prev_applied_action"] is False
+    assert first_boundary["has_prev_applied_action"] is True
+    assert [call["boundary"]["prev_applied_action_idx"] for call in agent.calls] == [
+        row["applied_action_idx"] for row in events
+    ]
     assert agent.calls[1]["boundary"]["end_of_episode_pulse"] is True
     assert events[1]["boundary_cause"] == "terminated"
     assert events[1]["env_termination_reason"] == "scripted_end"
@@ -225,3 +228,36 @@ def test_carmack_multigame_delay_queue_persistence_across_visit_switch():
     # Frame 3 is first frame of second visit.
     assert events_persist[3]["applied_action_idx"] == 1
     assert events_reset[3]["applied_action_idx"] == 0
+
+
+def test_carmack_multigame_carries_last_decision_across_visit_switch():
+    schedule = Schedule(
+        ScheduleConfig(games=["a", "b"], base_visit_frames=1, num_cycles=1, seed=0, jitter_pct=0.0, min_visit_frames=1)
+    )
+    env = MockMultiGameEnv(action_sets={"a": list(range(8)), "b": list(range(8))})
+
+    class _SequenceFrameAgent:
+        def __init__(self) -> None:
+            self._actions = [5, 6]
+            self._idx = 0
+
+        def frame(self, obs_rgb, reward, boundary) -> int:
+            del obs_rgb, reward, boundary
+            action = self._actions[min(self._idx, len(self._actions) - 1)]
+            self._idx += 1
+            return int(action)
+
+    agent = _SequenceFrameAgent()
+    config = CarmackMultiGameRunnerConfig(
+        decision_interval=1,
+        delay_frames=0,
+        default_action_idx=0,
+        include_timestamps=False,
+        global_action_set=tuple(range(8)),
+    )
+    _, events, _, _ = _run_with_memory(env, agent, schedule, config)
+
+    # The action produced on the last frame of visit 0 should become the
+    # decided action on the first frame of visit 1 (not overwritten to default).
+    assert events[0]["next_policy_action_idx"] == 5
+    assert events[1]["decided_action_idx"] == 5

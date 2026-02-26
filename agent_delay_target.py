@@ -882,6 +882,7 @@ def main():
             2  # 0 = always 18, 1 = ALE minimum action set, 2 = restricted even more for ms_pacman and qbert
         )
         total_frames = 2_000_000
+        parms['ring_buffer_size'] = 16_384
         parms['lr_log2'] = -17  # -18 + rank//4
         parms['base_lr_log2'] = -15  # -18 + rank%4
         seed = 0

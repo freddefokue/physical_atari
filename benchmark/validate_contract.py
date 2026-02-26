@@ -111,12 +111,12 @@ def _check_multigame_config(config: Mapping[str, Any], errors: List[str]) -> Non
     if not isinstance(scoring_defaults, dict):
         errors.append("config.json scoring_defaults must be object")
     else:
-        if not _is_int(scoring_defaults.get("window_episodes")):
-            errors.append("config.json scoring_defaults.window_episodes must be int")
+        if not _is_int(scoring_defaults.get("window_frames")):
+            errors.append("config.json scoring_defaults.window_frames must be int")
         if not _is_number(scoring_defaults.get("bottom_k_frac")):
             errors.append("config.json scoring_defaults.bottom_k_frac must be numeric")
-        if not _is_int(scoring_defaults.get("revisit_episodes")):
-            errors.append("config.json scoring_defaults.revisit_episodes must be int")
+        if not _is_int(scoring_defaults.get("revisit_frames")):
+            errors.append("config.json scoring_defaults.revisit_frames must be int")
         weights = scoring_defaults.get("final_score_weights")
         if (
             not isinstance(weights, Sequence)
@@ -351,6 +351,7 @@ def _check_score_schema(score: Mapping[str, Any], errors: List[str]) -> None:
     object_keys = (
         "per_game_scores",
         "per_game_episode_counts",
+        "per_game_visit_frames",
         "per_game_forgetting",
         "per_game_plasticity",
     )

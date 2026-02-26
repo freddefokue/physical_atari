@@ -1,0 +1,55 @@
+{
+  "action_mapping_policy": {
+    "global_action_set": [
+      0,
+      1,
+      2,
+      3
+    ]
+  },
+  "benchmark_contract_hash": "939f458ac90d2a4bc3d7a940dd67880e266e424c1cbced452986526231f7d82c",
+  "benchmark_contract_version": "v1",
+  "decision_interval": 1,
+  "default_action_idx": 0,
+  "delay": 0,
+  "full_action_space": false,
+  "games": [
+    "breakout"
+  ],
+  "life_loss_termination": false,
+  "multi_run_profile": "carmack_compat",
+  "multi_run_schema_version": "carmack_multi_v1",
+  "runner_config": {
+    "action_cadence_mode": "agent_owned",
+    "decision_interval": 1,
+    "default_action_idx": 0,
+    "delay_frames": 0,
+    "episode_log_interval": 0,
+    "frame_skip_enforced": 1,
+    "include_timestamps": false,
+    "multi_run_schema_version": "carmack_multi_v1",
+    "reset_delay_queue_on_reset": true,
+    "reset_delay_queue_on_visit_switch": true,
+    "runner_mode": "carmack_compat"
+  },
+  "runner_mode": "carmack_compat",
+  "schedule": [
+    {
+      "cycle_idx": 0,
+      "game_id": "breakout",
+      "visit_frames": 4,
+      "visit_idx": 0
+    }
+  ],
+  "scoring_defaults": {
+    "bottom_k_frac": 0.25,
+    "final_score_weights": [
+      0.5,
+      0.5
+    ],
+    "revisit_frames": 5,
+    "window_frames": 20
+  },
+  "sticky": 0.0,
+  "total_scheduled_frames": 4
+}

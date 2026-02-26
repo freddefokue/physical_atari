@@ -1,0 +1,20 @@
+{
+  "agent_stats": {},
+  "boundary_cause_counts": {
+    "visit_switch": 1
+  },
+  "episodes_completed": 1,
+  "frames": 4,
+  "last_episode_id": 1,
+  "last_segment_id": 1,
+  "multi_run_profile": "carmack_compat",
+  "multi_run_schema_version": "carmack_multi_v1",
+  "reset_cause_counts": {
+    "visit_switch": 1
+  },
+  "reset_count": 1,
+  "runner_mode": "carmack_compat",
+  "segments_completed": 1,
+  "total_scheduled_frames": 4,
+  "visits_completed": 1
+}

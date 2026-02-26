@@ -28,6 +28,7 @@ class SuiteSpec:
     seeds: Tuple[int, ...]
     agents: Tuple[str, ...]
     config_overrides: Dict[str, Any]
+    runner_mode: str = "standard"
     enforce_smoke_expectations: bool = False
 
 
@@ -626,9 +627,17 @@ def _run_streaming(cmd: Sequence[str]) -> Tuple[int, str]:
 def _build_scoring_args(config: Dict[str, Any], cli_args: argparse.Namespace) -> Dict[str, Any]:
     scoring_cfg = config.get("scoring_defaults") if isinstance(config.get("scoring_defaults"), dict) else {}
 
-    window_episodes = int(cli_args.window_episodes) if cli_args.window_episodes is not None else int(scoring_cfg.get("window_episodes", 20))
+    window_frames = (
+        int(cli_args.window_frames)
+        if cli_args.window_frames is not None
+        else int(scoring_cfg.get("window_frames", scoring_cfg.get("window_episodes", 5000)))
+    )
     bottom_k_frac = float(cli_args.bottom_k_frac) if cli_args.bottom_k_frac is not None else float(scoring_cfg.get("bottom_k_frac", 0.25))
-    revisit_episodes = int(cli_args.revisit_episodes) if cli_args.revisit_episodes is not None else int(scoring_cfg.get("revisit_episodes", 5))
+    revisit_frames = (
+        int(cli_args.revisit_frames)
+        if cli_args.revisit_frames is not None
+        else int(scoring_cfg.get("revisit_frames", scoring_cfg.get("revisit_episodes", 2000)))
+    )
 
     weights_raw = scoring_cfg.get("final_score_weights", [0.5, 0.5])
     if isinstance(weights_raw, (list, tuple)) and len(weights_raw) == 2:
@@ -637,11 +646,43 @@ def _build_scoring_args(config: Dict[str, Any], cli_args: argparse.Namespace) ->
         weights = (0.5, 0.5)
 
     return {
-        "window_episodes": window_episodes,
+        "window_frames": window_frames,
         "bottom_k_frac": bottom_k_frac,
-        "revisit_episodes": revisit_episodes,
+        "revisit_frames": revisit_frames,
         "final_score_weights": weights,
     }
+
+
+def _build_run_multigame_cmd(
+    *,
+    python_exe: str,
+    resolved_config_path: Path,
+    seed: int,
+    agent: str,
+    run_base: Path,
+    runner_mode: str,
+) -> List[str]:
+    cmd = [
+        str(python_exe),
+        "-u",
+        "-m",
+        "benchmark.run_multigame",
+        "--config",
+        str(resolved_config_path),
+        "--seed",
+        str(seed),
+        "--agent",
+        str(agent),
+        "--runner-mode",
+        str(runner_mode),
+        "--logdir",
+        str(run_base),
+    ]
+    if str(agent) == "repeat":
+        cmd.extend(["--repeat-action-idx", "0"])
+    if str(runner_mode) == "carmack_compat":
+        cmd.extend(["--decision-interval", "1"])
+    return cmd
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
@@ -651,10 +692,17 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--config", type=str, default=None, help="Optional config path override (JSON).")
     parser.add_argument("--seeds", type=str, default=None, help="Optional comma-separated seed override.")
     parser.add_argument("--agents", type=str, default=None, help="Optional comma-separated agent override.")
-    parser.add_argument("--window-episodes", type=int, default=None, help="Override scoring window_episodes.")
+    parser.add_argument("--window-frames", "--window-episodes", dest="window_frames", type=int, default=None, help="Override scoring window_frames.")
     parser.add_argument("--bottom-k-frac", type=float, default=None, help="Override scoring bottom_k_frac.")
-    parser.add_argument("--revisit-episodes", type=int, default=None, help="Override scoring revisit_episodes.")
+    parser.add_argument("--revisit-frames", "--revisit-episodes", dest="revisit_frames", type=int, default=None, help="Override scoring revisit_frames.")
     parser.add_argument("--python", type=str, default=sys.executable, help="Python executable for launching runs.")
+    parser.add_argument(
+        "--runner-mode",
+        type=str,
+        choices=["standard", "carmack_compat"],
+        default=None,
+        help="Optional runner mode override for suite runs.",
+    )
     parser.add_argument(
         "--rollout-baseline-summary",
         type=str,
@@ -720,6 +768,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     seeds = tuple(parse_int_csv(args.seeds)) if args.seeds else suite.seeds
     agents = tuple(parse_str_csv(args.agents)) if args.agents else suite.agents
+    runner_mode = str(args.runner_mode) if args.runner_mode is not None else str(suite.runner_mode)
 
     torch_available = _torch_available()
 
@@ -745,22 +794,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             run_base.mkdir(parents=True, exist_ok=True)
             before_dirs = [path for path in run_base.iterdir() if path.is_dir()]
 
-            cmd = [
-                str(args.python),
-                "-u",
-                "-m",
-                "benchmark.run_multigame",
-                "--config",
-                str(resolved_config_path),
-                "--seed",
-                str(seed),
-                "--agent",
-                str(agent),
-                "--logdir",
-                str(run_base),
-            ]
-            if agent == "repeat":
-                cmd.extend(["--repeat-action-idx", "0"])
+            cmd = _build_run_multigame_cmd(
+                python_exe=str(args.python),
+                resolved_config_path=resolved_config_path,
+                seed=int(seed),
+                agent=str(agent),
+                run_base=run_base,
+                runner_mode=runner_mode,
+            )
 
             print(f"[run] agent={agent} seed={seed}")
             returncode, combined_output = _run_streaming(cmd)
@@ -803,9 +844,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             try:
                 score = score_run(
                     run_dir=run_dir,
-                    window_episodes=int(scoring_args["window_episodes"]),
+                    window_frames=int(scoring_args["window_frames"]),
                     bottom_k_frac=float(scoring_args["bottom_k_frac"]),
-                    revisit_episodes=int(scoring_args["revisit_episodes"]),
+                    revisit_frames=int(scoring_args["revisit_frames"]),
                     final_score_weights=tuple(scoring_args["final_score_weights"]),
                 )
                 _write_json(run_dir / "score.json", score)
@@ -848,14 +889,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     aggregate = aggregate_summary(run_results, agents=agents)
     summary: Dict[str, Any] = {
         "suite": suite.name,
+        "runner_mode": runner_mode,
         "out_dir": str(out_dir),
         "resolved_config_path": str(resolved_config_path),
         "seeds": [int(seed) for seed in seeds],
         "agents": [str(agent) for agent in agents],
         "scoring": {
-            "window_episodes": int(scoring_args["window_episodes"]),
+            "window_frames": int(scoring_args["window_frames"]),
             "bottom_k_frac": float(scoring_args["bottom_k_frac"]),
-            "revisit_episodes": int(scoring_args["revisit_episodes"]),
+            "revisit_frames": int(scoring_args["revisit_frames"]),
             "final_score_weights": [
                 float(scoring_args["final_score_weights"][0]),
                 float(scoring_args["final_score_weights"][1]),

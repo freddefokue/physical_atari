@@ -60,9 +60,9 @@ Required keys:
 - `full_action_space` (bool)
 - `action_mapping_policy.global_action_set` (list[int])
 - `default_action_idx` (int)
-- `scoring_defaults.window_episodes` (int)
+- `scoring_defaults.window_frames` (int)
 - `scoring_defaults.bottom_k_frac` (number in `(0,1]`)
-- `scoring_defaults.revisit_episodes` (int)
+- `scoring_defaults.revisit_frames` (int)
 - `scoring_defaults.final_score_weights` (`[mean_w, bottom_k_w]`)
 - `benchmark_contract_version` (`"v1"`)
 - `benchmark_contract_hash` (sha256 hex string)
@@ -74,6 +74,7 @@ Required keys:
 - `bottom_k_score` (number or null)
 - `per_game_scores` (object)
 - `per_game_episode_counts` (object)
+- `per_game_visit_frames` (object)
 - `forgetting_index_mean` (number or null)
 - `forgetting_index_median` (number or null)
 - `per_game_forgetting` (object)
@@ -116,22 +117,29 @@ Forbidden keys (must not be exposed to the agent):
 ## Scoring Contract
 
 Inputs:
-- `window_episodes`
+- `window_frames`
 - `bottom_k_frac`
-- `revisit_episodes`
+- `revisit_frames`
 - `final_score_weights = [mean_w, bottom_k_w]`
 
 Definitions:
-- Per-game online score: mean of the last `window_episodes` terminated episode returns in the selected last-cycle visit(s).
+- Per-game online score: `tail_rate` over the selected last-cycle visit of each game:
+  - `tail_return(visit, n) = sum(reward[f])` for frames `f` in
+    `[max(visit.end_frame - n + 1, visit.start_frame), visit.end_frame]`
+  - `n_eff = min(n, visit.end_frame - visit.start_frame + 1)`
+  - `tail_rate(visit, n) = tail_return(visit, n) / n_eff`
 - `mean_score`: mean of per-game scores.
 - `bottom_k_score`: mean of lowest `ceil(bottom_k_frac * num_scored_games)` per-game scores.
 - `final_score = mean_w * mean_score + bottom_k_w * bottom_k_score`.
 - Forgetting per game: mean over non-adjacent revisit pairs of `(pre - post)`, where:
-  - `pre` = mean of last `revisit_episodes` returns in earlier visit.
-  - `post` = mean of first `revisit_episodes` returns in next revisit.
-- Plasticity per game: within first-cycle selection, `late - early`, where:
-  - `early` = mean first `revisit_episodes` returns from first visit of the game.
-  - `late` = mean last `revisit_episodes` returns from last first-cycle visit of the game.
+  - `pre = tail_rate(S_i, revisit_frames)`
+  - `post = head_rate(S_{i+1}, revisit_frames)`
+  - `head_return(visit, n) = sum(reward[f])` for frames `f` in
+    `[visit.start_frame, min(visit.start_frame + n - 1, visit.end_frame)]`
+  - `head_rate(visit, n) = head_return(visit, n) / n_eff`
+- Plasticity per game: for the first-cycle visit `S_0(g)`, `late - early`, where:
+  - `early = head_rate(S_0(g), revisit_frames)`
+  - `late = tail_rate(S_0(g), revisit_frames)`
 
 ## Contract Hash Input (v1)
 
@@ -146,9 +154,9 @@ Definitions:
 - `global_action_set`
 - `default_action_idx`
 - scoring defaults used:
-  - `window_episodes`
+  - `window_frames`
   - `bottom_k_frac`
-  - `revisit_episodes`
+  - `revisit_frames`
   - `final_score_weights`
 
 Excluded from hash:

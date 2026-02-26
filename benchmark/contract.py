@@ -8,9 +8,9 @@ from typing import Any, Dict, Mapping, Optional, Sequence
 
 BENCHMARK_CONTRACT_VERSION = "v1"
 
-DEFAULT_WINDOW_EPISODES = 20
+DEFAULT_WINDOW_FRAMES = 5000
 DEFAULT_BOTTOM_K_FRAC = 0.25
-DEFAULT_REVISIT_EPISODES = 5
+DEFAULT_REVISIT_FRAMES = 2000
 DEFAULT_FINAL_SCORE_WEIGHTS = (0.5, 0.5)
 
 
@@ -38,9 +38,9 @@ def resolve_scoring_defaults(config: Mapping[str, Any]) -> Dict[str, Any]:
         weights = DEFAULT_FINAL_SCORE_WEIGHTS
 
     return {
-        "window_episodes": _as_int(raw.get("window_episodes"), DEFAULT_WINDOW_EPISODES),
+        "window_frames": _as_int(raw.get("window_frames", raw.get("window_episodes")), DEFAULT_WINDOW_FRAMES),
         "bottom_k_frac": _as_float(raw.get("bottom_k_frac"), DEFAULT_BOTTOM_K_FRAC),
-        "revisit_episodes": _as_int(raw.get("revisit_episodes"), DEFAULT_REVISIT_EPISODES),
+        "revisit_frames": _as_int(raw.get("revisit_frames", raw.get("revisit_episodes")), DEFAULT_REVISIT_FRAMES),
         "final_score_weights": [float(weights[0]), float(weights[1])],
     }
 
@@ -141,9 +141,9 @@ def canonical_contract_input(
         "global_action_set": list(_extract_global_action_set(config)),
         "default_action_idx": _extract_default_action_idx(config),
         "scoring_defaults": {
-            "window_episodes": int(resolved_scoring_defaults["window_episodes"]),
+            "window_frames": int(resolved_scoring_defaults["window_frames"]),
             "bottom_k_frac": float(resolved_scoring_defaults["bottom_k_frac"]),
-            "revisit_episodes": int(resolved_scoring_defaults["revisit_episodes"]),
+            "revisit_frames": int(resolved_scoring_defaults["revisit_frames"]),
             "final_score_weights": [
                 float(resolved_scoring_defaults["final_score_weights"][0]),
                 float(resolved_scoring_defaults["final_score_weights"][1]),
@@ -159,4 +159,3 @@ def compute_contract_hash(
     payload = canonical_contract_input(config=config, scoring_defaults=scoring_defaults)
     canonical_json = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
-
