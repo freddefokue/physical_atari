@@ -881,7 +881,7 @@ def main():
         delay_frames = 6  # 60 fps frames to delay commands to simulate real world latency
     else:
         reduce_action_set = (
-            2  # 0 = always 18, 1 = ALE minimum action set, 2 = restricted even more for ms_pacman and qbert
+            1  # 0 = always 18, 1 = ALE minimum action set, 2 = restricted even more for ms_pacman and qbert
         )
         total_frames = 2_000_000
         parms['ring_buffer_size'] = 16_384
