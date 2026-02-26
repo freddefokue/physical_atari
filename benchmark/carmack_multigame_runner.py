@@ -392,19 +392,40 @@ class CarmackMultiGameRunner:
                         stats = payload
                 except Exception:  # pragma: no cover - defensive
                     stats = {}
-            err_avg = float(stats.get("avg_error_ema", 0.0))
-            err_max = float(stats.get("max_error_ema", 0.0))
-            loss = float(stats.get("train_loss_ema", 0.0))
-            target = float(stats.get("target_ema", 0.0))
-            print(
-                f'0:delay_multigame frame:{end_global_frame_idx:7d} {episode_fps:4.0f}/s '
-                f'eps {self._episode_id:3d},{self._episode_length:5d}={int(self._episode_return):5d} '
-                f'err {err_avg:.1f} {err_max:.1f} '
-                f'loss {loss:.1f} targ {target:.1f} avg {rolling_avg:4.1f} '
+            common_suffix = (
+                f'avg {rolling_avg:4.1f} '
                 f'game {game_id} cycle {cycle_idx} visit {visit_idx} '
-                f'ended_by {ended_by} boundary {boundary_cause}',
-                flush=True,
+                f'ended_by {ended_by} boundary {boundary_cause}'
             )
+            common_prefix = (
+                f'frame:{end_global_frame_idx:7d} {episode_fps:4.0f}/s '
+                f'eps {self._episode_id:3d},{self._episode_length:5d}={int(self._episode_return):5d} '
+            )
+            if "policy_entropy" in stats:
+                def _f(v: Any) -> str:
+                    return "n/a" if v is None else f"{float(v):.3f}"
+                print(
+                    f'0:ppo_multigame {common_prefix}'
+                    f'ploss {_f(stats.get("last_policy_loss"))} '
+                    f'vloss {_f(stats.get("last_value_loss"))} '
+                    f'ent {_f(stats.get("policy_entropy"))} '
+                    f'kl {_f(stats.get("approx_kl"))} '
+                    f'updates {stats.get("train_updates", 0)} '
+                    f'{common_suffix}',
+                    flush=True,
+                )
+            else:
+                err_avg = float(stats.get("avg_error_ema", 0.0))
+                err_max = float(stats.get("max_error_ema", 0.0))
+                loss = float(stats.get("train_loss_ema", 0.0))
+                target = float(stats.get("target_ema", 0.0))
+                print(
+                    f'0:delay_multigame {common_prefix}'
+                    f'err {err_avg:.1f} {err_max:.1f} '
+                    f'loss {loss:.1f} targ {target:.1f} '
+                    f'{common_suffix}',
+                    flush=True,
+                )
         if self.episode_writer is None:
             return
         self.episode_writer.write(
@@ -601,44 +622,44 @@ class CarmackMultiGameRunner:
                             stats = {}
                     elapsed = max(float(self.time_fn()) - run_start_time, 1e-6)
                     fps = float(global_frame_idx + 1) / elapsed
-                    msg = (
-                        "[train] "
-                        f"frame={global_frame_idx + 1} "
-                        f"game={visit.game_id} "
-                        f"visit_idx={visit.visit_idx} "
-                        f"fps={fps:.1f}"
-                    )
-                    for key in (
-                        "frame_count",
-                        "u",
-                        "episode_number",
-                        "train_loss_ema",
-                        "avg_error_ema",
-                        "max_error_ema",
-                        "target_ema",
-                        "train_steps_estimate",
-                        "decision_steps",
-                        "train_steps",
-                        "train_updates",
-                        "buffer_fill",
-                        "policy_entropy",
-                        "approx_kl",
-                        "last_policy_loss",
-                        "last_value_loss",
-                        "last_total_loss",
-                        "nan_guard_trigger_count",
-                    ):
-                        if key not in stats:
-                            continue
-                        value = stats[key]
-                        if isinstance(value, int):
-                            msg += f" {key}={value}"
-                        else:
-                            try:
-                                msg += f" {key}={float(value):.3f}"
-                            except (TypeError, ValueError):
+                    fr = global_frame_idx + 1
+                    gm = visit.game_id
+                    vi = visit.visit_idx
+                    ci = visit.cycle_idx
+                    if "policy_entropy" in stats:
+                        def _ft(v: Any) -> str:
+                            return "n/a" if v is None else f"{float(v):.3f}"
+                        print(
+                            f'0:ppo_multigame frame:{fr:7d} {fps:4.0f}/s '
+                            f'ploss {_ft(stats.get("last_policy_loss"))} '
+                            f'vloss {_ft(stats.get("last_value_loss"))} '
+                            f'ent {_ft(stats.get("policy_entropy"))} '
+                            f'kl {_ft(stats.get("approx_kl"))} '
+                            f'updates {stats.get("train_updates", 0)} '
+                            f'buf {stats.get("buffer_fill", 0)}/{self.config.decision_interval * int(stats.get("decision_steps", 0)) or fr} '
+                            f'game {gm} cycle {ci} visit {vi}',
+                            flush=True,
+                        )
+                    else:
+                        msg = (
+                            f"[train] frame={fr} game={gm} visit_idx={vi} fps={fps:.1f}"
+                        )
+                        for key in (
+                            "frame_count", "u", "episode_number",
+                            "train_loss_ema", "avg_error_ema", "max_error_ema",
+                            "target_ema", "train_steps_estimate",
+                        ):
+                            if key not in stats:
+                                continue
+                            value = stats[key]
+                            if isinstance(value, int):
                                 msg += f" {key}={value}"
-                    print(msg, flush=True)
+                            else:
+                                try:
+                                    msg += f" {key}={float(value):.3f}"
+                                except (TypeError, ValueError):
+                                    msg += f" {key}={value}"
+                        print(msg, flush=True)
 
                 if self.event_writer is not None:
                     self.event_writer.write(event)
