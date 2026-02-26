@@ -74,9 +74,10 @@ class DelayTargetAdapter:
 
     def frame(self, obs_rgb, reward, boundary) -> int:
         terminated, truncated = self._parse_boundary(boundary)
-        # Keep root DelayTarget agent contract unchanged while upgrading runner-side API
-        # to explicit terminated/truncated semantics.
-        end_of_episode = int(bool(terminated) or bool(truncated))
+        if isinstance(boundary, Mapping) and "end_of_episode_pulse" in boundary:
+            end_of_episode = int(bool(boundary["end_of_episode_pulse"]))
+        else:
+            end_of_episode = int(bool(terminated) or bool(truncated))
         action_idx = int(self._agent.frame(obs_rgb, float(reward), end_of_episode))
         self._decision_steps += 1
         if action_idx < 0 or action_idx >= self._num_actions:
