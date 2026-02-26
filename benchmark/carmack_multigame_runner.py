@@ -186,6 +186,7 @@ class CarmackMultiGameRunnerConfig:
     include_timestamps: bool = True
     global_action_set: Sequence[int] = field(default_factory=lambda: tuple(range(18)))
     episode_log_interval: int = 0
+    train_log_interval: int = 0
     reset_delay_queue_on_reset: bool = True
     reset_delay_queue_on_visit_switch: bool = True
 
@@ -202,6 +203,8 @@ class CarmackMultiGameRunnerConfig:
             raise ValueError("default_action_idx must be within global_action_set bounds")
         if self.episode_log_interval < 0:
             raise ValueError("episode_log_interval must be >= 0")
+        if self.train_log_interval < 0:
+            raise ValueError("train_log_interval must be >= 0")
 
 
 class CarmackMultiGameRunner:
@@ -432,6 +435,7 @@ class CarmackMultiGameRunner:
         boundary_cause_counts: Dict[str, int] = {}
         reset_cause_counts: Dict[str, int] = {}
         reset_count = 0
+        run_start_time = float(self.time_fn())
 
         taken_action = int(self.config.default_action_idx)
         for visit_idx, visit in enumerate(visits):
@@ -536,6 +540,47 @@ class CarmackMultiGameRunner:
                 next_action = self._validate_action_idx(self.agent.frame(obs_for_agent, float(step.reward), boundary_payload))
                 taken_action = int(next_action)
                 event["next_policy_action_idx"] = int(next_action)
+
+                if self.config.train_log_interval > 0 and ((global_frame_idx + 1) % int(self.config.train_log_interval) == 0):
+                    stats: Dict[str, Any] = {}
+                    stats_fn = getattr(self.agent, "get_stats", None)
+                    if callable(stats_fn):
+                        try:
+                            payload = stats_fn()
+                            if isinstance(payload, dict):
+                                stats = payload
+                        except Exception:  # pragma: no cover - defensive
+                            stats = {}
+                    elapsed = max(float(self.time_fn()) - run_start_time, 1e-6)
+                    fps = float(global_frame_idx + 1) / elapsed
+                    msg = (
+                        "[train] "
+                        f"frame={global_frame_idx + 1} "
+                        f"game={visit.game_id} "
+                        f"visit_idx={visit.visit_idx} "
+                        f"fps={fps:.1f}"
+                    )
+                    for key in (
+                        "frame_count",
+                        "u",
+                        "episode_number",
+                        "train_loss_ema",
+                        "avg_error_ema",
+                        "max_error_ema",
+                        "target_ema",
+                        "train_steps_estimate",
+                    ):
+                        if key not in stats:
+                            continue
+                        value = stats[key]
+                        if isinstance(value, int):
+                            msg += f" {key}={value}"
+                        else:
+                            try:
+                                msg += f" {key}={float(value):.3f}"
+                            except (TypeError, ValueError):
+                                msg += f" {key}={value}"
+                    print(msg, flush=True)
 
                 if self.event_writer is not None:
                     self.event_writer.write(event)

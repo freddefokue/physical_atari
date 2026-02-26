@@ -82,11 +82,14 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
     set_if_present("delay_target_base_lr_log2", ["delay_target_base_lr_log2"], int)
     set_if_present("default_action_idx", ["default_action_idx"], int)
     set_if_present("log_episode_every", ["log_episode_every", "episode_log_interval"], int)
+    set_if_present("log_train_every", ["log_train_every", "train_log_interval"], int)
     set_if_present("timestamps", ["timestamps", "include_timestamps"], int)
     set_if_present("logdir", ["logdir"], str)
     runner_cfg = config_data.get("runner_config")
     if isinstance(runner_cfg, dict) and "episode_log_interval" in runner_cfg and runner_cfg["episode_log_interval"] is not None:
         defaults["log_episode_every"] = int(runner_cfg["episode_log_interval"])
+    if isinstance(runner_cfg, dict) and "train_log_interval" in runner_cfg and runner_cfg["train_log_interval"] is not None:
+        defaults["log_train_every"] = int(runner_cfg["train_log_interval"])
     if isinstance(runner_cfg, dict) and "runner_mode" in runner_cfg and runner_cfg["runner_mode"] is not None:
         defaults["runner_mode"] = str(runner_cfg["runner_mode"])
 
@@ -359,6 +362,12 @@ def _build_parser(defaults: Optional[Dict[str, Any]] = None) -> argparse.Argumen
         help="Emit episode-end return logs every N episodes (0 disables).",
     )
     parser.add_argument(
+        "--log-train-every",
+        type=int,
+        default=0,
+        help="Emit periodic training/progress logs every N global frames (0 disables).",
+    )
+    parser.add_argument(
         "--timestamps",
         type=int,
         choices=[0, 1],
@@ -554,6 +563,7 @@ def build_config_payload(
         "repeat_action_idx": int(args.repeat_action_idx),
         "default_action_idx": int(args.default_action_idx),
         "log_episode_every": int(args.log_episode_every),
+        "log_train_every": int(args.log_train_every),
         "timestamps": bool(args.timestamps),
         "logdir": str(Path(args.logdir)),
         "run_dir": str(run_dir),
@@ -571,6 +581,7 @@ def build_config_payload(
             "delay_frames": int(runner_config.delay_frames),
             "default_action_idx": int(runner_config.default_action_idx),
             "episode_log_interval": int(runner_config.episode_log_interval),
+            "train_log_interval": int(getattr(runner_config, "train_log_interval", 0)),
             "include_timestamps": bool(runner_config.include_timestamps),
         },
         "versions": get_version_metadata(),
@@ -672,6 +683,7 @@ def main() -> None:
             delay_frames=args.delay,
             default_action_idx=args.default_action_idx,
             episode_log_interval=int(args.log_episode_every),
+            train_log_interval=int(args.log_train_every),
             include_timestamps=bool(args.timestamps),
             global_action_set=global_action_set,
         )
