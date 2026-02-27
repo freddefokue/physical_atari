@@ -484,21 +484,40 @@ class CarmackCompatRunner:
                     environment_start_time = now
                     environment_start = int(frame_idx)
                     stats = _agent_stats()
-                    err_avg = _coerce_float(stats.get("avg_error_ema", 0.0), default=0.0)
-                    err_max = _coerce_float(stats.get("max_error_ema", 0.0), default=0.0)
-                    loss = _coerce_float(stats.get("train_loss_ema", 0.0), default=0.0)
-                    targ = _coerce_float(stats.get("target_ema", 0.0), default=0.0)
-                    print(
-                        f"{int(self.config.log_rank)}:{self.config.log_name} "
+                    common_prefix = (
                         f"frame:{int(frame_idx):7} "
                         f"{frame_rate:4.0f}/s "
                         f"eps {int(episodes_completed - 1):3},{int(frames):5}={int(event_episode_return):5} "
-                        f"err {err_avg:.1f} {err_max:.1f} "
-                        f"loss {loss:.1f} "
-                        f"targ {targ:.1f} "
-                        f"avg {avg_for_log:4.1f}",
-                        flush=True,
                     )
+                    if "policy_entropy" in stats:
+                        def _f(v: Any) -> str:
+                            return "n/a" if v is None else f"{float(v):.3f}"
+                        train_updates = stats.get("train_updates", stats.get("train_steps_estimate", 0))
+                        print(
+                            f"{int(self.config.log_rank)}:{self.config.log_name} "
+                            f"{common_prefix}"
+                            f"u {train_updates} "
+                            f"ploss {_f(stats.get('last_policy_loss'))} "
+                            f"vloss {_f(stats.get('last_value_loss'))} "
+                            f"ent {_f(stats.get('policy_entropy'))} "
+                            f"kl {_f(stats.get('approx_kl'))} "
+                            f"avg {avg_for_log:4.1f}",
+                            flush=True,
+                        )
+                    else:
+                        err_avg = _coerce_float(stats.get("avg_error_ema", 0.0), default=0.0)
+                        err_max = _coerce_float(stats.get("max_error_ema", 0.0), default=0.0)
+                        loss = _coerce_float(stats.get("train_loss_ema", 0.0), default=0.0)
+                        targ = _coerce_float(stats.get("target_ema", 0.0), default=0.0)
+                        print(
+                            f"{int(self.config.log_rank)}:{self.config.log_name} "
+                            f"{common_prefix}"
+                            f"err {err_avg:.1f} {err_max:.1f} "
+                            f"loss {loss:.1f} "
+                            f"targ {targ:.1f} "
+                            f"avg {avg_for_log:4.1f}",
+                            flush=True,
+                        )
             else:
                 obs_for_agent = step.obs_rgb
 
@@ -539,35 +558,52 @@ class CarmackCompatRunner:
                 last_logged_frame = int(frame_idx + 1)
                 last_log_time = float(now)
 
-                msg = (
-                    "[train] "
-                    f"frame={frame_idx + 1} "
-                    f"fps={fps:.2f} "
-                    f"fps_total={fps_total:.2f} "
-                    f"train_steps={train_steps} "
-                    f"train_sps={train_sps:.2f} "
-                    f"train_sps_total={train_sps_total:.2f} "
-                    f"episode_return={event_episode_return:.3f} "
-                    f"episode_length={event_episode_length} "
-                    f"resets={episodes_completed}"
-                )
-                if "train_loss_ema" in stats:
-                    loss_val = _coerce_optional_float(stats.get("train_loss_ema"))
-                    if loss_val is not None:
-                        msg += f" loss={loss_val:.6f}"
-                if "avg_error_ema" in stats:
-                    err_avg_val = _coerce_optional_float(stats.get("avg_error_ema"))
-                    if err_avg_val is not None:
-                        msg += f" err_avg={err_avg_val:.6f}"
-                if "max_error_ema" in stats:
-                    err_max_val = _coerce_optional_float(stats.get("max_error_ema"))
-                    if err_max_val is not None:
-                        msg += f" err_max={err_max_val:.6f}"
-                if "target_ema" in stats:
-                    targ_val = _coerce_optional_float(stats.get("target_ema"))
-                    if targ_val is not None:
-                        msg += f" target={targ_val:.6f}"
-                print(msg, flush=True)
+                fr = frame_idx + 1
+                if "policy_entropy" in stats:
+                    def _ft(v: Any) -> str:
+                        return "n/a" if v is None else f"{float(v):.3f}"
+                    ppo_updates = stats.get("train_updates", 0)
+                    print(
+                        f"{int(self.config.log_rank)}:{self.config.log_name} "
+                        f"frame:{fr:7} {fps:4.0f}/s "
+                        f"eps {int(episodes_completed):3} ret {int(event_episode_return):5} avg {avg_for_log:4.1f} "
+                        f"u {ppo_updates} "
+                        f"ploss {_ft(stats.get('last_policy_loss'))} "
+                        f"vloss {_ft(stats.get('last_value_loss'))} "
+                        f"ent {_ft(stats.get('policy_entropy'))} "
+                        f"kl {_ft(stats.get('approx_kl'))}",
+                        flush=True,
+                    )
+                else:
+                    msg = (
+                        "[train] "
+                        f"frame={fr} "
+                        f"fps={fps:.2f} "
+                        f"fps_total={fps_total:.2f} "
+                        f"train_steps={train_steps} "
+                        f"train_sps={train_sps:.2f} "
+                        f"train_sps_total={train_sps_total:.2f} "
+                        f"episode_return={event_episode_return:.3f} "
+                        f"episode_length={event_episode_length} "
+                        f"resets={episodes_completed}"
+                    )
+                    if "train_loss_ema" in stats:
+                        loss_val = _coerce_optional_float(stats.get("train_loss_ema"))
+                        if loss_val is not None:
+                            msg += f" loss={loss_val:.6f}"
+                    if "avg_error_ema" in stats:
+                        err_avg_val = _coerce_optional_float(stats.get("avg_error_ema"))
+                        if err_avg_val is not None:
+                            msg += f" err_avg={err_avg_val:.6f}"
+                    if "max_error_ema" in stats:
+                        err_max_val = _coerce_optional_float(stats.get("max_error_ema"))
+                        if err_max_val is not None:
+                            msg += f" err_max={err_max_val:.6f}"
+                    if "target_ema" in stats:
+                        targ_val = _coerce_optional_float(stats.get("target_ema"))
+                        if targ_val is not None:
+                            msg += f" target={targ_val:.6f}"
+                    print(msg, flush=True)
 
             event = {
                 "single_run_profile": CARMACK_SINGLE_RUN_PROFILE,
