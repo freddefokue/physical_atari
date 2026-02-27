@@ -57,7 +57,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--agent",
         type=str,
-        choices=["random", "repeat", "tinydqn", "delay_target"],
+        choices=["random", "repeat", "tinydqn", "delay_target", "ppo"],
         default="random",
         help="Agent type.",
     )
@@ -213,6 +213,48 @@ def parse_args() -> argparse.Namespace:
         default=1,
         help="TinyDQN decision interval in frames (agent-owned action repeat).",
     )
+    parser.add_argument("--ppo-lr", type=float, default=2.5e-4, help="PPO optimizer learning rate.")
+    parser.add_argument("--ppo-gamma", type=float, default=0.99, help="PPO discount factor.")
+    parser.add_argument("--ppo-gae-lambda", type=float, default=0.95, help="PPO GAE lambda.")
+    parser.add_argument("--ppo-clip-range", type=float, default=0.2, help="PPO clipping epsilon.")
+    parser.add_argument("--ppo-ent-coef", type=float, default=0.01, help="PPO entropy bonus coefficient.")
+    parser.add_argument("--ppo-vf-coef", type=float, default=0.5, help="PPO value-loss coefficient.")
+    parser.add_argument("--ppo-max-grad-norm", type=float, default=0.5, help="PPO gradient clipping norm (0 disables).")
+    parser.add_argument("--ppo-rollout-steps", type=int, default=128, help="PPO rollout length before training.")
+    parser.add_argument("--ppo-train-interval", type=int, default=128, help="PPO training cadence in decision steps.")
+    parser.add_argument("--ppo-batch-size", type=int, default=32, help="PPO minibatch size.")
+    parser.add_argument("--ppo-epochs", type=int, default=4, help="PPO epochs per training update.")
+    parser.add_argument("--ppo-reward-clip", type=float, default=1.0, help="Symmetric reward clipping value (0 disables).")
+    parser.add_argument("--ppo-obs-size", type=int, default=84, help="PPO resized square observation size.")
+    parser.add_argument("--ppo-frame-stack", type=int, default=4, help="PPO number of stacked preprocessed frames.")
+    parser.add_argument(
+        "--ppo-grayscale",
+        type=int,
+        choices=[0, 1],
+        default=1,
+        help="PPO preprocessing: 1=grayscale, 0=RGB channel stacking.",
+    )
+    parser.add_argument(
+        "--ppo-normalize-advantages",
+        type=int,
+        choices=[0, 1],
+        default=1,
+        help="PPO normalize advantages per update.",
+    )
+    parser.add_argument(
+        "--ppo-deterministic-actions",
+        type=int,
+        choices=[0, 1],
+        default=0,
+        help="PPO action selection: 1=argmax policy, 0=sample.",
+    )
+    parser.add_argument(
+        "--ppo-device",
+        type=str,
+        choices=["cpu", "cuda", "auto"],
+        default="auto",
+        help="PPO compute device: 'auto' uses CUDA if available, else CPU.",
+    )
     parser.add_argument(
         "--timestamps",
         type=int,
@@ -239,6 +281,11 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError(
             "--agent tinydqn currently requires --runner-mode carmack_compat "
             "because TinyDQN expects applied-action labels from the Carmack boundary payload."
+        )
+    if str(args.agent) == "ppo" and str(args.runner_mode) != "carmack_compat":
+        raise ValueError(
+            "--agent ppo currently requires --runner-mode carmack_compat "
+            "to ensure reward/action alignment from Carmack boundary payloads."
         )
     if str(args.agent) == "tinydqn" and int(args.dqn_decision_interval) <= 0:
         raise ValueError("--dqn-decision-interval must be > 0 for --agent tinydqn.")
@@ -324,6 +371,35 @@ def build_agent(args: argparse.Namespace, num_actions: int, total_frames: int):
             total_frames=int(total_frames),
             agent_kwargs=kwargs,
         )
+    elif args.agent == "ppo":
+        try:
+            from benchmark.agents_ppo import PPOAgent, PPOConfig  # pylint: disable=import-outside-toplevel
+        except ImportError as exc:  # pragma: no cover - optional dependency path
+            raise ImportError(
+                "agent=ppo requires torch. Install torch (CPU/CUDA build) or use --agent random/--agent repeat."
+            ) from exc
+
+        ppo_config = PPOConfig(
+            learning_rate=float(args.ppo_lr),
+            gamma=float(args.ppo_gamma),
+            gae_lambda=float(args.ppo_gae_lambda),
+            clip_range=float(args.ppo_clip_range),
+            ent_coef=float(args.ppo_ent_coef),
+            vf_coef=float(args.ppo_vf_coef),
+            max_grad_norm=float(args.ppo_max_grad_norm),
+            rollout_steps=int(args.ppo_rollout_steps),
+            train_interval=int(args.ppo_train_interval),
+            batch_size=int(args.ppo_batch_size),
+            epochs=int(args.ppo_epochs),
+            reward_clip=float(args.ppo_reward_clip),
+            obs_size=int(args.ppo_obs_size),
+            frame_stack=int(args.ppo_frame_stack),
+            grayscale=bool(int(args.ppo_grayscale)),
+            normalize_advantages=bool(int(args.ppo_normalize_advantages)),
+            deterministic_actions=bool(int(args.ppo_deterministic_actions)),
+            device=str(args.ppo_device),
+        )
+        base = PPOAgent(action_space_n=num_actions, seed=int(args.seed), config=ppo_config)
     else:
         try:
             from benchmark.agents_tinydqn import TinyDQNAgent, TinyDQNConfig  # pylint: disable=import-outside-toplevel
@@ -402,6 +478,26 @@ def build_config_payload(
             "use_replay": bool(int(args.dqn_use_replay)),
             "device": str(args.dqn_device),
             "decision_interval": int(args.dqn_decision_interval),
+        },
+        "ppo_config": {
+            "learning_rate": float(args.ppo_lr),
+            "gamma": float(args.ppo_gamma),
+            "gae_lambda": float(args.ppo_gae_lambda),
+            "clip_range": float(args.ppo_clip_range),
+            "ent_coef": float(args.ppo_ent_coef),
+            "vf_coef": float(args.ppo_vf_coef),
+            "max_grad_norm": float(args.ppo_max_grad_norm),
+            "rollout_steps": int(args.ppo_rollout_steps),
+            "train_interval": int(args.ppo_train_interval),
+            "batch_size": int(args.ppo_batch_size),
+            "epochs": int(args.ppo_epochs),
+            "reward_clip": float(args.ppo_reward_clip),
+            "obs_size": int(args.ppo_obs_size),
+            "frame_stack": int(args.ppo_frame_stack),
+            "grayscale": bool(int(args.ppo_grayscale)),
+            "normalize_advantages": bool(int(args.ppo_normalize_advantages)),
+            "deterministic_actions": bool(int(args.ppo_deterministic_actions)),
+            "device": str(args.ppo_device),
         },
         "timestamps": bool(args.timestamps),
         "logdir": str(Path(args.logdir)),

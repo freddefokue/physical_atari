@@ -1,0 +1,54 @@
+/local/home/fdefokue/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:58: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+0:ppo_multigame frame:  10000  477/s eps   2 ret    -7 avg -20.5 u 6 ploss -0.003 vloss 0.036 ent 2.868 kl 0.007 game pong cycle 0 visit 0
+0:ppo_multigame frame:  20000  473/s eps   5 ret    -8 avg -20.6 u 13 ploss -0.001 vloss 0.046 ent 2.880 kl -0.000 game pong cycle 0 visit 0
+0:ppo_multigame frame:  30000  466/s eps   8 ret   -12 avg -20.8 u 20 ploss -0.005 vloss 0.044 ent 2.788 kl 0.002 game pong cycle 0 visit 0
+0:ppo_multigame frame:  40000  467/s eps  11 ret   -18 avg -20.8 u 27 ploss -0.002 vloss 0.046 ent 2.615 kl 0.003 game pong cycle 0 visit 0
+0:ppo_multigame frame:  50000  470/s eps  15 ret     1 avg -20.9 u 33 ploss -0.010 vloss 0.048 ent 2.465 kl 0.011 game pong cycle 0 visit 0
+0:ppo_multigame frame:  60000  469/s eps  17 ret   -20 avg -20.8 u 40 ploss -0.008 vloss 0.049 ent 2.487 kl 0.001 game pong cycle 0 visit 0
+0:ppo_multigame frame:  70000  469/s eps  20 ret   -20 avg -20.8 u 47 ploss -0.004 vloss 0.050 ent 2.556 kl -0.000 game pong cycle 0 visit 0
+0:ppo_multigame frame:  80000  472/s eps  24 ret    -5 avg -20.8 u 53 ploss -0.005 vloss 0.046 ent 2.763 kl 0.005 game pong cycle 0 visit 0
+0:ppo_multigame frame:  90000  472/s eps  27 ret   -10 avg -20.9 u 59 ploss -0.003 vloss 0.046 ent 2.808 kl 0.002 game pong cycle 0 visit 0
+0:ppo_multigame frame: 100000  467/s eps  30 ret   -16 avg -20.9 u 66 ploss -0.001 vloss 0.044 ent 2.754 kl 0.004 game pong cycle 0 visit 0
+0:ppo_multigame frame: 110000  465/s eps  34 ret    -1 avg -20.9 u 73 ploss -0.006 vloss 0.046 ent 2.696 kl 0.004 game pong cycle 0 visit 0
+0:ppo_multigame frame: 120000  467/s eps  37 ret    -6 avg -20.9 u 79 ploss -0.001 vloss 0.052 ent 2.679 kl -0.000 game pong cycle 0 visit 0
+0:ppo_multigame frame: 130000  468/s eps  40 ret   -12 avg -20.9 u 85 ploss -0.005 vloss 0.046 ent 2.710 kl 0.003 game pong cycle 0 visit 0
+0:ppo_multigame frame: 140000  466/s eps  43 ret   -18 avg -20.9 u 92 ploss -0.006 vloss 0.044 ent 2.779 kl 0.001 game pong cycle 0 visit 0
+0:ppo_multigame frame: 150000  468/s eps  47 ret    -2 avg -20.9 u 98 ploss -0.001 vloss 0.046 ent 2.650 kl 0.002 game pong cycle 0 visit 0
+0:ppo_multigame frame: 160000  467/s eps  50 ret    -8 avg -21.0 u 105 ploss -0.002 vloss 0.044 ent 2.598 kl -0.002 game pong cycle 0 visit 0
+0:ppo_multigame frame: 170000  467/s eps  53 ret   -14 avg -21.0 u 112 ploss -0.002 vloss 0.046 ent 2.694 kl 0.002 game pong cycle 0 visit 0
+0:ppo_multigame frame: 180000  468/s eps  56 ret   -20 avg -21.0 u 118 ploss -0.007 vloss 0.052 ent 2.775 kl 0.002 game pong cycle 0 visit 0
+0:ppo_multigame frame: 190000  469/s eps  60 ret    -4 avg -21.0 u 124 ploss -0.002 vloss 0.046 ent 2.791 kl 0.001 game pong cycle 0 visit 0
+0:ppo_multigame frame: 200000  468/s eps  63 ret   -10 avg -21.0 u 131 ploss -0.001 vloss 0.044 ent 2.822 kl 0.000 game pong cycle 0 visit 0
+0:ppo_multigame frame: 210000  468/s eps  66 ret   -16 avg -21.0 u 138 ploss -0.003 vloss 0.051 ent 2.820 kl -0.000 game pong cycle 0 visit 0
+0:ppo_multigame frame: 220000  469/s eps  70 ret     0 avg -21.0 u 144 ploss -0.002 vloss 0.046 ent 2.850 kl -0.000 game pong cycle 0 visit 0
+0:ppo_multigame frame: 230000  469/s eps  73 ret    -5 avg -21.0 u 150 ploss -0.002 vloss 0.052 ent 2.862 kl 0.000 game pong cycle 0 visit 0
+0:ppo_multigame frame: 240000  468/s eps  75 ret   -17 avg -20.9 u 158 ploss -0.002 vloss 0.041 ent 2.848 kl 0.000 game pong cycle 0 visit 0
+0:ppo_multigame frame: 250000  468/s eps  79 ret    -2 avg -20.9 u 164 ploss -0.002 vloss 0.047 ent 2.859 kl -0.001 game pong cycle 0 visit 0
+0:ppo_multigame frame: 260000  469/s eps  82 ret    -8 avg -20.9 u 170 ploss -0.002 vloss 0.046 ent 2.866 kl 0.000 game pong cycle 0 visit 0
+0:ppo_multigame frame: 270000  468/s eps  85 ret   -14 avg -20.9 u 177 ploss -0.002 vloss 0.042 ent 2.873 kl 0.001 game pong cycle 0 visit 0
+0:ppo_multigame frame: 280000  468/s eps  88 ret   -20 avg -20.9 u 184 ploss -0.006 vloss 0.046 ent 2.830 kl 0.003 game pong cycle 0 visit 0
+0:ppo_multigame frame: 290000  468/s eps  92 ret    -3 avg -20.9 u 190 ploss -0.003 vloss 0.046 ent 2.807 kl 0.001 game pong cycle 0 visit 0
+0:ppo_multigame frame: 300000  468/s eps  95 ret     0 avg -20.8 u 197 ploss -0.002 vloss 0.041 ent 2.852 kl 0.001 game pong cycle 0 visit 0
+0:ppo_multigame frame: 310000  468/s eps  97 ret   -19 avg -20.8 u 204 ploss -0.002 vloss 0.044 ent 2.880 kl -0.000 game pong cycle 0 visit 0
+0:ppo_multigame frame: 320000  468/s eps 100 ret   -17 avg -20.8 u 211 ploss -0.003 vloss 0.045 ent 2.869 kl 0.000 game pong cycle 0 visit 0
+0:ppo_multigame frame: 330000  468/s eps 103 ret   -11 avg -20.8 u 218 ploss -0.001 vloss 0.042 ent 2.873 kl 0.001 game pong cycle 0 visit 0
+0:ppo_multigame frame: 340000  468/s eps 106 ret    -9 avg -20.9 u 225 ploss -0.005 vloss 0.046 ent 2.839 kl -0.001 game pong cycle 0 visit 0
+0:ppo_multigame frame: 350000  469/s eps 109 ret    -6 avg -20.9 u 231 ploss -0.002 vloss 0.039 ent 2.860 kl -0.001 game pong cycle 0 visit 0
+0:ppo_multigame frame: 360000  469/s eps 112 ret    -3 avg -20.8 u 238 ploss -0.001 vloss 0.046 ent 2.863 kl 0.001 game pong cycle 0 visit 0
+0:ppo_multigame frame: 370000  468/s eps 115 ret    -4 avg -20.8 u 245 ploss -0.003 vloss 0.046 ent 2.834 kl 0.000 game pong cycle 0 visit 0
+0:ppo_multigame frame: 380000  468/s eps 118 ret    -4 avg -20.8 u 252 ploss -0.005 vloss 0.046 ent 2.734 kl 0.001 game pong cycle 0 visit 0
+0:ppo_multigame frame: 390000  467/s eps 121 ret    -3 avg -20.8 u 259 ploss -0.001 vloss 0.041 ent 2.693 kl 0.001 game pong cycle 0 visit 0
+0:ppo_multigame frame: 400000  467/s eps 124 ret    -5 avg -20.8 u 265 ploss -0.006 vloss 0.030 ent 2.711 kl 0.002 game pong cycle 0 visit 0
+0:ppo_multigame frame: 410000  466/s eps 127 ret     0 avg -20.8 u 273 ploss -0.002 vloss 0.046 ent 2.807 kl 0.002 game pong cycle 0 visit 0
+0:ppo_multigame frame: 420000  466/s eps 130 ret    -3 avg -20.8 u 279 ploss -0.002 vloss 0.046 ent 2.852 kl 0.000 game pong cycle 0 visit 0
+0:ppo_multigame frame: 430000  466/s eps 133 ret    -1 avg -20.8 u 286 ploss -0.002 vloss 0.035 ent 2.851 kl -0.000 game pong cycle 0 visit 0
+0:ppo_multigame frame: 440000  466/s eps 136 ret    -1 avg -20.8 u 293 ploss -0.003 vloss 0.046 ent 2.756 kl 0.001 game pong cycle 0 visit 0
+0:ppo_multigame frame: 450000  465/s eps 139 ret     0 avg -20.9 u 300 ploss -0.001 vloss 0.051 ent 2.812 kl 0.000 game pong cycle 0 visit 0
+0:ppo_multigame frame: 460000  465/s eps 141 ret   -19 avg -20.9 u 307 ploss -0.001 vloss 0.051 ent 2.847 kl 0.000 game pong cycle 0 visit 0
+0:ppo_multigame frame: 470000  465/s eps 144 ret   -14 avg -20.9 u 313 ploss -0.002 vloss 0.033 ent 2.865 kl 0.001 game pong cycle 0 visit 0
+0:ppo_multigame frame: 480000  466/s eps 147 ret    -9 avg -20.9 u 320 ploss -0.002 vloss 0.041 ent 2.856 kl 0.001 game pong cycle 0 visit 0
+0:ppo_multigame frame: 490000  465/s eps 150 ret    -9 avg -20.9 u 327 ploss -0.003 vloss 0.039 ent 2.828 kl 0.005 game pong cycle 0 visit 0
+0:ppo_multigame frame: 500000  465/s eps 154 ret   -13 avg -20.6 u 334 ploss -0.004 vloss 0.044 ent 2.819 kl 0.001 game pong cycle 0 visit 0
+Run complete: runs/ppo_pong_sanity/multigame_seed0_20260226_230712
+Summary: {'runner_mode': 'carmack_compat', 'multi_run_profile': 'carmack_compat', 'multi_run_schema_version': 'carmack_multi_v1', 'frames': 500000, 'episodes_completed': 154, 'segments_completed': 154, 'last_episode_id': 154, 'last_segment_id': 154, 'visits_completed': 1, 'total_scheduled_frames': 500000, 'boundary_cause_counts': {'terminated': 153, 'visit_switch': 1}, 'reset_cause_counts': {'terminated': 153, 'visit_switch': 1}, 'reset_count': 154, 'agent_stats': {'decision_steps': 500000, 'train_steps': 31232, 'train_updates': 334, 'buffer_fill': 288, 'rollout_progress': 0.28125, 'last_action_idx': 0, 'policy_entropy': 2.8193347454071045, 'approx_kl': 0.001363651774227037, 'last_policy_loss': -0.0037516865704674274, 'last_value_loss': 0.04375642686500214, 'last_total_loss': -0.010129138157935813, 'nan_guard_trigger_count': 0, 'steps_per_sec': 464.8969623370295}}

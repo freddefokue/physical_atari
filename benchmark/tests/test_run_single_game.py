@@ -7,9 +7,11 @@ import pytest
 
 from benchmark.carmack_runner import CARMACK_SINGLE_RUN_PROFILE, CARMACK_SINGLE_RUN_SCHEMA_VERSION, CarmackRunnerConfig
 from benchmark.run_single_game import _FrameFromStepAdapter
+from benchmark.run_single_game import build_agent
 from benchmark.run_single_game import build_runtime_fingerprint_payload
 from benchmark.run_single_game import build_config_payload
 from benchmark.run_single_game import build_run_summary_payload
+from benchmark.run_single_game import parse_args
 from benchmark.run_single_game import validate_args
 
 
@@ -34,6 +36,32 @@ def test_validate_args_tinydqn_requires_positive_decision_interval():
     args = Namespace(runner_mode="carmack_compat", frame_skip=1, agent="tinydqn", dqn_decision_interval=0)
     with pytest.raises(ValueError, match=r"--dqn-decision-interval must be > 0"):
         validate_args(args)
+
+
+def test_validate_args_ppo_requires_carmack_mode():
+    args = Namespace(runner_mode="standard", frame_skip=1, agent="ppo")
+    with pytest.raises(ValueError, match=r"agent ppo currently requires --runner-mode carmack_compat"):
+        validate_args(args)
+
+
+def test_parse_args_accepts_ppo_with_carmack_compat(monkeypatch):
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_single_game.py",
+            "--game",
+            "pong",
+            "--runner-mode",
+            "carmack_compat",
+            "--frame-skip",
+            "1",
+            "--agent",
+            "ppo",
+        ],
+    )
+    args = parse_args()
+    assert args.agent == "ppo"
+    assert args.runner_mode == "carmack_compat"
 
 
 def test_build_config_payload_carmack_marks_agent_owned_cadence():
@@ -75,6 +103,24 @@ def test_build_config_payload_carmack_marks_agent_owned_cadence():
         dqn_use_replay=1,
         dqn_device="cpu",
         dqn_decision_interval=1,
+        ppo_lr=2.5e-4,
+        ppo_gamma=0.99,
+        ppo_gae_lambda=0.95,
+        ppo_clip_range=0.2,
+        ppo_ent_coef=0.01,
+        ppo_vf_coef=0.5,
+        ppo_max_grad_norm=0.5,
+        ppo_rollout_steps=128,
+        ppo_train_interval=128,
+        ppo_batch_size=32,
+        ppo_epochs=4,
+        ppo_reward_clip=1.0,
+        ppo_obs_size=84,
+        ppo_frame_stack=4,
+        ppo_grayscale=1,
+        ppo_normalize_advantages=1,
+        ppo_deterministic_actions=0,
+        ppo_device="auto",
         timestamps=0,
         logdir="runs",
     )
@@ -91,6 +137,44 @@ def test_build_config_payload_carmack_marks_agent_owned_cadence():
     assert rc["single_run_schema_version"] == CARMACK_SINGLE_RUN_SCHEMA_VERSION
     assert rc["action_cadence_mode"] == "agent_owned"
     assert rc["frame_skip_enforced"] == 1
+    ppo_cfg = payload["ppo_config"]
+    assert ppo_cfg["learning_rate"] == pytest.approx(2.5e-4)
+    assert ppo_cfg["gamma"] == pytest.approx(0.99)
+    assert ppo_cfg["rollout_steps"] == 128
+    assert ppo_cfg["device"] == "auto"
+
+
+def test_build_agent_ppo_builds_or_raises_actionable_import_error():
+    args = Namespace(
+        agent="ppo",
+        seed=7,
+        runner_mode="carmack_compat",
+        ppo_lr=2.5e-4,
+        ppo_gamma=0.99,
+        ppo_gae_lambda=0.95,
+        ppo_clip_range=0.2,
+        ppo_ent_coef=0.01,
+        ppo_vf_coef=0.5,
+        ppo_max_grad_norm=0.5,
+        ppo_rollout_steps=8,
+        ppo_train_interval=8,
+        ppo_batch_size=4,
+        ppo_epochs=1,
+        ppo_reward_clip=1.0,
+        ppo_obs_size=84,
+        ppo_frame_stack=2,
+        ppo_grayscale=1,
+        ppo_normalize_advantages=1,
+        ppo_deterministic_actions=0,
+        ppo_device="cpu",
+        dqn_decision_interval=1,
+    )
+    try:
+        agent = build_agent(args, num_actions=3, total_frames=32)
+    except ImportError as exc:
+        assert "agent=ppo requires torch" in str(exc)
+        return
+    assert hasattr(agent, "frame")
 
 
 def test_frame_from_step_adapter_does_not_leak_frame_idx():
