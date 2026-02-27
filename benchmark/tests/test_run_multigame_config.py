@@ -160,6 +160,7 @@ def test_run_multigame_cli_accepts_ppo_agent():
     assert args.agent == "ppo"
     assert args.ppo_lr == pytest.approx(2.5e-4)
     assert args.ppo_rollout_steps == 128
+    assert args.ppo_decision_interval == 4
 
 
 def test_run_multigame_config_parses_ppo_agent_config(tmp_path):
@@ -176,6 +177,7 @@ def test_run_multigame_config_parses_ppo_agent_config(tmp_path):
             "epochs": 3,
             "device": "cpu",
             "grayscale": 1,
+            "decision_interval": 6,
         },
     }
     with config_path.open("w", encoding="utf-8") as fh:
@@ -191,6 +193,13 @@ def test_run_multigame_config_parses_ppo_agent_config(tmp_path):
     assert args.ppo_epochs == 3
     assert args.ppo_device == "cpu"
     assert args.ppo_grayscale == 1
+    assert args.ppo_decision_interval == 6
+
+
+def test_validate_args_ppo_requires_positive_decision_interval():
+    args = parse_args(["--games", "pong", "--agent", "ppo", "--ppo-decision-interval", "0"])
+    with pytest.raises(ValueError, match=r"--ppo-decision-interval must be > 0"):
+        validate_args(args)
 
 
 def test_run_multigame_config_ppo_fields_apply_when_agent_overridden_on_cli(tmp_path):

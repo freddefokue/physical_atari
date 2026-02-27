@@ -44,6 +44,12 @@ def test_validate_args_ppo_requires_carmack_mode():
         validate_args(args)
 
 
+def test_validate_args_ppo_requires_positive_decision_interval():
+    args = Namespace(runner_mode="carmack_compat", frame_skip=1, agent="ppo", ppo_decision_interval=0)
+    with pytest.raises(ValueError, match=r"--ppo-decision-interval must be > 0"):
+        validate_args(args)
+
+
 def test_parse_args_accepts_ppo_with_carmack_compat(monkeypatch):
     monkeypatch.setattr(
         "sys.argv",
@@ -62,6 +68,7 @@ def test_parse_args_accepts_ppo_with_carmack_compat(monkeypatch):
     args = parse_args()
     assert args.agent == "ppo"
     assert args.runner_mode == "carmack_compat"
+    assert args.ppo_decision_interval == 4
 
 
 def test_build_config_payload_carmack_marks_agent_owned_cadence():
@@ -121,6 +128,7 @@ def test_build_config_payload_carmack_marks_agent_owned_cadence():
         ppo_normalize_advantages=1,
         ppo_deterministic_actions=0,
         ppo_device="auto",
+        ppo_decision_interval=4,
         timestamps=0,
         logdir="runs",
     )
@@ -142,6 +150,7 @@ def test_build_config_payload_carmack_marks_agent_owned_cadence():
     assert ppo_cfg["gamma"] == pytest.approx(0.99)
     assert ppo_cfg["rollout_steps"] == 128
     assert ppo_cfg["device"] == "auto"
+    assert ppo_cfg["decision_interval"] == 4
 
 
 def test_build_agent_ppo_builds_or_raises_actionable_import_error():
@@ -167,6 +176,7 @@ def test_build_agent_ppo_builds_or_raises_actionable_import_error():
         ppo_normalize_advantages=1,
         ppo_deterministic_actions=0,
         ppo_device="cpu",
+        ppo_decision_interval=4,
         dqn_decision_interval=1,
     )
     try:

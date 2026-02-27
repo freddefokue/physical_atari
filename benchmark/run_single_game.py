@@ -256,6 +256,12 @@ def parse_args() -> argparse.Namespace:
         help="PPO compute device: 'auto' uses CUDA if available, else CPU.",
     )
     parser.add_argument(
+        "--ppo-decision-interval",
+        type=int,
+        default=4,
+        help="PPO decision interval in frames (agent-owned action repeat).",
+    )
+    parser.add_argument(
         "--timestamps",
         type=int,
         choices=[0, 1],
@@ -289,6 +295,8 @@ def validate_args(args: argparse.Namespace) -> None:
         )
     if str(args.agent) == "tinydqn" and int(args.dqn_decision_interval) <= 0:
         raise ValueError("--dqn-decision-interval must be > 0 for --agent tinydqn.")
+    if str(args.agent) == "ppo" and int(getattr(args, "ppo_decision_interval", 1)) <= 0:
+        raise ValueError("--ppo-decision-interval must be > 0 for --agent ppo.")
 
 
 class _FrameFromStepAdapter:
@@ -429,7 +437,12 @@ def build_agent(args: argparse.Namespace, num_actions: int, total_frames: int):
     if args.runner_mode == "carmack_compat":
         if hasattr(base, "frame") and callable(getattr(base, "frame")):
             return base
-        decision_interval = int(args.dqn_decision_interval) if str(args.agent) == "tinydqn" else 1
+        if str(args.agent) == "tinydqn":
+            decision_interval = int(args.dqn_decision_interval)
+        elif str(args.agent) == "ppo":
+            decision_interval = int(args.ppo_decision_interval)
+        else:
+            decision_interval = 1
         return _FrameFromStepAdapter(base, decision_interval=decision_interval)
     return base
 
@@ -498,6 +511,7 @@ def build_config_payload(
             "normalize_advantages": bool(int(args.ppo_normalize_advantages)),
             "deterministic_actions": bool(int(args.ppo_deterministic_actions)),
             "device": str(args.ppo_device),
+            "decision_interval": int(args.ppo_decision_interval),
         },
         "timestamps": bool(args.timestamps),
         "logdir": str(Path(args.logdir)),

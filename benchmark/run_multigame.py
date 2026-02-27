@@ -98,6 +98,7 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
     set_if_present("ppo_normalize_advantages", ["ppo_normalize_advantages"], int)
     set_if_present("ppo_deterministic_actions", ["ppo_deterministic_actions"], int)
     set_if_present("ppo_device", ["ppo_device"], str)
+    set_if_present("ppo_decision_interval", ["ppo_decision_interval"], int)
     set_if_present("default_action_idx", ["default_action_idx"], int)
     set_if_present("log_episode_every", ["log_episode_every", "episode_log_interval"], int)
     set_if_present("log_train_every", ["log_train_every", "train_log_interval"], int)
@@ -156,6 +157,7 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "ppo_normalize_advantages",
         "ppo_deterministic_actions",
         "ppo_device",
+        "ppo_decision_interval",
     ]:
         if key in config_data and config_data[key] is not None:
             merged_cfg[key] = config_data[key]
@@ -199,6 +201,7 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "ppo_normalize_advantages": int,
         "ppo_deterministic_actions": int,
         "ppo_device": str,
+        "ppo_decision_interval": int,
     }
     for arg_name in [
         "dqn_gamma",
@@ -239,6 +242,7 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "ppo_normalize_advantages",
         "ppo_deterministic_actions",
         "ppo_device",
+        "ppo_decision_interval",
     ]:
         if arg_name in merged_cfg and merged_cfg[arg_name] is not None:
             defaults[arg_name] = arg_cast[arg_name](merged_cfg[arg_name])
@@ -293,6 +297,7 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "normalize_advantages": "ppo_normalize_advantages",
         "deterministic_actions": "ppo_deterministic_actions",
         "device": "ppo_device",
+        "decision_interval": "ppo_decision_interval",
     }
     for field_name, arg_name in ppo_field_to_arg.items():
         if field_name in merged_cfg and merged_cfg[field_name] is not None:
@@ -492,6 +497,12 @@ def _build_parser(defaults: Optional[Dict[str, Any]] = None) -> argparse.Argumen
         help="PPO compute device: 'auto' uses CUDA if available, else CPU.",
     )
     parser.add_argument(
+        "--ppo-decision-interval",
+        type=int,
+        default=4,
+        help="PPO decision interval in frames (agent-owned action repeat).",
+    )
+    parser.add_argument(
         "--default-action-idx",
         type=int,
         default=0,
@@ -549,6 +560,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("agent=delay_target currently requires --decision-interval 1 to avoid double frame-skipping.")
     if str(args.agent) == "tinydqn" and int(args.dqn_decision_interval) <= 0:
         raise ValueError("--dqn-decision-interval must be > 0 for --agent tinydqn.")
+    if str(args.agent) == "ppo" and int(getattr(args, "ppo_decision_interval", 1)) <= 0:
+        raise ValueError("--ppo-decision-interval must be > 0 for --agent ppo.")
 
 
 def build_agent(args: argparse.Namespace, num_actions: int, total_frames: int):
@@ -732,6 +745,27 @@ def build_config_payload(
         "runner_mode": str(args.runner_mode),
         "agent": str(args.agent),
         "agent_config": dict(agent_config),
+        "ppo_config": {
+            "learning_rate": float(args.ppo_lr),
+            "gamma": float(args.ppo_gamma),
+            "gae_lambda": float(args.ppo_gae_lambda),
+            "clip_range": float(args.ppo_clip_range),
+            "ent_coef": float(args.ppo_ent_coef),
+            "vf_coef": float(args.ppo_vf_coef),
+            "max_grad_norm": float(args.ppo_max_grad_norm),
+            "rollout_steps": int(args.ppo_rollout_steps),
+            "train_interval": int(args.ppo_train_interval),
+            "batch_size": int(args.ppo_batch_size),
+            "epochs": int(args.ppo_epochs),
+            "reward_clip": float(args.ppo_reward_clip),
+            "obs_size": int(args.ppo_obs_size),
+            "frame_stack": int(args.ppo_frame_stack),
+            "grayscale": bool(int(args.ppo_grayscale)),
+            "normalize_advantages": bool(int(args.ppo_normalize_advantages)),
+            "deterministic_actions": bool(int(args.ppo_deterministic_actions)),
+            "device": str(args.ppo_device),
+            "decision_interval": int(args.ppo_decision_interval),
+        },
         "repeat_action_idx": int(args.repeat_action_idx),
         "default_action_idx": int(args.default_action_idx),
         "log_episode_every": int(args.log_episode_every),
@@ -871,7 +905,12 @@ def main() -> None:
     agent, agent_config = build_agent(args, num_actions=len(global_action_set), total_frames=int(schedule.total_frames))
     if str(args.runner_mode) == "carmack_compat":
         if not (hasattr(agent, "frame") and callable(getattr(agent, "frame"))):
-            decision_interval = int(args.dqn_decision_interval) if str(args.agent) == "tinydqn" else 1
+            if str(args.agent) == "tinydqn":
+                decision_interval = int(args.dqn_decision_interval)
+            elif str(args.agent) == "ppo":
+                decision_interval = int(args.ppo_decision_interval)
+            else:
+                decision_interval = 1
             agent = FrameFromStepAdapter(agent, decision_interval=decision_interval)
 
     resolved_action_sets = resolve_action_sets(env, games)
