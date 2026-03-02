@@ -36,9 +36,9 @@ class PPOConfig:
     ent_coef: float = 0.01
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
-    rollout_steps: int = 128
-    train_interval: int = 128
-    batch_size: int = 32
+    rollout_steps: int = 2048
+    train_interval: int = 2048
+    batch_size: int = 64
     epochs: int = 4
     reward_clip: float = 1.0
     obs_size: int = 84
@@ -154,7 +154,7 @@ class PPOAgent:
         self._model = _PPOModel(in_channels=in_channels, action_space_n=self.action_space_n, obs_size=self.config.obs_size).to(
             self.device
         )
-        self._optim = torch.optim.Adam(self._model.parameters(), lr=float(self.config.learning_rate))
+        self._optim = torch.optim.Adam(self._model.parameters(), lr=float(self.config.learning_rate), eps=1e-5)
 
         self._start_time_s = time.monotonic()
         self._decision_steps = 0
@@ -317,8 +317,7 @@ class PPOAgent:
         num_steps = len(self._rollout_rewards)
         if num_steps < int(self.config.rollout_steps):
             return
-        if self._decision_steps % int(self.config.train_interval) != 0:
-            return
+        
         obs_np = np.asarray(self._rollout_obs, dtype=np.uint8)
         actions_np = np.asarray(self._rollout_actions, dtype=np.int64)
         old_logprobs_np = np.asarray(self._rollout_logprobs, dtype=np.float32)

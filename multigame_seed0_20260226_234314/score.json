@@ -1,0 +1,58 @@
+{
+  "benchmark_contract_hash": "315709c1de8cc6947d6bbdf4d5e08961ecc470f184d7625da5332a89452b9c74",
+  "benchmark_contract_version": "v1",
+  "bottom_k_score": 0.115,
+  "final_score": 0.27570000000000006,
+  "forgetting_index_mean": -0.2531666666666667,
+  "forgetting_index_median": -0.175,
+  "fps": 54.81441236770149,
+  "frames": 178952,
+  "mean_score": 0.43640000000000007,
+  "notes": {
+    "cycle_selection": "cycle_idx==1",
+    "episode_source": "episodes_jsonl_terminated_only",
+    "episodes_jsonl_truncated_entries_detected": true,
+    "final_score_weights": {
+      "bottom_k": 0.5,
+      "mean": 0.5
+    },
+    "fps_source": "events",
+    "games": [
+      "ms_pacman",
+      "qbert",
+      "centipede"
+    ],
+    "games_with_zero_last_cycle_episodes": [],
+    "mean_step_time": 0.01824337718503453,
+    "plasticity_cycle_selection": "cycle_idx==0",
+    "unassigned_episode_count": 0,
+    "visit_source": "config_schedule"
+  },
+  "per_game_episode_counts": {
+    "centipede": 9,
+    "ms_pacman": 14,
+    "qbert": 18
+  },
+  "per_game_forgetting": {
+    "centipede": -0.522,
+    "ms_pacman": -0.175,
+    "qbert": -0.0625
+  },
+  "per_game_plasticity": {
+    "centipede": -0.869,
+    "ms_pacman": -0.15000000000000002,
+    "qbert": -0.024999999999999994
+  },
+  "per_game_scores": {
+    "centipede": 1.0262,
+    "ms_pacman": 0.168,
+    "qbert": 0.115
+  },
+  "per_game_visit_frames": {
+    "centipede": 30183,
+    "ms_pacman": 30448,
+    "qbert": 30964
+  },
+  "plasticity_mean": -0.34800000000000003,
+  "plasticity_median": -0.15000000000000002
+}

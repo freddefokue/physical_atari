@@ -1,0 +1,13 @@
+{
+  "avg_error_ema": 26.826650619506836,
+  "decision_steps": 178952,
+  "episode_number": 85,
+  "frame_count": 178952,
+  "frame_skip": 4,
+  "last_action_idx": 0,
+  "max_error_ema": 112.05677795410156,
+  "target_ema": 308.3494873046875,
+  "train_loss_ema": 2302.53662109375,
+  "train_steps_estimate": 44738,
+  "u": 178951
+}
