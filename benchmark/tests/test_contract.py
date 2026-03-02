@@ -391,6 +391,63 @@ def test_validate_contract_passes_for_carmack_multigame_schema(tmp_path):
     assert result["errors"] == []
 
 
+def test_validate_contract_passes_for_carmack_multigame_realtime_non_decision_rows(tmp_path):
+    run_dir = tmp_path / "run_carmack_multigame_realtime_ok"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    config = _make_carmack_multigame_config()
+    config["runner_config"]["real_time_mode"] = True
+    config["runner_config"]["real_time_fps"] = 60.0
+    config["real_time_mode"] = True
+    config["real_time_fps"] = 60.0
+    config["benchmark_contract_hash"] = compute_contract_hash(config)
+    score = _make_multigame_score(config["benchmark_contract_hash"])
+
+    e0 = _make_carmack_multigame_event_row()
+    e1 = dict(e0)
+    e1["frame_idx"] = 1
+    e1["global_frame_idx"] = 1
+    e1["visit_frame_idx"] = 1
+    e1["is_decision_frame"] = False
+    e1["next_policy_action_idx"] = None
+    e2 = dict(e1)
+    e2["frame_idx"] = 2
+    e2["global_frame_idx"] = 2
+    e2["visit_frame_idx"] = 2
+    e2["is_decision_frame"] = True
+    e2["next_policy_action_idx"] = 1
+    e3 = dict(e2)
+    e3["frame_idx"] = 3
+    e3["global_frame_idx"] = 3
+    e3["visit_frame_idx"] = 3
+    e3["end_of_episode_pulse"] = True
+    e3["truncated"] = True
+    e3["boundary_cause"] = "visit_switch"
+    e3["reset_cause"] = "visit_switch"
+    e3["reset_performed"] = True
+
+    with (run_dir / "config.json").open("w", encoding="utf-8") as fh:
+        json.dump(config, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    with (run_dir / "score.json").open("w", encoding="utf-8") as fh:
+        json.dump(score, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    with (run_dir / "events.jsonl").open("w", encoding="utf-8") as fh:
+        for row in (e0, e1, e2, e3):
+            fh.write(json.dumps(row, sort_keys=True) + "\n")
+    with (run_dir / "episodes.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_make_carmack_multigame_episode_row(), sort_keys=True) + "\n")
+    with (run_dir / "segments.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_make_carmack_multigame_segment_row(), sort_keys=True) + "\n")
+    with (run_dir / "run_summary.json").open("w", encoding="utf-8") as fh:
+        json.dump(_make_carmack_multigame_summary(), fh, indent=2, sort_keys=True)
+        fh.write("\n")
+
+    result = validate_contract(run_dir, sample_event_lines=4, validation_mode="full")
+    assert result["ok"] is True, result["errors"]
+    assert result["errors"] == []
+
+
 def test_validate_contract_fails_for_carmack_multigame_bad_boundary_cause(tmp_path):
     run_dir = tmp_path / "run_carmack_multigame_bad_cause"
     run_dir.mkdir(parents=True, exist_ok=True)

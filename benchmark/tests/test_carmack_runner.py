@@ -933,6 +933,96 @@ def test_carmack_runner_emits_required_schema_fields_and_types():
     assert isinstance(episode["ended_by_reset"], bool)
 
 
+def test_carmack_runner_real_time_mode_off_matches_default():
+    env_default = ScriptedEnv(
+        action_set=list(range(4)),
+        rewards=[0.0, 0.0, 0.0, 0.0],
+        lives_seq=[3, 3, 3, 3],
+        terminated_at=set(),
+        truncated_at=set(),
+    )
+    env_off = ScriptedEnv(
+        action_set=list(range(4)),
+        rewards=[0.0, 0.0, 0.0, 0.0],
+        lives_seq=[3, 3, 3, 3],
+        terminated_at=set(),
+        truncated_at=set(),
+    )
+    agent_default = RecordingBoundaryFrameAgent(action_idx=1)
+    agent_off = RecordingBoundaryFrameAgent(action_idx=1)
+    config_default = CarmackRunnerConfig(total_frames=4, delay_frames=0, include_timestamps=False, max_frames_without_reward=999)
+    config_off = CarmackRunnerConfig(
+        total_frames=4,
+        delay_frames=0,
+        include_timestamps=False,
+        max_frames_without_reward=999,
+        real_time_mode=False,
+        real_time_fps=30.0,
+    )
+    summary_default, events_default, episodes_default = run_with_memory(env_default, agent_default, config_default)
+    summary_off, events_off, episodes_off = run_with_memory(env_off, agent_off, config_off)
+
+    assert events_default == events_off
+    assert episodes_default == episodes_off
+    assert summary_default["frames"] == summary_off["frames"]
+    assert summary_default["episodes_completed"] == summary_off["episodes_completed"]
+
+
+def test_carmack_runner_real_time_emits_non_decision_catchup_frames():
+    env = ScriptedEnv(
+        action_set=list(range(4)),
+        rewards=[0.0, 0.0, 0.0, 0.0, 0.0],
+        lives_seq=[3, 3, 3, 3, 3],
+        terminated_at=set(),
+        truncated_at=set(),
+    )
+    agent = RecordingBoundaryFrameAgent(action_idx=1)
+    config = CarmackRunnerConfig(
+        total_frames=5,
+        delay_frames=0,
+        include_timestamps=False,
+        max_frames_without_reward=999,
+        real_time_mode=True,
+        real_time_fps=60.0,
+    )
+    summary, events, _ = run_with_memory(env, agent, config, time_fn=_IncrementClock(start=100.0, step=0.02))
+
+    assert len(events) == 5
+    assert [row.get("is_decision_frame") for row in events] == [True, False, True, False, True]
+    assert [row["next_policy_action_idx"] for row in events] == [1, 0, 1, 1, 1]
+    assert summary["realtime_catchup_frames"] == 2
+    assert len(agent.calls) == 3
+
+
+def test_carmack_runner_real_time_termination_during_catchup_resets_correctly():
+    env = ScriptedEnv(
+        action_set=list(range(4)),
+        rewards=[0.0, 0.0, 0.0, 0.0, 0.0],
+        lives_seq=[3, 3, 3, 3, 3],
+        terminated_at={1},
+        truncated_at=set(),
+    )
+    agent = RecordingBoundaryFrameAgent(action_idx=1)
+    config = CarmackRunnerConfig(
+        total_frames=5,
+        delay_frames=0,
+        include_timestamps=False,
+        max_frames_without_reward=999,
+        real_time_mode=True,
+        real_time_fps=60.0,
+    )
+    summary, events, episodes = run_with_memory(env, agent, config, time_fn=_IncrementClock(start=700.0, step=0.02))
+
+    assert events[1]["is_decision_frame"] is False
+    assert events[1]["terminated"] is True
+    assert events[1]["reset_performed"] is True
+    assert events[1]["reset_cause"] == "terminated"
+    assert events[2]["episode_idx"] == 1
+    assert len(agent.calls) == 3
+    assert summary["game_over_resets"] >= 1
+    assert len(episodes) >= 1
+
+
 class _IncrementClock:
     def __init__(self, start: float, step: float) -> None:
         self._t = float(start)

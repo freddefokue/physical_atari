@@ -85,20 +85,34 @@ class RecordingFrameAgent:
         return int(self.action_idx)
 
 
-def _run_with_memory(env, agent, schedule, config):
+def _run_with_memory(env, agent, schedule, config, *, time_fn=None):
     events = MemoryWriter()
     episodes = MemoryWriter()
     segments = MemoryWriter()
-    summary = CarmackMultiGameRunner(
-        env=env,
-        agent=agent,
-        schedule=schedule,
-        config=config,
-        event_writer=events,
-        episode_writer=episodes,
-        segment_writer=segments,
-    ).run()
+    runner_kwargs = {
+        "env": env,
+        "agent": agent,
+        "schedule": schedule,
+        "config": config,
+        "event_writer": events,
+        "episode_writer": episodes,
+        "segment_writer": segments,
+    }
+    if time_fn is not None:
+        runner_kwargs["time_fn"] = time_fn
+    summary = CarmackMultiGameRunner(**runner_kwargs).run()
     return summary, events.rows, episodes.rows, segments.rows
+
+
+class _IncrementClock:
+    def __init__(self, start: float, step: float) -> None:
+        self._t = float(start)
+        self._step = float(step)
+
+    def __call__(self) -> float:
+        current = float(self._t)
+        self._t += self._step
+        return current
 
 
 def test_carmack_multigame_runner_emits_required_boundary_payload():
@@ -261,3 +275,115 @@ def test_carmack_multigame_carries_last_decision_across_visit_switch():
     # decided action on the first frame of visit 1 (not overwritten to default).
     assert events[0]["next_policy_action_idx"] == 5
     assert events[1]["decided_action_idx"] == 5
+
+
+def test_carmack_multigame_real_time_mode_off_matches_default():
+    schedule = Schedule(
+        ScheduleConfig(games=["a"], base_visit_frames=4, num_cycles=1, seed=0, jitter_pct=0.0, min_visit_frames=1)
+    )
+    env_default = MockMultiGameEnv(action_sets={"a": list(range(8))})
+    env_off = MockMultiGameEnv(action_sets={"a": list(range(8))})
+    agent_default = RecordingFrameAgent(action_idx=1)
+    agent_off = RecordingFrameAgent(action_idx=1)
+    config_default = CarmackMultiGameRunnerConfig(
+        decision_interval=1,
+        delay_frames=0,
+        default_action_idx=0,
+        include_timestamps=False,
+        global_action_set=tuple(range(8)),
+    )
+    config_off = CarmackMultiGameRunnerConfig(
+        decision_interval=1,
+        delay_frames=0,
+        default_action_idx=0,
+        include_timestamps=False,
+        global_action_set=tuple(range(8)),
+        real_time_mode=False,
+        real_time_fps=30.0,
+    )
+    summary_default, events_default, episodes_default, segments_default = _run_with_memory(
+        env_default,
+        agent_default,
+        schedule,
+        config_default,
+    )
+    summary_off, events_off, episodes_off, segments_off = _run_with_memory(
+        env_off,
+        agent_off,
+        schedule,
+        config_off,
+    )
+
+    assert events_default == events_off
+    assert episodes_default == episodes_off
+    assert segments_default == segments_off
+    assert summary_default["frames"] == summary_off["frames"]
+    assert summary_default["reset_count"] == summary_off["reset_count"]
+
+
+def test_carmack_multigame_real_time_emits_non_decision_catchup_frames():
+    schedule = Schedule(
+        ScheduleConfig(games=["a"], base_visit_frames=5, num_cycles=1, seed=0, jitter_pct=0.0, min_visit_frames=1)
+    )
+    env = MockMultiGameEnv(action_sets={"a": list(range(8))})
+    agent = RecordingFrameAgent(action_idx=1)
+    config = CarmackMultiGameRunnerConfig(
+        decision_interval=1,
+        delay_frames=0,
+        default_action_idx=0,
+        include_timestamps=False,
+        global_action_set=tuple(range(8)),
+        real_time_mode=True,
+        real_time_fps=60.0,
+    )
+    summary, events, _, _ = _run_with_memory(
+        env,
+        agent,
+        schedule,
+        config,
+        time_fn=_IncrementClock(start=100.0, step=0.02),
+    )
+
+    assert len(events) == 5
+    assert [bool(row["is_decision_frame"]) for row in events] == [True, False, True, False, True]
+    assert [row["next_policy_action_idx"] for row in events] == [1, None, 1, None, 1]
+    assert summary["realtime_catchup_frames"] == 2
+    assert len(agent.calls) == 3
+    assert [int(call["boundary"]["global_frame_idx"]) for call in agent.calls] == [0, 2, 4]
+
+
+def test_carmack_multigame_real_time_handles_termination_during_catchup():
+    schedule = Schedule(
+        ScheduleConfig(games=["a"], base_visit_frames=5, num_cycles=1, seed=0, jitter_pct=0.0, min_visit_frames=1)
+    )
+    env = MockMultiGameEnv(action_sets={"a": list(range(8))}, terminated_steps={"a": [2]})
+    agent = RecordingFrameAgent(action_idx=1)
+    config = CarmackMultiGameRunnerConfig(
+        decision_interval=1,
+        delay_frames=0,
+        default_action_idx=0,
+        include_timestamps=False,
+        global_action_set=tuple(range(8)),
+        real_time_mode=True,
+        real_time_fps=60.0,
+    )
+    summary, events, episodes, segments = _run_with_memory(
+        env,
+        agent,
+        schedule,
+        config,
+        time_fn=_IncrementClock(start=500.0, step=0.02),
+    )
+
+    assert events[1]["is_decision_frame"] is False
+    assert events[1]["terminated"] is True
+    assert events[1]["boundary_cause"] == "terminated"
+    assert events[1]["reset_cause"] == "terminated"
+    assert events[1]["reset_performed"] is True
+    assert events[1]["next_policy_action_idx"] is None
+    assert events[2]["episode_id"] == 1
+    assert summary["boundary_cause_counts"].get("terminated", 0) >= 1
+    assert summary["reset_cause_counts"].get("terminated", 0) >= 1
+    assert summary["reset_count"] >= 1
+    assert len(episodes) >= 2
+    assert len(segments) >= 2

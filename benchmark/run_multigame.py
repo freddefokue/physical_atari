@@ -103,6 +103,8 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
     set_if_present("log_episode_every", ["log_episode_every", "episode_log_interval"], int)
     set_if_present("log_train_every", ["log_train_every", "train_log_interval"], int)
     set_if_present("timestamps", ["timestamps", "include_timestamps"], int)
+    set_if_present("real_time_mode", ["real_time_mode"], int)
+    set_if_present("real_time_fps", ["real_time_fps"], float)
     set_if_present("logdir", ["logdir"], str)
     runner_cfg = config_data.get("runner_config")
     if isinstance(runner_cfg, dict) and "episode_log_interval" in runner_cfg and runner_cfg["episode_log_interval"] is not None:
@@ -111,6 +113,10 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         defaults["log_train_every"] = int(runner_cfg["train_log_interval"])
     if isinstance(runner_cfg, dict) and "runner_mode" in runner_cfg and runner_cfg["runner_mode"] is not None:
         defaults["runner_mode"] = str(runner_cfg["runner_mode"])
+    if isinstance(runner_cfg, dict) and "real_time_mode" in runner_cfg and runner_cfg["real_time_mode"] is not None:
+        defaults["real_time_mode"] = int(runner_cfg["real_time_mode"])
+    if isinstance(runner_cfg, dict) and "real_time_fps" in runner_cfg and runner_cfg["real_time_fps"] is not None:
+        defaults["real_time_fps"] = float(runner_cfg["real_time_fps"])
 
     # TinyDQN keys can be top-level or nested under agent_config.
     agent_cfg = config_data.get("agent_config")
@@ -527,6 +533,19 @@ def _build_parser(defaults: Optional[Dict[str, Any]] = None) -> argparse.Argumen
         default=1,
         help="Include wallclock timestamps in per-frame events.",
     )
+    parser.add_argument(
+        "--real-time-mode",
+        type=int,
+        choices=[0, 1],
+        default=0,
+        help="Enable real-time non-turn-taking mode (1=yes, 0=no).",
+    )
+    parser.add_argument(
+        "--real-time-fps",
+        type=float,
+        default=60.0,
+        help="Environment FPS used to convert agent latency into catch-up frames.",
+    )
     parser.add_argument("--logdir", type=str, default="./runs/v1", help="Base output directory.")
     if defaults:
         parser.set_defaults(**defaults)
@@ -562,6 +581,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--dqn-decision-interval must be > 0 for --agent tinydqn.")
     if str(args.agent) == "ppo" and int(getattr(args, "ppo_decision_interval", 1)) <= 0:
         raise ValueError("--ppo-decision-interval must be > 0 for --agent ppo.")
+    if float(args.real_time_fps) <= 0.0:
+        raise ValueError("--real-time-fps must be > 0.")
 
 
 def build_agent(args: argparse.Namespace, num_actions: int, total_frames: int):
@@ -771,6 +792,8 @@ def build_config_payload(
         "log_episode_every": int(args.log_episode_every),
         "log_train_every": int(args.log_train_every),
         "timestamps": bool(args.timestamps),
+        "real_time_mode": bool(args.real_time_mode),
+        "real_time_fps": float(args.real_time_fps),
         "logdir": str(Path(args.logdir)),
         "run_dir": str(run_dir),
         "total_scheduled_frames": int(schedule.total_frames),
@@ -789,6 +812,8 @@ def build_config_payload(
             "episode_log_interval": int(runner_config.episode_log_interval),
             "train_log_interval": int(getattr(runner_config, "train_log_interval", 0)),
             "include_timestamps": bool(runner_config.include_timestamps),
+            "real_time_mode": bool(getattr(runner_config, "real_time_mode", False)),
+            "real_time_fps": float(getattr(runner_config, "real_time_fps", 60.0)),
         },
         "versions": get_version_metadata(),
         "scoring_defaults": scoring_defaults,
@@ -892,6 +917,8 @@ def main() -> None:
             train_log_interval=int(args.log_train_every),
             include_timestamps=bool(args.timestamps),
             global_action_set=global_action_set,
+            real_time_mode=bool(args.real_time_mode),
+            real_time_fps=float(args.real_time_fps),
         )
     else:
         runner_config = MultiGameRunnerConfig(

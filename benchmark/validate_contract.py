@@ -31,6 +31,10 @@ def _is_optional_str(value: Any) -> bool:
     return value is None or isinstance(value, str)
 
 
+def _is_optional_int(value: Any) -> bool:
+    return value is None or _is_int(value)
+
+
 def _load_json(path: Path) -> Dict[str, Any]:
     with path.open("r", encoding="utf-8") as fh:
         payload = json.load(fh)
@@ -744,7 +748,7 @@ def _check_carmack_multigame_events_sample(
             "is_decision_frame": lambda value: isinstance(value, bool),
             "decided_action_idx": _is_int,
             "applied_action_idx": _is_int,
-            "next_policy_action_idx": _is_int,
+            "next_policy_action_idx": _is_optional_int,
             "applied_action_idx_local": _is_int,
             "applied_ale_action": _is_int,
             "reward": _is_number,
@@ -1128,9 +1132,13 @@ def _check_carmack_multigame_event_semantics(rows: Sequence[Mapping[str, Any]], 
         boundary_cause = row.get("boundary_cause")
         reset_cause = row.get("reset_cause")
         reset_performed = bool(row["reset_performed"])
+        is_decision_frame = bool(row["is_decision_frame"])
+        next_policy_action_idx = row.get("next_policy_action_idx")
 
-        if not bool(row["is_decision_frame"]):
-            errors.append(f"{prefix}: is_decision_frame must be true in Carmack multi-game profile")
+        if is_decision_frame and not _is_int(next_policy_action_idx):
+            errors.append(f"{prefix}: decision frame requires integer next_policy_action_idx")
+        if (not is_decision_frame) and next_policy_action_idx is not None:
+            errors.append(f"{prefix}: non-decision frame requires next_policy_action_idx=null")
 
         if int(row["frame_idx"]) != int(row["global_frame_idx"]):
             errors.append(f"{prefix}: frame_idx must equal global_frame_idx")

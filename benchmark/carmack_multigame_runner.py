@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import math
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -189,6 +190,8 @@ class CarmackMultiGameRunnerConfig:
     train_log_interval: int = 0
     reset_delay_queue_on_reset: bool = True
     reset_delay_queue_on_visit_switch: bool = True
+    real_time_mode: bool = False
+    real_time_fps: float = 60.0
 
     def __post_init__(self) -> None:
         if self.decision_interval != 1:
@@ -205,6 +208,8 @@ class CarmackMultiGameRunnerConfig:
             raise ValueError("episode_log_interval must be >= 0")
         if self.train_log_interval < 0:
             raise ValueError("train_log_interval must be >= 0")
+        if float(self.real_time_fps) <= 0.0:
+            raise ValueError("real_time_fps must be > 0")
 
 
 class CarmackMultiGameRunner:
@@ -314,8 +319,9 @@ class CarmackMultiGameRunner:
         truncated: bool,
         global_frame_idx: int,
         applied_action_idx: int,
+        is_decision_frame: Optional[bool] = None,
     ) -> Dict[str, Any]:
-        return {
+        payload = {
             "terminated": bool(terminated),
             "truncated": bool(truncated),
             "end_of_episode_pulse": bool(terminated or truncated),
@@ -325,6 +331,9 @@ class CarmackMultiGameRunner:
             "prev_applied_action_idx": int(applied_action_idx),
             "global_frame_idx": int(global_frame_idx),
         }
+        if is_decision_frame is not None:
+            payload["is_decision_frame"] = bool(is_decision_frame)
+        return payload
 
     @classmethod
     def _resolve_boundary(
@@ -487,8 +496,14 @@ class CarmackMultiGameRunner:
         episode_scores: list[float] = []
         episode_end: list[int] = []
         environment_start_time = float(self.time_fn())
+        real_time_mode = bool(self.config.real_time_mode)
+        real_time_frame_time = 0.0 if not real_time_mode else float(1.0 / float(self.config.real_time_fps))
+        latency_accumulator = 0.0
+        pending_catchup_frames = 0
+        realtime_catchup_frames = 0
 
         taken_action = int(self.config.default_action_idx)
+        catchup_hold_action = int(taken_action)
         for visit_idx, visit in enumerate(visits):
             local_actions = self.env.load_game(visit.game_id)
             self._set_local_action_set(local_actions)
@@ -498,8 +513,15 @@ class CarmackMultiGameRunner:
             self._start_episode(global_frame_idx)
             self._start_segment(global_frame_idx)
 
-            for visit_frame_idx in range(int(visit.visit_frames)):
-                decided_action_idx = int(taken_action)
+            visit_frame_idx = 0
+            while visit_frame_idx < int(visit.visit_frames):
+                is_decision_frame = bool(pending_catchup_frames <= 0)
+                if is_decision_frame:
+                    decided_action_idx = int(taken_action)
+                else:
+                    decided_action_idx = int(catchup_hold_action)
+                    pending_catchup_frames -= 1
+                    realtime_catchup_frames += 1
                 applied_action_idx = self._apply_delay(decided_action_idx)
                 applied_local_idx, applied_ale_action = self._map_global_to_local(applied_action_idx)
 
@@ -519,6 +541,7 @@ class CarmackMultiGameRunner:
                     truncated=bool(boundary["truncated"]),
                     global_frame_idx=int(global_frame_idx),
                     applied_action_idx=int(applied_action_idx),
+                    is_decision_frame=(True if real_time_mode else None),
                 )
 
                 event = {
@@ -532,7 +555,7 @@ class CarmackMultiGameRunner:
                     "visit_frame_idx": int(visit_frame_idx),
                     "episode_id": int(self._episode_id),
                     "segment_id": int(self._segment_id),
-                    "is_decision_frame": True,
+                    "is_decision_frame": bool(is_decision_frame),
                     "decided_action_idx": int(decided_action_idx),
                     "applied_action_idx": int(applied_action_idx),
                     "next_policy_action_idx": None,
@@ -610,9 +633,22 @@ class CarmackMultiGameRunner:
                     self._obs_rgb = step.obs_rgb
                     obs_for_agent = self._obs_rgb
 
-                next_action = self._validate_action_idx(self.agent.frame(obs_for_agent, float(step.reward), boundary_payload))
-                taken_action = int(next_action)
-                event["next_policy_action_idx"] = int(next_action)
+                if is_decision_frame:
+                    if real_time_mode:
+                        decision_start_time = float(self.time_fn())
+                    next_action = self._validate_action_idx(self.agent.frame(obs_for_agent, float(step.reward), boundary_payload))
+                    taken_action = int(next_action)
+                    event["next_policy_action_idx"] = int(next_action)
+                    if real_time_mode:
+                        elapsed = max(float(self.time_fn()) - decision_start_time, 0.0)
+                        latency_accumulator += float(elapsed)
+                        missed_frames = int(math.floor(latency_accumulator / real_time_frame_time))
+                        if missed_frames > 0:
+                            latency_accumulator -= float(missed_frames) * float(real_time_frame_time)
+                            pending_catchup_frames += int(missed_frames)
+                            catchup_hold_action = int(decided_action_idx)
+                else:
+                    event["next_policy_action_idx"] = None
 
                 if self.config.train_log_interval > 0 and ((global_frame_idx + 1) % int(self.config.train_log_interval) == 0):
                     stats: Dict[str, Any] = {}
@@ -672,6 +708,7 @@ class CarmackMultiGameRunner:
                 self._last_applied_action_idx_global = int(applied_action_idx)
                 self._has_prev_applied_action = True
                 global_frame_idx += 1
+                visit_frame_idx += 1
 
                 if bool(boundary["end_of_episode_pulse"]) and not bool(boundary["reset_in_visit"]):
                     # Visit switch (or end-of-visit boundary) starts a new episode/segment on next global frame.
@@ -696,4 +733,5 @@ class CarmackMultiGameRunner:
             "boundary_cause_counts": {str(k): int(v) for k, v in boundary_cause_counts.items()},
             "reset_cause_counts": {str(k): int(v) for k, v in reset_cause_counts.items()},
             "reset_count": int(reset_count),
+            "realtime_catchup_frames": int(realtime_catchup_frames),
         }

@@ -24,6 +24,8 @@ def test_run_multigame_config_defaults_and_cli_override(tmp_path):
         "default_action_idx": 0,
         "log_episode_every": 7,
         "timestamps": 1,
+        "real_time_mode": 1,
+        "real_time_fps": 75.0,
         "agent": "tinydqn",
         "agent_config": {
             "gamma": 0.95,
@@ -58,6 +60,8 @@ def test_run_multigame_config_defaults_and_cli_override(tmp_path):
     assert args.dqn_lr == 0.0003
     assert args.dqn_batch_size == 64
     assert args.dqn_log_train_every == 42
+    assert args.real_time_mode == 1
+    assert args.real_time_fps == 75.0
     assert getattr(args, "_config_data") == payload
 
 
@@ -199,6 +203,12 @@ def test_run_multigame_config_parses_ppo_agent_config(tmp_path):
 def test_validate_args_ppo_requires_positive_decision_interval():
     args = parse_args(["--games", "pong", "--agent", "ppo", "--ppo-decision-interval", "0"])
     with pytest.raises(ValueError, match=r"--ppo-decision-interval must be > 0"):
+        validate_args(args)
+
+
+def test_validate_args_requires_positive_real_time_fps():
+    args = parse_args(["--games", "pong", "--real-time-fps", "0"])
+    with pytest.raises(ValueError, match=r"--real-time-fps must be > 0"):
         validate_args(args)
 
 

@@ -16,37 +16,55 @@ from benchmark.run_single_game import validate_args
 
 
 def test_validate_args_carmack_requires_frame_skip_1():
-    args = Namespace(runner_mode="carmack_compat", frame_skip=4, agent="random")
+    args = Namespace(runner_mode="carmack_compat", frame_skip=4, agent="random", real_time_fps=60.0)
     with pytest.raises(ValueError, match=r"carmack_compat requires --frame-skip 1"):
         validate_args(args)
 
 
 def test_validate_args_standard_allows_frame_skip_not_one():
-    args = Namespace(runner_mode="standard", frame_skip=4, agent="random")
+    args = Namespace(runner_mode="standard", frame_skip=4, agent="random", real_time_fps=60.0)
     validate_args(args)
 
 
 def test_validate_args_tinydqn_requires_carmack_mode():
-    args = Namespace(runner_mode="standard", frame_skip=1, agent="tinydqn")
+    args = Namespace(runner_mode="standard", frame_skip=1, agent="tinydqn", real_time_fps=60.0)
     with pytest.raises(ValueError, match=r"agent tinydqn currently requires --runner-mode carmack_compat"):
         validate_args(args)
 
 
 def test_validate_args_tinydqn_requires_positive_decision_interval():
-    args = Namespace(runner_mode="carmack_compat", frame_skip=1, agent="tinydqn", dqn_decision_interval=0)
+    args = Namespace(
+        runner_mode="carmack_compat",
+        frame_skip=1,
+        agent="tinydqn",
+        dqn_decision_interval=0,
+        real_time_fps=60.0,
+    )
     with pytest.raises(ValueError, match=r"--dqn-decision-interval must be > 0"):
         validate_args(args)
 
 
 def test_validate_args_ppo_requires_carmack_mode():
-    args = Namespace(runner_mode="standard", frame_skip=1, agent="ppo")
+    args = Namespace(runner_mode="standard", frame_skip=1, agent="ppo", real_time_fps=60.0)
     with pytest.raises(ValueError, match=r"agent ppo currently requires --runner-mode carmack_compat"):
         validate_args(args)
 
 
 def test_validate_args_ppo_requires_positive_decision_interval():
-    args = Namespace(runner_mode="carmack_compat", frame_skip=1, agent="ppo", ppo_decision_interval=0)
+    args = Namespace(
+        runner_mode="carmack_compat",
+        frame_skip=1,
+        agent="ppo",
+        ppo_decision_interval=0,
+        real_time_fps=60.0,
+    )
     with pytest.raises(ValueError, match=r"--ppo-decision-interval must be > 0"):
+        validate_args(args)
+
+
+def test_validate_args_requires_positive_real_time_fps():
+    args = Namespace(runner_mode="carmack_compat", frame_skip=1, agent="random", real_time_fps=0.0)
+    with pytest.raises(ValueError, match=r"--real-time-fps must be > 0"):
         validate_args(args)
 
 
@@ -130,12 +148,19 @@ def test_build_config_payload_carmack_marks_agent_owned_cadence():
         ppo_device="auto",
         ppo_decision_interval=4,
         timestamps=0,
+        real_time_mode=1,
+        real_time_fps=55.0,
         logdir="runs",
     )
     payload = build_config_payload(
         args=args,
         env=_Env(),
-        runner_config=CarmackRunnerConfig(total_frames=100, include_timestamps=False),
+        runner_config=CarmackRunnerConfig(
+            total_frames=100,
+            include_timestamps=False,
+            real_time_mode=True,
+            real_time_fps=55.0,
+        ),
         run_dir=Path("runs/test"),
     )
     assert payload["single_run_profile"] == CARMACK_SINGLE_RUN_PROFILE
@@ -145,6 +170,8 @@ def test_build_config_payload_carmack_marks_agent_owned_cadence():
     assert rc["single_run_schema_version"] == CARMACK_SINGLE_RUN_SCHEMA_VERSION
     assert rc["action_cadence_mode"] == "agent_owned"
     assert rc["frame_skip_enforced"] == 1
+    assert rc["real_time_mode"] is True
+    assert rc["real_time_fps"] == pytest.approx(55.0)
     ppo_cfg = payload["ppo_config"]
     assert ppo_cfg["learning_rate"] == pytest.approx(2.5e-4)
     assert ppo_cfg["gamma"] == pytest.approx(0.99)

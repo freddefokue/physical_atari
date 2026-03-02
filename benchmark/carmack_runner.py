@@ -152,6 +152,8 @@ class CarmackRunnerConfig:
     rolling_average_frames: int = 100_000
     log_rank: int = 0
     log_name: str = "delay"
+    real_time_mode: bool = False
+    real_time_fps: float = 60.0
 
     def __post_init__(self) -> None:
         if self.total_frames <= 0:
@@ -170,6 +172,8 @@ class CarmackRunnerConfig:
             raise ValueError("reset_log_interval must be >= 0")
         if self.rolling_average_frames <= 0:
             raise ValueError("rolling_average_frames must be > 0")
+        if float(self.real_time_fps) <= 0.0:
+            raise ValueError("real_time_fps must be > 0")
 
 
 class CarmackCompatRunner:
@@ -301,6 +305,12 @@ class CarmackCompatRunner:
         last_log_time = float(start_time)
         last_logged_frame = 0
         last_train_steps = 0
+        real_time_mode = bool(self.config.real_time_mode)
+        real_time_frame_time = 0.0 if not real_time_mode else float(1.0 / float(self.config.real_time_fps))
+        latency_accumulator = 0.0
+        pending_catchup_frames = 0
+        realtime_catchup_frames = 0
+        catchup_hold_action = int(taken_action)
 
         def _agent_stats() -> Dict[str, Any]:
             stats_fn = getattr(self.agent, "get_stats", None)
@@ -327,7 +337,8 @@ class CarmackCompatRunner:
                 return None
             return out if math.isfinite(out) else None
 
-        for frame_idx in range(int(self.config.total_frames)):
+        frame_idx = 0
+        while frame_idx < int(self.config.total_frames):
             # Mirror agent_delay_target.py cadence: update rolling average only when the
             # episode graph bucket advances, not at every reset.
             if (int(frame_idx) * average_bins // int(self.config.total_frames)) != (
@@ -342,7 +353,13 @@ class CarmackCompatRunner:
                     total += float(episode_scores[j])
                 avg_for_log = -999.0 if count == 0 else float(total / count)
 
-            decided_action_idx = int(taken_action)
+            is_decision_frame = bool(pending_catchup_frames <= 0)
+            if is_decision_frame:
+                decided_action_idx = int(taken_action)
+            else:
+                decided_action_idx = int(catchup_hold_action)
+                pending_catchup_frames -= 1
+                realtime_catchup_frames += 1
             delayed_actions.append(int(decided_action_idx))
             applied_action_idx = int(delayed_actions.popleft()) if self.config.delay_frames > 0 else int(decided_action_idx)
 
@@ -417,6 +434,8 @@ class CarmackCompatRunner:
                 "has_prev_applied_action": True,
                 "prev_applied_action_idx": int(applied_action_idx),
             }
+            if real_time_mode:
+                boundary_payload["is_decision_frame"] = True
 
             if end_of_episode:
                 pulse_count += 1
@@ -521,8 +540,22 @@ class CarmackCompatRunner:
             else:
                 obs_for_agent = step.obs_rgb
 
-            next_action = self._validate_action_idx(self.agent.frame(obs_for_agent, reward, boundary_payload))
-            taken_action = int(next_action)
+            if is_decision_frame:
+                if real_time_mode:
+                    decision_start_time = float(self.time_fn())
+                next_action = self._validate_action_idx(self.agent.frame(obs_for_agent, reward, boundary_payload))
+                taken_action = int(next_action)
+                next_policy_action_idx = int(next_action)
+                if real_time_mode:
+                    elapsed = max(float(self.time_fn()) - decision_start_time, 0.0)
+                    latency_accumulator += float(elapsed)
+                    missed_frames = int(math.floor(latency_accumulator / real_time_frame_time))
+                    if missed_frames > 0:
+                        latency_accumulator -= float(missed_frames) * float(real_time_frame_time)
+                        pending_catchup_frames += int(missed_frames)
+                        catchup_hold_action = int(decided_action_idx)
+            else:
+                next_policy_action_idx = int(decided_action_idx)
 
             if self.config.progress_log_interval_frames > 0 and (
                 (frame_idx + 1) % self.config.progress_log_interval_frames == 0
@@ -611,7 +644,7 @@ class CarmackCompatRunner:
                 "frame_idx": int(frame_idx),
                 "applied_action_idx": int(applied_action_idx),
                 "decided_action_idx": int(decided_action_idx),
-                "next_policy_action_idx": int(next_action),
+                "next_policy_action_idx": int(next_policy_action_idx),
                 "decided_action_changed": bool(decided_action_changed),
                 "applied_action_changed": bool(applied_action_changed),
                 "decided_applied_mismatch": bool(decided_applied_mismatch),
@@ -635,10 +668,13 @@ class CarmackCompatRunner:
                 "reset_performed": bool(reset_performed),
                 "frames_without_reward": int(frames_without_reward_before_reset),
             }
+            if real_time_mode:
+                event["is_decision_frame"] = bool(is_decision_frame)
             if self.config.include_timestamps:
                 event["wallclock_time"] = float(self.time_fn())
             if self.event_writer is not None:
                 self.event_writer.write(event)
+            frame_idx += 1
 
         if current_applied_hold_run_length > 0:
             applied_hold_run_count += 1
@@ -678,4 +714,5 @@ class CarmackCompatRunner:
             "applied_action_hold_run_count": int(applied_hold_run_count),
             "applied_action_hold_run_mean": float(applied_action_hold_run_mean),
             "applied_action_hold_run_max": int(applied_hold_run_length_max),
+            "realtime_catchup_frames": int(realtime_catchup_frames),
         }

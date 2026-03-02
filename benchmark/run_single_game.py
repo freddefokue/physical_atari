@@ -268,6 +268,19 @@ def parse_args() -> argparse.Namespace:
         default=1,
         help="Include wallclock timestamps in per-frame events.",
     )
+    parser.add_argument(
+        "--real-time-mode",
+        type=int,
+        choices=[0, 1],
+        default=0,
+        help="Enable real-time non-turn-taking mode (1=yes, 0=no).",
+    )
+    parser.add_argument(
+        "--real-time-fps",
+        type=float,
+        default=60.0,
+        help="Environment FPS used to convert agent latency into catch-up frames.",
+    )
     parser.add_argument("--logdir", type=str, default="./runs", help="Base output directory.")
     return parser.parse_args()
 
@@ -297,6 +310,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--dqn-decision-interval must be > 0 for --agent tinydqn.")
     if str(args.agent) == "ppo" and int(getattr(args, "ppo_decision_interval", 1)) <= 0:
         raise ValueError("--ppo-decision-interval must be > 0 for --agent ppo.")
+    if float(args.real_time_fps) <= 0.0:
+        raise ValueError("--real-time-fps must be > 0.")
 
 
 class _FrameFromStepAdapter:
@@ -514,6 +529,8 @@ def build_config_payload(
             "decision_interval": int(args.ppo_decision_interval),
         },
         "timestamps": bool(args.timestamps),
+        "real_time_mode": bool(args.real_time_mode),
+        "real_time_fps": float(args.real_time_fps),
         "logdir": str(Path(args.logdir)),
         "run_dir": str(run_dir),
         "resolved_action_set": list(env.action_set),
@@ -523,6 +540,8 @@ def build_config_payload(
             "delay_frames": runner_config.delay_frames,
             "default_action_idx": runner_config.default_action_idx,
             "include_timestamps": runner_config.include_timestamps,
+            "real_time_mode": bool(getattr(runner_config, "real_time_mode", False)),
+            "real_time_fps": float(getattr(runner_config, "real_time_fps", 60.0)),
         },
     }
     if isinstance(runner_config, RunnerConfig):
@@ -690,6 +709,8 @@ def main() -> None:
             reset_log_interval=int(args.compat_log_resets_every),
             log_rank=log_rank,
             log_name=log_name,
+            real_time_mode=bool(args.real_time_mode),
+            real_time_fps=float(args.real_time_fps),
         )
     else:
         runner_config = RunnerConfig(
