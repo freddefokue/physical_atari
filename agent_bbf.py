@@ -73,30 +73,24 @@ except ModuleNotFoundError:
     BenchmarkConfig = BenchmarkRunner = CycleConfig = EnvironmentHandle = object  # type: ignore
     FrameRunnerContext = FrameRunnerResult = GameSpec = GameResult = object  # type: ignore
 
+# Always-needed defaults (single-game and core agent logic must not depend on common).
+FRAME_SKIP = 4
+ATARI_CANONICAL_ACTIONS = 18
+PROGRESS_POINTS = 10
+DEFAULT_CONTINUAL_GAMES = ("ALE/Breakout-v5", "ALE/Pong-v5")
+DEFAULT_CONTINUAL_CYCLES = 1
+DEFAULT_CONTINUAL_CYCLE_FRAMES = 100_000
+
+# Optional continual-mode helpers from common.
 try:
-    # Import shared utilities from common module
     from common import (
-        FRAME_SKIP,
-        ATARI_CANONICAL_ACTIONS,
-        PROGRESS_POINTS,
-        DEFAULT_CONTINUAL_GAMES,
-        DEFAULT_CONTINUAL_CYCLES,
-        DEFAULT_CONTINUAL_CYCLE_FRAMES,
         make_atari_env,
         update_progress_graphs,
         write_continual_summary,
         create_logger,
     )
-except ModuleNotFoundError:
-    FRAME_SKIP = 4
-    ATARI_CANONICAL_ACTIONS = 18
-    PROGRESS_POINTS = 10
-    DEFAULT_CONTINUAL_GAMES = ("ALE/Breakout-v5", "ALE/Pong-v5")
-    DEFAULT_CONTINUAL_CYCLES = 1
-    DEFAULT_CONTINUAL_CYCLE_FRAMES = 100_000
-
-    def make_atari_env(*args, **kwargs):  # type: ignore
-        raise RuntimeError("common.make_atari_env unavailable in this runtime.")
+except (ModuleNotFoundError, ImportError):
+    make_atari_env = None
 
     def update_progress_graphs(*args, **kwargs):  # type: ignore
         return None
@@ -2278,6 +2272,12 @@ def main():
     print(f"{'='*60}\n")
 
     if config.continual:
+        if make_atari_env is None:
+            raise RuntimeError(
+                "Continual mode requires the original 'common' package helpers "
+                "(make_atari_env, update_progress_graphs, write_continual_summary, create_logger) "
+                "on this branch. Single-game mode does not require them."
+            )
         # Create dummy env to get observation/action space for continual mode
         dummy_env = make_atari_env(config.env_id, config.seed)
         agent = Agent(dummy_env.observation_space, dummy_env.action_space, config)
