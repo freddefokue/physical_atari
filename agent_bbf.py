@@ -42,6 +42,13 @@ import torch.optim as optim
 from torch.amp import autocast, GradScaler
 from torch.profiler import profile, schedule, tensorboard_trace_handler, ProfilerActivity, record_function
 try:
+    import ale_py
+except ImportError:
+    ale_py = None  # type: ignore[assignment]
+else:
+    gym.register_envs(ale_py)
+
+try:
     from torch.utils.tensorboard import SummaryWriter
 except ModuleNotFoundError:  # Optional runtime dependency.
     class SummaryWriter:  # type: ignore[override]
