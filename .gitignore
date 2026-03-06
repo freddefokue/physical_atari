@@ -54,3 +54,15 @@ best_model_MsPacmanNoFrameskip-v4.pt
 best_model_PongNoFrameskip-v4.pt
 best_model_SpaceInvadersNoFrameskip-v4.pt
 multigame_seed0_20260226_234314/events.jsonl
+
+# multigame experiment runs
+multigame_seed0_20260227_235627/
+multigame_seed0_20260302_185221/
+multigame_seed0_20260302_214305/
+
+# one-off files
+codex_realtime_prompt.md
+ppo_pong_single_2M_skip4.log
+experiment_results_summary.md
+training_logs_multigame_13_5M_realtime.txt
+training_logs_multigame_ppo_13_5M.txt
