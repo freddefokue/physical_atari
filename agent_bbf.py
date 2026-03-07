@@ -1511,12 +1511,13 @@ class Agent:
         next_probabilities: torch.Tensor,
         support: torch.Tensor,
     ) -> torch.Tensor:
-        v_min = float(support[0].item())
-        v_max = float(support[-1].item())
+        # Keep support bounds on-device to avoid host sync from `.item()`.
+        v_min = support[0]
+        v_max = support[-1]
         n_atoms = int(support.shape[0])
-        delta_z = (v_max - v_min) / (n_atoms - 1)
+        delta_z = (v_max - v_min) / float(n_atoms - 1)
 
-        tz = target_support.clamp(v_min, v_max)
+        tz = target_support.clamp(min=v_min, max=v_max)
         b = (tz - v_min) / delta_z
         l = b.floor().long().clamp_(0, n_atoms - 1)
         u = b.ceil().long().clamp_(0, n_atoms - 1)
@@ -1723,10 +1724,10 @@ class Agent:
         indices = np.asarray(prepared["indices"], dtype=np.int32)
         torch_batch_cpu = prepared["torch_batch_cpu"]
 
-        all_dqn_losses = []
-        all_losses = []
-        all_spr = []
-        all_avg_q = []
+        all_dqn_losses: List[torch.Tensor] = []
+        all_losses: List[torch.Tensor] = []
+        all_spr: List[torch.Tensor] = []
+        all_avg_q: List[torch.Tensor] = []
 
         bsz = int(self.config.batch_size)
         with rf("batch/tensorize"):
@@ -1745,10 +1746,11 @@ class Agent:
             with rf("batch/chunk"):
                 out = self._train_batch_chunk(chunk, tau=tau)
 
-            all_dqn_losses.append(out["dqn_loss"].detach().cpu().numpy())
-            all_losses.append(float(out["loss"].item()))
-            all_spr.append(float(out["spr_loss"].mean().item()))
-            all_avg_q.append(float(out["avg_q"].item()))
+            # Keep stats on device during grouped updates to avoid per-chunk sync.
+            all_dqn_losses.append(out["dqn_loss"].detach())
+            all_losses.append(out["loss"].detach())
+            all_spr.append(out["spr_loss"].detach().mean())
+            all_avg_q.append(out["avg_q"].detach())
 
             self.grad_steps += 1
             self.grad_step = self.grad_steps
@@ -1758,13 +1760,26 @@ class Agent:
 
         if self.config.use_per:
             with rf("prio/update"):
-                priorities = np.sqrt(np.concatenate(all_dqn_losses, axis=0) + 1e-10)
-                self.replay_buffer.set_priority(indices, priorities.astype(np.float32))
+                priorities_t = torch.sqrt(torch.cat(all_dqn_losses, dim=0) + 1e-10)
+                priorities_np = priorities_t.to(dtype=torch.float32).cpu().numpy()
+                self.replay_buffer.set_priority(indices, priorities_np)
+
+        with rf("batch/reduce_stats"):
+            stats_t = torch.stack(
+                (
+                    torch.stack(all_losses).mean(),
+                    torch.stack(all_spr).mean(),
+                    torch.stack(all_avg_q).mean(),
+                )
+            )
+            if stats_t.device.type != "cpu":
+                stats_t = stats_t.cpu()
+            loss_value, spr_value, avg_q_value = stats_t.tolist()
 
         return {
-            "loss": float(np.mean(all_losses)),
-            "spr_loss": float(np.mean(all_spr)),
-            "avg_q": float(np.mean(all_avg_q)),
+            "loss": float(loss_value),
+            "spr_loss": float(spr_value),
+            "avg_q": float(avg_q_value),
             "gamma": float(curr_gamma),
             "n_step": int(curr_n),
         }
