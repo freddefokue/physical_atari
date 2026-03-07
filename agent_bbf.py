@@ -1676,6 +1676,9 @@ class Agent:
             self.grad_steps += 1
             self.grad_step = self.grad_steps
             self.cycle_grad_steps += 1
+            if self.profiler_active:
+                # Keep profiler steps aligned with optimizer updates for detailed traces.
+                self._step_profiler()
 
         if self.config.use_per:
             with rf("prio/update"):
@@ -1737,7 +1740,6 @@ class Agent:
         else:
             self.last_obs = self._extract_frame(next_observation)
 
-        self._step_profiler()
         return train_stats
 
     def save_model(self, path: str):
@@ -1869,7 +1871,7 @@ def agent_bbf_frame_runner(
             on_trace_ready=tensorboard_trace_handler(profiler_dir),
             record_shapes=True,
             profile_memory=True,
-            with_stack=False,  # Disabled due to PyTorch bug with Python stack tracing
+            with_stack=True,
         )
         agent.profiler.start()
         agent.profiler_active = True
@@ -2387,7 +2389,7 @@ def main():
                 on_trace_ready=tensorboard_trace_handler(profiler_dir),
                 record_shapes=True,
                 profile_memory=True,
-                with_stack=False,
+                with_stack=True,
             )
             agent.profiler.start()
             agent.profiler_active = True
