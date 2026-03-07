@@ -31,7 +31,7 @@ import time
 from dataclasses import dataclass
 import json
 from contextlib import nullcontext
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 import gymnasium as gym
 import numpy as np
@@ -1205,6 +1205,19 @@ class Agent:
         self.game_frame_counters: Dict[str, int] = {}
         self.profiler = None
         self.profiler_active = False
+        self._pin_replay_memory = self.device.type == "cuda"
+        self._replay_train_keys = (
+            "state",
+            "action",
+            "return",
+            "discount",
+            "next_state",
+            "terminal",
+            "same_trajectory",
+            "loss_weights",
+        )
+        self._h2d_stream = torch.cuda.Stream(device=self.device) if self.device.type == "cuda" else None
+        self._h2d_chunk_buffers: List[Dict[str, torch.Tensor]] = [{}, {}]
 
     def _set_replay_settings(self) -> None:
         n_envs = 1
@@ -1625,12 +1638,13 @@ class Agent:
             "avg_q": avg_q.detach(),
         }
 
-    def _training_step_update(self, offline: bool = False):
-        del offline
-        rf = record_function if self.profiler_active else (lambda _: nullcontext())
-        curr_n = int(self.update_horizon_scheduler(self.cycle_grad_steps))
-        curr_gamma = float(self.gamma_scheduler(self.cycle_grad_steps))
-        tau = float(self.target_update_tau_scheduler(self.cycle_grad_steps))
+    def _prepare_replay_batch_cpu(self, cycle_grad_steps: int, rf=None) -> Dict[str, Any]:
+        if rf is None:
+            rf = lambda _: nullcontext()
+
+        curr_n = int(self.update_horizon_scheduler(cycle_grad_steps))
+        curr_gamma = float(self.gamma_scheduler(cycle_grad_steps))
+        tau = float(self.target_update_tau_scheduler(cycle_grad_steps))
 
         with rf("rb/sample"):
             replay_batch = self.replay_buffer.sample_transition_batch(
@@ -1640,9 +1654,8 @@ class Agent:
                 subseq_len=self.seq_len,
             )
 
-        indices = replay_batch["indices"]
+        indices = np.asarray(replay_batch["indices"], dtype=np.int32)
         sampling_probabilities = replay_batch["sampling_probabilities"]
-
         if self.config.use_per:
             probs = np.asarray(sampling_probabilities, dtype=np.float32)
             loss_weights_np = 1.0 / np.sqrt(probs + 1e-10)
@@ -1650,13 +1663,66 @@ class Agent:
         else:
             loss_weights_np = np.ones((indices.shape[0],), dtype=np.float32)
 
-        with rf("batch/tensorize"):
-            torch_batch = {
-                k: torch.as_tensor(v, device=self.device)
-                for k, v in replay_batch.items()
-                if k != "sampling_probabilities"
-            }
-            torch_batch["loss_weights"] = torch.as_tensor(loss_weights_np, device=self.device)
+        with rf("batch/tensorize_cpu"):
+            torch_batch_cpu: Dict[str, torch.Tensor] = {}
+            for key in ("state", "action", "return", "discount", "next_state", "terminal", "same_trajectory"):
+                value = replay_batch[key]
+                tensor = torch.as_tensor(value)
+                if self._pin_replay_memory:
+                    tensor = tensor.pin_memory()
+                torch_batch_cpu[key] = tensor
+
+            loss_weights = torch.as_tensor(loss_weights_np)
+            if self._pin_replay_memory:
+                loss_weights = loss_weights.pin_memory()
+            torch_batch_cpu["loss_weights"] = loss_weights
+
+        return {
+            "cycle_grad_steps": int(cycle_grad_steps),
+            "n_step": int(curr_n),
+            "gamma": float(curr_gamma),
+            "tau": float(tau),
+            "indices": indices,
+            "torch_batch_cpu": torch_batch_cpu,
+        }
+
+    def _get_h2d_chunk_buffer(self, slot: int, key: str, src: torch.Tensor) -> torch.Tensor:
+        dst = self._h2d_chunk_buffers[slot].get(key)
+        if dst is None or dst.shape != src.shape or dst.dtype != src.dtype:
+            dst = torch.empty(src.shape, dtype=src.dtype, device=self.device)
+            self._h2d_chunk_buffers[slot][key] = dst
+        return dst
+
+    def _launch_chunk_h2d(
+        self,
+        torch_batch_cpu: Dict[str, torch.Tensor],
+        sl: slice,
+        slot: int,
+        rf,
+    ) -> tuple[Dict[str, torch.Tensor], torch.cuda.Event]:
+        if self._h2d_stream is None:
+            raise RuntimeError("H2D stream requested on non-CUDA device.")
+
+        chunk: Dict[str, torch.Tensor] = {}
+        with rf("batch/tensorize"), torch.cuda.stream(self._h2d_stream):
+            for key in self._replay_train_keys:
+                src = torch_batch_cpu[key][sl]
+                dst = self._get_h2d_chunk_buffer(slot, key, src)
+                dst.copy_(src, non_blocking=True)
+                chunk[key] = dst
+            event = torch.cuda.Event()
+            event.record(self._h2d_stream)
+        return chunk, event
+
+    def _training_step_update_from_prepared(self, prepared: Dict[str, Any], rf=None):
+        if rf is None:
+            rf = lambda _: nullcontext()
+
+        curr_n = int(prepared["n_step"])
+        curr_gamma = float(prepared["gamma"])
+        tau = float(prepared["tau"])
+        indices = np.asarray(prepared["indices"], dtype=np.int32)
+        torch_batch_cpu = prepared["torch_batch_cpu"]
 
         all_dqn_losses = []
         all_losses = []
@@ -1664,31 +1730,68 @@ class Agent:
         all_avg_q = []
 
         bsz = int(self.config.batch_size)
-        for i in range(self._batches_to_group):
-            sl = slice(i * bsz, (i + 1) * bsz)
-            chunk = {
-                k: (v[sl] if isinstance(v, torch.Tensor) and v.ndim > 0 and v.shape[0] == bsz * self._batches_to_group else v)
-                for k, v in torch_batch.items()
-            }
-            with rf("batch/chunk"):
-                out = self._train_batch_chunk(chunk, tau=tau)
+        if self.device.type == "cuda" and self._h2d_stream is not None and self._batches_to_group > 0:
+            curr_slot = 0
+            curr_sl = slice(0, bsz)
+            curr_chunk, curr_event = self._launch_chunk_h2d(torch_batch_cpu, curr_sl, curr_slot, rf)
+            current_stream = torch.cuda.current_stream(device=self.device)
 
-            all_dqn_losses.append(out["dqn_loss"].detach().cpu().numpy())
-            all_losses.append(float(out["loss"].item()))
-            all_spr.append(float(out["spr_loss"].mean().item()))
-            all_avg_q.append(float(out["avg_q"].item()))
+            for i in range(self._batches_to_group):
+                with rf("batch/tensorize_wait"):
+                    current_stream.wait_event(curr_event)
 
-            self.grad_steps += 1
-            self.grad_step = self.grad_steps
-            self.cycle_grad_steps += 1
-            if self.profiler_active:
-                # Keep profiler steps aligned with optimizer updates for detailed traces.
-                self._step_profiler()
+                next_chunk = None
+                next_event = None
+                next_slot = curr_slot
+                if i + 1 < self._batches_to_group:
+                    next_slot = 1 - curr_slot
+                    next_sl = slice((i + 1) * bsz, (i + 2) * bsz)
+                    next_chunk, next_event = self._launch_chunk_h2d(torch_batch_cpu, next_sl, next_slot, rf)
+
+                with rf("batch/chunk"):
+                    out = self._train_batch_chunk(curr_chunk, tau=tau)
+
+                all_dqn_losses.append(out["dqn_loss"].detach().cpu().numpy())
+                all_losses.append(float(out["loss"].item()))
+                all_spr.append(float(out["spr_loss"].mean().item()))
+                all_avg_q.append(float(out["avg_q"].item()))
+
+                self.grad_steps += 1
+                self.grad_step = self.grad_steps
+                self.cycle_grad_steps += 1
+                if self.profiler_active:
+                    # Keep profiler steps aligned with optimizer updates for detailed traces.
+                    self._step_profiler()
+
+                if next_chunk is not None and next_event is not None:
+                    curr_chunk, curr_event, curr_slot = next_chunk, next_event, next_slot
+        else:
+            for i in range(self._batches_to_group):
+                sl = slice(i * bsz, (i + 1) * bsz)
+                with rf("batch/tensorize"):
+                    chunk = {
+                        key: torch_batch_cpu[key][sl].to(self.device)
+                        for key in self._replay_train_keys
+                    }
+
+                with rf("batch/chunk"):
+                    out = self._train_batch_chunk(chunk, tau=tau)
+
+                all_dqn_losses.append(out["dqn_loss"].detach().cpu().numpy())
+                all_losses.append(float(out["loss"].item()))
+                all_spr.append(float(out["spr_loss"].mean().item()))
+                all_avg_q.append(float(out["avg_q"].item()))
+
+                self.grad_steps += 1
+                self.grad_step = self.grad_steps
+                self.cycle_grad_steps += 1
+                if self.profiler_active:
+                    self._step_profiler()
 
         if self.config.use_per:
             with rf("prio/update"):
                 priorities = np.sqrt(np.concatenate(all_dqn_losses, axis=0) + 1e-10)
-                self.replay_buffer.set_priority(indices.astype(np.int32), priorities.astype(np.float32))
+                self.replay_buffer.set_priority(indices, priorities.astype(np.float32))
 
         return {
             "loss": float(np.mean(all_losses)),
@@ -1697,6 +1800,21 @@ class Agent:
             "gamma": float(curr_gamma),
             "n_step": int(curr_n),
         }
+
+    def _training_step_update(self, offline: bool = False):
+        del offline
+        rf = record_function if self.profiler_active else (lambda _: nullcontext())
+        prepared = self._prepare_replay_batch_cpu(self.cycle_grad_steps, rf=rf)
+        return self._training_step_update_from_prepared(prepared, rf=rf)
+
+    def _run_training_updates(self, num_updates: int):
+        if num_updates <= 0:
+            return None
+
+        train_stats = None
+        for _ in range(num_updates):
+            train_stats = self._training_step_update(offline=False)
+        return train_stats
 
     def step(
         self,
@@ -1728,8 +1846,7 @@ class Agent:
             and self.training_steps >= self.learning_ready_step
             and self.training_steps % self.update_period == 0
         ):
-            for _ in range(self._num_updates_per_train_step):
-                train_stats = self._training_step_update(offline=False)
+            train_stats = self._run_training_updates(self._num_updates_per_train_step)
 
         allow_resets = not (self.config.continual and not self.config.allow_resets_in_continual)
         if allow_resets and int(self.config.reset_every) > 0 and self.training_steps > self.next_reset:
