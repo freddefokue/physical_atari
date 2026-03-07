@@ -1,0 +1,111 @@
+/local/home/fdefokue/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:58: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+Logging run to ./results_final_bbf/Breakout-v5__agent_bbf__1__1772800189
+
+============================================================
+RUN CONFIGURATION
+============================================================
+  Environment:    ALE/Breakout-v5
+  Replay Ratio:   64
+  Reset Interval: 0 (env steps)
+  No Resets After:100000 (env steps)
+  Total Steps:    3000
+  Seed:           1
+  Learning Rate:  0.0001
+  Full Actions:   False
+  Continual:      False
+  Eval Episodes:  0
+  Eval Epsilon:   0.001
+  Eval Sticky:    0.0
+  Eval Sel Every: 0
+  Eval Sel Start: 25000
+  Eval Sel Eps:   2
+============================================================
+
+A.L.E: Arcade Learning Environment (version 0.10.1+unknown)
+[Powered by Stella]
+Starting Training Loop...
+Warmup: Filling Replay Buffer 0/500
+Step: 0 | SPS: 0 (env-only)
+Warmup: Filling Replay Buffer 100/500
+Step: 100 | SPS: 648 (env-only)
+Warmup: Filling Replay Buffer 200/500
+Step: 200 | SPS: 624 (env-only)
+Warmup: Filling Replay Buffer 300/500
+Step: 300 | SPS: 628 (env-only)
+Warmup: Filling Replay Buffer 400/500
+Step: 400 | SPS: 620 (env-only)
+Warmup: Filling Replay Buffer 500/500
+*** Training started at step 500 ***
+Step: 549 | Grad: 100 | Loss: 2.309 | SPR: 0.005 | AvgQ: 0.13 | Eps: 0.975 | SPS: 4 | ETA: 10.2 min
+Step: 599 | Grad: 200 | Loss: 2.035 | SPR: 0.002 | AvgQ: 0.12 | Eps: 0.950 | SPS: 4 | ETA: 10.0 min
+Step: 649 | Grad: 300 | Loss: 1.841 | SPR: 0.001 | AvgQ: 0.17 | Eps: 0.925 | SPS: 4 | ETA: 9.8 min
+Step: 699 | Grad: 400 | Loss: 0.931 | SPR: 0.001 | AvgQ: 0.18 | Eps: 0.900 | SPS: 4 | ETA: 9.6 min
+Step: 749 | Grad: 500 | Loss: 0.432 | SPR: 0.002 | AvgQ: 0.15 | Eps: 0.875 | SPS: 4 | ETA: 9.4 min
+Step: 799 | Grad: 600 | Loss: 0.383 | SPR: 0.003 | AvgQ: 0.16 | Eps: 0.850 | SPS: 4 | ETA: 9.2 min
+Step: 849 | Grad: 700 | Loss: 0.309 | SPR: 0.006 | AvgQ: 0.19 | Eps: 0.825 | SPS: 4 | ETA: 9.0 min
+Step: 899 | Grad: 800 | Loss: 0.318 | SPR: 0.009 | AvgQ: 0.20 | Eps: 0.800 | SPS: 4 | ETA: 8.8 min
+Step: 949 | Grad: 900 | Loss: 0.350 | SPR: 0.009 | AvgQ: 0.26 | Eps: 0.775 | SPS: 4 | ETA: 8.5 min
+Step: 999 | Grad: 1000 | Loss: 0.338 | SPR: 0.010 | AvgQ: 0.29 | Eps: 0.750 | SPS: 4 | ETA: 8.3 min
+Step: 1049 | Grad: 1100 | Loss: 0.336 | SPR: 0.009 | AvgQ: 0.36 | Eps: 0.725 | SPS: 4 | ETA: 8.1 min
+Step: 1099 | Grad: 1200 | Loss: 0.343 | SPR: 0.010 | AvgQ: 0.44 | Eps: 0.700 | SPS: 4 | ETA: 7.9 min
+Step: 1149 | Grad: 1300 | Loss: 0.438 | SPR: 0.013 | AvgQ: 0.43 | Eps: 0.675 | SPS: 4 | ETA: 7.7 min
+Step: 1199 | Grad: 1400 | Loss: 0.537 | SPR: 0.011 | AvgQ: 0.44 | Eps: 0.650 | SPS: 4 | ETA: 7.5 min
+Step: 1249 | Grad: 1500 | Loss: 0.481 | SPR: 0.012 | AvgQ: 0.49 | Eps: 0.625 | SPS: 4 | ETA: 7.3 min
+Step: 1299 | Grad: 1600 | Loss: 0.360 | SPR: 0.015 | AvgQ: 0.44 | Eps: 0.600 | SPS: 4 | ETA: 7.1 min
+Step: 1349 | Grad: 1700 | Loss: 0.446 | SPR: 0.014 | AvgQ: 0.61 | Eps: 0.575 | SPS: 4 | ETA: 6.9 min
+Step: 1399 | Grad: 1800 | Loss: 0.718 | SPR: 0.016 | AvgQ: 0.54 | Eps: 0.550 | SPS: 4 | ETA: 6.7 min
+Step: 1449 | Grad: 1900 | Loss: 0.405 | SPR: 0.018 | AvgQ: 0.59 | Eps: 0.525 | SPS: 4 | ETA: 6.5 min
+Step: 1499 | Grad: 2000 | Loss: 0.724 | SPR: 0.019 | AvgQ: 0.66 | Eps: 0.500 | SPS: 4 | ETA: 6.3 min
+Step: 1549 | Grad: 2100 | Loss: 0.456 | SPR: 0.019 | AvgQ: 0.70 | Eps: 0.475 | SPS: 4 | ETA: 6.0 min
+Step: 1599 | Grad: 2200 | Loss: 0.413 | SPR: 0.016 | AvgQ: 0.63 | Eps: 0.450 | SPS: 4 | ETA: 5.8 min
+Step: 1649 | Grad: 2300 | Loss: 0.609 | SPR: 0.019 | AvgQ: 0.69 | Eps: 0.425 | SPS: 4 | ETA: 5.6 min
+Step: 1699 | Grad: 2400 | Loss: 0.546 | SPR: 0.023 | AvgQ: 0.73 | Eps: 0.400 | SPS: 4 | ETA: 5.4 min
+Step: 1749 | Grad: 2500 | Loss: 0.432 | SPR: 0.021 | AvgQ: 0.64 | Eps: 0.375 | SPS: 4 | ETA: 5.2 min
+Step: 1799 | Grad: 2600 | Loss: 0.575 | SPR: 0.020 | AvgQ: 0.73 | Eps: 0.350 | SPS: 4 | ETA: 5.0 min
+Step: 1849 | Grad: 2700 | Loss: 0.659 | SPR: 0.023 | AvgQ: 0.78 | Eps: 0.325 | SPS: 4 | ETA: 4.8 min
+Step: 1899 | Grad: 2800 | Loss: 0.498 | SPR: 0.019 | AvgQ: 0.65 | Eps: 0.300 | SPS: 4 | ETA: 4.6 min
+Step: 1949 | Grad: 2900 | Loss: 0.590 | SPR: 0.021 | AvgQ: 0.77 | Eps: 0.275 | SPS: 4 | ETA: 4.4 min
+Step: 1999 | Grad: 3000 | Loss: 0.460 | SPR: 0.031 | AvgQ: 0.76 | Eps: 0.250 | SPS: 4 | ETA: 4.2 min
+Step: 2049 | Grad: 3100 | Loss: 0.333 | SPR: 0.023 | AvgQ: 0.79 | Eps: 0.225 | SPS: 4 | ETA: 4.0 min
+Step: 2099 | Grad: 3200 | Loss: 0.323 | SPR: 0.022 | AvgQ: 0.76 | Eps: 0.200 | SPS: 4 | ETA: 3.8 min
+Step: 2149 | Grad: 3300 | Loss: 0.474 | SPR: 0.035 | AvgQ: 0.83 | Eps: 0.175 | SPS: 4 | ETA: 3.5 min
+Step: 2199 | Grad: 3400 | Loss: 0.374 | SPR: 0.025 | AvgQ: 0.77 | Eps: 0.150 | SPS: 4 | ETA: 3.3 min
+Step: 2249 | Grad: 3500 | Loss: 0.631 | SPR: 0.026 | AvgQ: 0.80 | Eps: 0.125 | SPS: 4 | ETA: 3.1 min
+Step: 2299 | Grad: 3600 | Loss: 0.668 | SPR: 0.027 | AvgQ: 0.84 | Eps: 0.100 | SPS: 4 | ETA: 2.9 min
+Step: 2349 | Grad: 3700 | Loss: 0.587 | SPR: 0.028 | AvgQ: 0.87 | Eps: 0.075 | SPS: 4 | ETA: 2.7 min
+Step: 2399 | Grad: 3800 | Loss: 0.339 | SPR: 0.023 | AvgQ: 0.81 | Eps: 0.050 | SPS: 4 | ETA: 2.5 min
+Step: 2449 | Grad: 3900 | Loss: 0.242 | SPR: 0.022 | AvgQ: 0.84 | Eps: 0.025 | SPS: 4 | ETA: 2.3 min
+Step: 2499 | Grad: 4000 | Loss: 0.502 | SPR: 0.026 | AvgQ: 0.85 | Eps: 0.000 | SPS: 4 | ETA: 2.1 min
+Step: 2549 | Grad: 4100 | Loss: 0.504 | SPR: 0.027 | AvgQ: 0.80 | Eps: 0.000 | SPS: 4 | ETA: 1.9 min
+Step: 2599 | Grad: 4200 | Loss: 0.570 | SPR: 0.026 | AvgQ: 0.77 | Eps: 0.000 | SPS: 4 | ETA: 1.7 min
+Step: 2649 | Grad: 4300 | Loss: 0.354 | SPR: 0.028 | AvgQ: 0.83 | Eps: 0.000 | SPS: 4 | ETA: 1.5 min
+Step: 2699 | Grad: 4400 | Loss: 0.362 | SPR: 0.023 | AvgQ: 0.92 | Eps: 0.000 | SPS: 4 | ETA: 1.3 min
+Step: 2749 | Grad: 4500 | Loss: 0.344 | SPR: 0.028 | AvgQ: 0.95 | Eps: 0.000 | SPS: 4 | ETA: 1.0 min
+Step: 2799 | Grad: 4600 | Loss: 0.412 | SPR: 0.030 | AvgQ: 0.79 | Eps: 0.000 | SPS: 4 | ETA: 0.8 min
+Step: 2849 | Grad: 4700 | Loss: 0.672 | SPR: 0.030 | AvgQ: 0.94 | Eps: 0.000 | SPS: 4 | ETA: 0.6 min
+Step: 2899 | Grad: 4800 | Loss: 0.586 | SPR: 0.041 | AvgQ: 0.89 | Eps: 0.000 | SPS: 4 | ETA: 0.4 min
+Step: 2949 | Grad: 4900 | Loss: 0.431 | SPR: 0.029 | AvgQ: 0.83 | Eps: 0.000 | SPS: 4 | ETA: 0.2 min
+Step: 2999 | Grad: 5000 | Loss: 0.405 | SPR: 0.029 | AvgQ: 0.84 | Eps: 0.000 | SPS: 4 | ETA: 0.0 min
+
+[EVAL:select_final] Starting evaluation: episodes=2, epsilon=0.0010, sticky_prob=0.000, clip_rewards=False
+[EVAL:select_final] Episode 1/2 Return=2 Length=5096
+[EVAL:select_final] Episode 2/2 Return=0 Length=6572
+[EVAL:select_final] Summary: mean=1.00, median=1.00, min=0.00, max=2.00, mean_len=5834.0
+    ★ New eval-best checkpoint at step 3000: mean return 1.00
+
+============================================================
+TRAINING COMPLETE - FINAL SUMMARY
+============================================================
+  Run Name:       Breakout-v5__agent_bbf__1__1772800189
+  Replay Ratio:   64
+  Reset Interval: 0 (env steps)
+  Seed:           1
+  Environment:    ALE/Breakout-v5
+  Total Time:     9.7 minutes
+  Grad Steps:     5000
+  Eval Best:      1.00 @ step 3000
+  Best Model:     ./results_final_bbf/Breakout-v5__agent_bbf__1__1772800189/best_model.pt
+============================================================
+
+Done.

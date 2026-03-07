@@ -1,0 +1,463 @@
+Logging run to ./results_final_bbf/Breakout-v5__agent_bbf__1__1772799448
+
+============================================================
+RUN CONFIGURATION
+============================================================
+  Environment:    ALE/Breakout-v5
+  Replay Ratio:   64
+  Reset Interval: 0 (env steps)
+  No Resets After:100000 (env steps)
+  Total Steps:    20000
+  Seed:           1
+  Learning Rate:  0.0001
+  Full Actions:   False
+  Continual:      False
+  Eval Episodes:  5
+  Eval Epsilon:   0.001
+  Eval Sticky:    0.0
+  Eval Sel Every: 5000
+  Eval Sel Start: 25000
+  Eval Sel Eps:   2
+============================================================
+
+Starting Training Loop...
+Warmup: Filling Replay Buffer 0/500
+Step: 0 | SPS: 0 (env-only)
+Warmup: Filling Replay Buffer 100/500
+Step: 100 | SPS: 650 (env-only)
+Warmup: Filling Replay Buffer 200/500
+Step: 200 | SPS: 628 (env-only)
+Warmup: Filling Replay Buffer 300/500
+Step: 300 | SPS: 634 (env-only)
+Warmup: Filling Replay Buffer 400/500
+Step: 400 | SPS: 625 (env-only)
+Warmup: Filling Replay Buffer 500/500
+*** Training started at step 500 ***
+Step: 549 | Grad: 100 | Loss: 2.293 | SPR: 0.005 | AvgQ: 0.10 | Eps: 0.975 | SPS: 4 | ETA: 81.0 min
+Step: 599 | Grad: 200 | Loss: 2.033 | SPR: 0.002 | AvgQ: 0.12 | Eps: 0.950 | SPS: 4 | ETA: 80.8 min
+Step: 649 | Grad: 300 | Loss: 1.903 | SPR: 0.001 | AvgQ: 0.18 | Eps: 0.925 | SPS: 4 | ETA: 80.6 min
+Step: 699 | Grad: 400 | Loss: 1.401 | SPR: 0.001 | AvgQ: 0.16 | Eps: 0.900 | SPS: 4 | ETA: 80.4 min
+Step: 749 | Grad: 500 | Loss: 0.724 | SPR: 0.002 | AvgQ: 0.16 | Eps: 0.875 | SPS: 4 | ETA: 80.2 min
+Step: 799 | Grad: 600 | Loss: 0.336 | SPR: 0.004 | AvgQ: 0.15 | Eps: 0.850 | SPS: 4 | ETA: 80.0 min
+Step: 849 | Grad: 700 | Loss: 0.447 | SPR: 0.005 | AvgQ: 0.18 | Eps: 0.825 | SPS: 4 | ETA: 79.8 min
+Step: 899 | Grad: 800 | Loss: 0.437 | SPR: 0.008 | AvgQ: 0.21 | Eps: 0.800 | SPS: 4 | ETA: 79.6 min
+Step: 949 | Grad: 900 | Loss: 0.384 | SPR: 0.010 | AvgQ: 0.27 | Eps: 0.775 | SPS: 4 | ETA: 79.4 min
+Step: 999 | Grad: 1000 | Loss: 0.521 | SPR: 0.009 | AvgQ: 0.32 | Eps: 0.750 | SPS: 4 | ETA: 79.2 min
+Step: 1049 | Grad: 1100 | Loss: 0.613 | SPR: 0.007 | AvgQ: 0.36 | Eps: 0.725 | SPS: 4 | ETA: 79.0 min
+Step: 1099 | Grad: 1200 | Loss: 0.392 | SPR: 0.008 | AvgQ: 0.38 | Eps: 0.700 | SPS: 4 | ETA: 78.8 min
+Step: 1149 | Grad: 1300 | Loss: 0.467 | SPR: 0.009 | AvgQ: 0.41 | Eps: 0.675 | SPS: 4 | ETA: 78.5 min
+Step: 1199 | Grad: 1400 | Loss: 0.310 | SPR: 0.010 | AvgQ: 0.44 | Eps: 0.650 | SPS: 4 | ETA: 78.3 min
+Step: 1249 | Grad: 1500 | Loss: 0.492 | SPR: 0.010 | AvgQ: 0.46 | Eps: 0.625 | SPS: 4 | ETA: 78.1 min
+Step: 1299 | Grad: 1600 | Loss: 0.344 | SPR: 0.011 | AvgQ: 0.57 | Eps: 0.600 | SPS: 4 | ETA: 77.9 min
+Step: 1349 | Grad: 1700 | Loss: 0.331 | SPR: 0.013 | AvgQ: 0.53 | Eps: 0.575 | SPS: 4 | ETA: 77.7 min
+Step: 1399 | Grad: 1800 | Loss: 0.284 | SPR: 0.013 | AvgQ: 0.55 | Eps: 0.550 | SPS: 4 | ETA: 77.5 min
+Step: 1449 | Grad: 1900 | Loss: 0.420 | SPR: 0.014 | AvgQ: 0.62 | Eps: 0.525 | SPS: 4 | ETA: 77.3 min
+Step: 1499 | Grad: 2000 | Loss: 0.437 | SPR: 0.015 | AvgQ: 0.59 | Eps: 0.500 | SPS: 4 | ETA: 77.1 min
+Step: 1549 | Grad: 2100 | Loss: 0.404 | SPR: 0.016 | AvgQ: 0.64 | Eps: 0.475 | SPS: 4 | ETA: 76.9 min
+Step: 1599 | Grad: 2200 | Loss: 0.368 | SPR: 0.016 | AvgQ: 0.66 | Eps: 0.450 | SPS: 4 | ETA: 76.7 min
+Step: 1649 | Grad: 2300 | Loss: 0.389 | SPR: 0.019 | AvgQ: 0.68 | Eps: 0.425 | SPS: 4 | ETA: 76.5 min
+Step: 1699 | Grad: 2400 | Loss: 0.324 | SPR: 0.018 | AvgQ: 0.72 | Eps: 0.400 | SPS: 4 | ETA: 76.3 min
+Step: 1749 | Grad: 2500 | Loss: 0.363 | SPR: 0.017 | AvgQ: 0.74 | Eps: 0.375 | SPS: 4 | ETA: 76.0 min
+Step: 1799 | Grad: 2600 | Loss: 0.440 | SPR: 0.016 | AvgQ: 0.71 | Eps: 0.350 | SPS: 4 | ETA: 75.8 min
+Step: 1849 | Grad: 2700 | Loss: 0.337 | SPR: 0.017 | AvgQ: 0.65 | Eps: 0.325 | SPS: 4 | ETA: 75.6 min
+Step: 1899 | Grad: 2800 | Loss: 0.322 | SPR: 0.020 | AvgQ: 0.80 | Eps: 0.300 | SPS: 4 | ETA: 75.4 min
+Step: 1949 | Grad: 2900 | Loss: 0.440 | SPR: 0.018 | AvgQ: 0.80 | Eps: 0.275 | SPS: 4 | ETA: 75.2 min
+Step: 1999 | Grad: 3000 | Loss: 0.342 | SPR: 0.020 | AvgQ: 0.73 | Eps: 0.250 | SPS: 4 | ETA: 75.0 min
+Step: 2049 | Grad: 3100 | Loss: 0.229 | SPR: 0.020 | AvgQ: 0.85 | Eps: 0.225 | SPS: 4 | ETA: 74.8 min
+Step: 2099 | Grad: 3200 | Loss: 0.515 | SPR: 0.020 | AvgQ: 0.89 | Eps: 0.200 | SPS: 4 | ETA: 74.6 min
+Step: 2149 | Grad: 3300 | Loss: 0.382 | SPR: 0.018 | AvgQ: 0.87 | Eps: 0.175 | SPS: 4 | ETA: 74.4 min
+Step: 2199 | Grad: 3400 | Loss: 0.466 | SPR: 0.022 | AvgQ: 0.85 | Eps: 0.150 | SPS: 4 | ETA: 74.2 min
+Step: 2249 | Grad: 3500 | Loss: 0.426 | SPR: 0.021 | AvgQ: 0.96 | Eps: 0.125 | SPS: 4 | ETA: 74.0 min
+Step: 2299 | Grad: 3600 | Loss: 0.342 | SPR: 0.022 | AvgQ: 0.84 | Eps: 0.100 | SPS: 4 | ETA: 73.8 min
+Step: 2349 | Grad: 3700 | Loss: 0.256 | SPR: 0.019 | AvgQ: 0.79 | Eps: 0.075 | SPS: 4 | ETA: 73.5 min
+Step: 2399 | Grad: 3800 | Loss: 0.315 | SPR: 0.020 | AvgQ: 0.87 | Eps: 0.050 | SPS: 4 | ETA: 73.3 min
+Step: 2449 | Grad: 3900 | Loss: 0.521 | SPR: 0.022 | AvgQ: 0.86 | Eps: 0.025 | SPS: 4 | ETA: 73.1 min
+Step: 2499 | Grad: 4000 | Loss: 0.467 | SPR: 0.027 | AvgQ: 0.82 | Eps: 0.000 | SPS: 4 | ETA: 72.9 min
+Step: 2549 | Grad: 4100 | Loss: 0.306 | SPR: 0.021 | AvgQ: 0.83 | Eps: 0.000 | SPS: 4 | ETA: 72.7 min
+Step: 2599 | Grad: 4200 | Loss: 0.140 | SPR: 0.021 | AvgQ: 0.86 | Eps: 0.000 | SPS: 4 | ETA: 72.5 min
+Step: 2649 | Grad: 4300 | Loss: 0.406 | SPR: 0.022 | AvgQ: 0.88 | Eps: 0.000 | SPS: 4 | ETA: 72.3 min
+Step: 2699 | Grad: 4400 | Loss: 0.466 | SPR: 0.026 | AvgQ: 0.95 | Eps: 0.000 | SPS: 4 | ETA: 72.1 min
+Step: 2749 | Grad: 4500 | Loss: 0.457 | SPR: 0.028 | AvgQ: 0.86 | Eps: 0.000 | SPS: 4 | ETA: 71.9 min
+Step: 2799 | Grad: 4600 | Loss: 0.370 | SPR: 0.024 | AvgQ: 0.91 | Eps: 0.000 | SPS: 4 | ETA: 71.7 min
+Step: 2849 | Grad: 4700 | Loss: 0.550 | SPR: 0.026 | AvgQ: 0.87 | Eps: 0.000 | SPS: 4 | ETA: 71.5 min
+Step: 2899 | Grad: 4800 | Loss: 0.385 | SPR: 0.024 | AvgQ: 0.89 | Eps: 0.000 | SPS: 4 | ETA: 71.3 min
+Step: 2949 | Grad: 4900 | Loss: 0.571 | SPR: 0.026 | AvgQ: 1.01 | Eps: 0.000 | SPS: 4 | ETA: 71.0 min
+Step: 2999 | Grad: 5000 | Loss: 0.400 | SPR: 0.028 | AvgQ: 0.87 | Eps: 0.000 | SPS: 4 | ETA: 70.8 min
+Step: 3049 | Grad: 5100 | Loss: 0.227 | SPR: 0.027 | AvgQ: 1.04 | Eps: 0.000 | SPS: 4 | ETA: 70.6 min
+Step: 3099 | Grad: 5200 | Loss: 0.399 | SPR: 0.035 | AvgQ: 0.95 | Eps: 0.000 | SPS: 4 | ETA: 70.4 min
+Step: 3149 | Grad: 5300 | Loss: 0.580 | SPR: 0.031 | AvgQ: 0.96 | Eps: 0.000 | SPS: 4 | ETA: 70.2 min
+Step: 3199 | Grad: 5400 | Loss: 0.602 | SPR: 0.027 | AvgQ: 0.88 | Eps: 0.000 | SPS: 4 | ETA: 70.0 min
+Step: 3249 | Grad: 5500 | Loss: 0.488 | SPR: 0.026 | AvgQ: 1.01 | Eps: 0.000 | SPS: 4 | ETA: 69.8 min
+Step: 3299 | Grad: 5600 | Loss: 0.477 | SPR: 0.026 | AvgQ: 0.99 | Eps: 0.000 | SPS: 4 | ETA: 69.6 min
+Step: 3349 | Grad: 5700 | Loss: 0.570 | SPR: 0.030 | AvgQ: 1.08 | Eps: 0.000 | SPS: 4 | ETA: 69.4 min
+Step: 3399 | Grad: 5800 | Loss: 0.428 | SPR: 0.029 | AvgQ: 0.94 | Eps: 0.000 | SPS: 4 | ETA: 69.2 min
+Step: 3449 | Grad: 5900 | Loss: 0.660 | SPR: 0.027 | AvgQ: 1.04 | Eps: 0.000 | SPS: 4 | ETA: 69.0 min
+Step: 3499 | Grad: 6000 | Loss: 0.253 | SPR: 0.024 | AvgQ: 1.01 | Eps: 0.000 | SPS: 4 | ETA: 68.8 min
+Step: 3549 | Grad: 6100 | Loss: 0.458 | SPR: 0.027 | AvgQ: 1.10 | Eps: 0.000 | SPS: 4 | ETA: 68.5 min
+Step: 3599 | Grad: 6200 | Loss: 0.184 | SPR: 0.030 | AvgQ: 1.13 | Eps: 0.000 | SPS: 4 | ETA: 68.3 min
+Step: 3649 | Grad: 6300 | Loss: 0.518 | SPR: 0.036 | AvgQ: 1.06 | Eps: 0.000 | SPS: 4 | ETA: 68.1 min
+Step: 3699 | Grad: 6400 | Loss: 0.493 | SPR: 0.030 | AvgQ: 1.01 | Eps: 0.000 | SPS: 4 | ETA: 67.9 min
+Step: 3749 | Grad: 6500 | Loss: 0.351 | SPR: 0.030 | AvgQ: 1.05 | Eps: 0.000 | SPS: 4 | ETA: 67.7 min
+Step: 3799 | Grad: 6600 | Loss: 0.447 | SPR: 0.034 | AvgQ: 1.14 | Eps: 0.000 | SPS: 4 | ETA: 67.5 min
+Step: 3849 | Grad: 6700 | Loss: 0.532 | SPR: 0.030 | AvgQ: 1.14 | Eps: 0.000 | SPS: 4 | ETA: 67.3 min
+Step: 3899 | Grad: 6800 | Loss: 0.399 | SPR: 0.032 | AvgQ: 1.05 | Eps: 0.000 | SPS: 4 | ETA: 67.1 min
+Step: 3949 | Grad: 6900 | Loss: 0.457 | SPR: 0.033 | AvgQ: 1.16 | Eps: 0.000 | SPS: 4 | ETA: 66.9 min
+Step: 3999 | Grad: 7000 | Loss: 0.458 | SPR: 0.030 | AvgQ: 1.17 | Eps: 0.000 | SPS: 4 | ETA: 66.7 min
+Step: 4049 | Grad: 7100 | Loss: 0.427 | SPR: 0.028 | AvgQ: 1.06 | Eps: 0.000 | SPS: 4 | ETA: 66.5 min
+Step: 4099 | Grad: 7200 | Loss: 0.600 | SPR: 0.037 | AvgQ: 1.19 | Eps: 0.000 | SPS: 4 | ETA: 66.3 min
+Step: 4149 | Grad: 7300 | Loss: 0.764 | SPR: 0.032 | AvgQ: 1.20 | Eps: 0.000 | SPS: 4 | ETA: 66.0 min
+Step: 4199 | Grad: 7400 | Loss: 0.429 | SPR: 0.036 | AvgQ: 1.25 | Eps: 0.000 | SPS: 4 | ETA: 65.8 min
+Step: 4249 | Grad: 7500 | Loss: 1.071 | SPR: 0.034 | AvgQ: 1.30 | Eps: 0.000 | SPS: 4 | ETA: 65.6 min
+Step: 4299 | Grad: 7600 | Loss: 0.344 | SPR: 0.030 | AvgQ: 1.22 | Eps: 0.000 | SPS: 4 | ETA: 65.4 min
+Step: 4349 | Grad: 7700 | Loss: 0.365 | SPR: 0.029 | AvgQ: 1.29 | Eps: 0.000 | SPS: 4 | ETA: 65.2 min
+Step: 4399 | Grad: 7800 | Loss: 0.453 | SPR: 0.031 | AvgQ: 1.26 | Eps: 0.000 | SPS: 4 | ETA: 65.0 min
+Step: 4449 | Grad: 7900 | Loss: 0.522 | SPR: 0.026 | AvgQ: 1.28 | Eps: 0.000 | SPS: 4 | ETA: 64.8 min
+Step: 4499 | Grad: 8000 | Loss: 0.610 | SPR: 0.026 | AvgQ: 1.25 | Eps: 0.000 | SPS: 4 | ETA: 64.6 min
+Step: 4549 | Grad: 8100 | Loss: 0.589 | SPR: 0.032 | AvgQ: 1.32 | Eps: 0.000 | SPS: 4 | ETA: 64.4 min
+Step: 4599 | Grad: 8200 | Loss: 0.536 | SPR: 0.032 | AvgQ: 1.39 | Eps: 0.000 | SPS: 4 | ETA: 64.2 min
+Step: 4649 | Grad: 8300 | Loss: 0.608 | SPR: 0.042 | AvgQ: 1.27 | Eps: 0.000 | SPS: 4 | ETA: 64.0 min
+Step: 4699 | Grad: 8400 | Loss: 0.591 | SPR: 0.035 | AvgQ: 1.23 | Eps: 0.000 | SPS: 4 | ETA: 63.8 min
+Step: 4749 | Grad: 8500 | Loss: 0.669 | SPR: 0.033 | AvgQ: 1.27 | Eps: 0.000 | SPS: 4 | ETA: 63.5 min
+Step: 4799 | Grad: 8600 | Loss: 0.773 | SPR: 0.030 | AvgQ: 1.34 | Eps: 0.000 | SPS: 4 | ETA: 63.3 min
+Step: 4849 | Grad: 8700 | Loss: 0.702 | SPR: 0.029 | AvgQ: 1.37 | Eps: 0.000 | SPS: 4 | ETA: 63.1 min
+Step: 4899 | Grad: 8800 | Loss: 0.447 | SPR: 0.029 | AvgQ: 1.34 | Eps: 0.000 | SPS: 4 | ETA: 62.9 min
+Step: 4949 | Grad: 8900 | Loss: 0.924 | SPR: 0.032 | AvgQ: 1.54 | Eps: 0.000 | SPS: 4 | ETA: 62.7 min
+Step: 4999 | Grad: 9000 | Loss: 0.807 | SPR: 0.036 | AvgQ: 1.24 | Eps: 0.000 | SPS: 4 | ETA: 62.5 min
+Step: 5049 | Grad: 9100 | Loss: 0.613 | SPR: 0.031 | AvgQ: 1.45 | Eps: 0.000 | SPS: 4 | ETA: 62.3 min
+Step: 5099 | Grad: 9200 | Loss: 0.818 | SPR: 0.030 | AvgQ: 1.30 | Eps: 0.000 | SPS: 4 | ETA: 62.1 min
+Step: 5149 | Grad: 9300 | Loss: 0.762 | SPR: 0.034 | AvgQ: 1.49 | Eps: 0.000 | SPS: 4 | ETA: 61.9 min
+Step: 5199 | Grad: 9400 | Loss: 0.671 | SPR: 0.033 | AvgQ: 1.45 | Eps: 0.000 | SPS: 4 | ETA: 61.7 min
+Step: 5249 | Grad: 9500 | Loss: 0.705 | SPR: 0.038 | AvgQ: 1.32 | Eps: 0.000 | SPS: 4 | ETA: 61.5 min
+Step: 5299 | Grad: 9600 | Loss: 0.740 | SPR: 0.030 | AvgQ: 1.35 | Eps: 0.000 | SPS: 4 | ETA: 61.3 min
+Step: 5349 | Grad: 9700 | Loss: 0.505 | SPR: 0.027 | AvgQ: 1.35 | Eps: 0.000 | SPS: 4 | ETA: 61.0 min
+Step: 5399 | Grad: 9800 | Loss: 0.631 | SPR: 0.029 | AvgQ: 1.39 | Eps: 0.000 | SPS: 4 | ETA: 60.8 min
+Step: 5449 | Grad: 9900 | Loss: 0.767 | SPR: 0.028 | AvgQ: 1.47 | Eps: 0.000 | SPS: 4 | ETA: 60.6 min
+Step: 5499 | Grad: 10000 | Loss: 0.729 | SPR: 0.040 | AvgQ: 1.42 | Eps: 0.000 | SPS: 4 | ETA: 60.4 min
+Step: 5549 | Grad: 10100 | Loss: 0.458 | SPR: 0.042 | AvgQ: 1.37 | Eps: 0.000 | SPS: 4 | ETA: 60.2 min
+Step: 5599 | Grad: 10200 | Loss: 0.780 | SPR: 0.050 | AvgQ: 1.51 | Eps: 0.000 | SPS: 4 | ETA: 60.0 min
+Step: 5649 | Grad: 10300 | Loss: 0.716 | SPR: 0.041 | AvgQ: 1.40 | Eps: 0.000 | SPS: 4 | ETA: 59.8 min
+Step: 5699 | Grad: 10400 | Loss: 0.587 | SPR: 0.040 | AvgQ: 1.24 | Eps: 0.000 | SPS: 4 | ETA: 59.6 min
+Step: 5749 | Grad: 10500 | Loss: 0.637 | SPR: 0.032 | AvgQ: 1.55 | Eps: 0.000 | SPS: 4 | ETA: 59.4 min
+Step: 5799 | Grad: 10600 | Loss: 0.530 | SPR: 0.033 | AvgQ: 1.63 | Eps: 0.000 | SPS: 4 | ETA: 59.2 min
+Step: 5849 | Grad: 10700 | Loss: 0.835 | SPR: 0.049 | AvgQ: 1.49 | Eps: 0.000 | SPS: 4 | ETA: 59.0 min
+Step: 5899 | Grad: 10800 | Loss: 0.513 | SPR: 0.034 | AvgQ: 1.41 | Eps: 0.000 | SPS: 4 | ETA: 58.8 min
+Step: 5949 | Grad: 10900 | Loss: 0.636 | SPR: 0.029 | AvgQ: 1.62 | Eps: 0.000 | SPS: 4 | ETA: 58.5 min
+Step: 5999 | Grad: 11000 | Loss: 0.736 | SPR: 0.033 | AvgQ: 1.49 | Eps: 0.000 | SPS: 4 | ETA: 58.3 min
+Step: 6049 | Grad: 11100 | Loss: 0.706 | SPR: 0.031 | AvgQ: 1.38 | Eps: 0.000 | SPS: 4 | ETA: 58.1 min
+Step: 6099 | Grad: 11200 | Loss: 0.751 | SPR: 0.043 | AvgQ: 1.51 | Eps: 0.000 | SPS: 4 | ETA: 57.9 min
+Step: 6149 | Grad: 11300 | Loss: 0.709 | SPR: 0.038 | AvgQ: 1.64 | Eps: 0.000 | SPS: 4 | ETA: 57.7 min
+Step: 6199 | Grad: 11400 | Loss: 0.833 | SPR: 0.040 | AvgQ: 1.62 | Eps: 0.000 | SPS: 4 | ETA: 57.5 min
+Step: 6249 | Grad: 11500 | Loss: 0.744 | SPR: 0.033 | AvgQ: 1.48 | Eps: 0.000 | SPS: 4 | ETA: 57.3 min
+Step: 6299 | Grad: 11600 | Loss: 0.691 | SPR: 0.030 | AvgQ: 1.46 | Eps: 0.000 | SPS: 4 | ETA: 57.1 min
+Step: 6349 | Grad: 11700 | Loss: 0.789 | SPR: 0.043 | AvgQ: 1.64 | Eps: 0.000 | SPS: 4 | ETA: 56.9 min
+Step: 6399 | Grad: 11800 | Loss: 0.589 | SPR: 0.032 | AvgQ: 1.65 | Eps: 0.000 | SPS: 4 | ETA: 56.7 min
+Step: 6449 | Grad: 11900 | Loss: 0.606 | SPR: 0.036 | AvgQ: 1.55 | Eps: 0.000 | SPS: 4 | ETA: 56.5 min
+Step: 6499 | Grad: 12000 | Loss: 0.714 | SPR: 0.040 | AvgQ: 1.61 | Eps: 0.000 | SPS: 4 | ETA: 56.3 min
+Step: 6549 | Grad: 12100 | Loss: 0.577 | SPR: 0.032 | AvgQ: 1.43 | Eps: 0.000 | SPS: 4 | ETA: 56.0 min
+Step: 6599 | Grad: 12200 | Loss: 0.856 | SPR: 0.031 | AvgQ: 1.64 | Eps: 0.000 | SPS: 4 | ETA: 55.8 min
+Step: 6649 | Grad: 12300 | Loss: 0.791 | SPR: 0.032 | AvgQ: 1.62 | Eps: 0.000 | SPS: 4 | ETA: 55.6 min
+Step: 6699 | Grad: 12400 | Loss: 0.672 | SPR: 0.032 | AvgQ: 1.63 | Eps: 0.000 | SPS: 4 | ETA: 55.4 min
+Step: 6749 | Grad: 12500 | Loss: 0.560 | SPR: 0.030 | AvgQ: 1.54 | Eps: 0.000 | SPS: 4 | ETA: 55.2 min
+Step: 6799 | Grad: 12600 | Loss: 0.249 | SPR: 0.031 | AvgQ: 1.80 | Eps: 0.000 | SPS: 4 | ETA: 55.0 min
+Step: 6849 | Grad: 12700 | Loss: 0.589 | SPR: 0.032 | AvgQ: 1.68 | Eps: 0.000 | SPS: 4 | ETA: 54.8 min
+Step: 6899 | Grad: 12800 | Loss: 0.724 | SPR: 0.031 | AvgQ: 1.69 | Eps: 0.000 | SPS: 4 | ETA: 54.6 min
+Step: 6949 | Grad: 12900 | Loss: 0.769 | SPR: 0.032 | AvgQ: 1.79 | Eps: 0.000 | SPS: 4 | ETA: 54.4 min
+Step: 6999 | Grad: 13000 | Loss: 0.650 | SPR: 0.031 | AvgQ: 1.84 | Eps: 0.000 | SPS: 4 | ETA: 54.2 min
+Step: 7049 | Grad: 13100 | Loss: 0.676 | SPR: 0.038 | AvgQ: 1.56 | Eps: 0.000 | SPS: 4 | ETA: 54.0 min
+Step: 7099 | Grad: 13200 | Loss: 0.888 | SPR: 0.030 | AvgQ: 1.87 | Eps: 0.000 | SPS: 4 | ETA: 53.8 min
+Step: 7149 | Grad: 13300 | Loss: 0.343 | SPR: 0.033 | AvgQ: 1.82 | Eps: 0.000 | SPS: 4 | ETA: 53.5 min
+Step: 7199 | Grad: 13400 | Loss: 0.546 | SPR: 0.034 | AvgQ: 1.58 | Eps: 0.000 | SPS: 4 | ETA: 53.3 min
+Step: 7249 | Grad: 13500 | Loss: 0.666 | SPR: 0.039 | AvgQ: 1.68 | Eps: 0.000 | SPS: 4 | ETA: 53.1 min
+Step: 7299 | Grad: 13600 | Loss: 0.846 | SPR: 0.036 | AvgQ: 1.64 | Eps: 0.000 | SPS: 4 | ETA: 52.9 min
+Step: 7349 | Grad: 13700 | Loss: 0.633 | SPR: 0.033 | AvgQ: 1.84 | Eps: 0.000 | SPS: 4 | ETA: 52.7 min
+Step: 7399 | Grad: 13800 | Loss: 0.906 | SPR: 0.040 | AvgQ: 1.79 | Eps: 0.000 | SPS: 4 | ETA: 52.5 min
+Step: 7449 | Grad: 13900 | Loss: 0.649 | SPR: 0.029 | AvgQ: 1.77 | Eps: 0.000 | SPS: 4 | ETA: 52.3 min
+Step: 7499 | Grad: 14000 | Loss: 0.229 | SPR: 0.030 | AvgQ: 1.53 | Eps: 0.000 | SPS: 4 | ETA: 52.1 min
+Step: 7549 | Grad: 14100 | Loss: 0.601 | SPR: 0.033 | AvgQ: 1.65 | Eps: 0.000 | SPS: 4 | ETA: 51.9 min
+Step: 7599 | Grad: 14200 | Loss: 0.374 | SPR: 0.031 | AvgQ: 1.80 | Eps: 0.000 | SPS: 4 | ETA: 51.7 min
+Step: 7649 | Grad: 14300 | Loss: 0.585 | SPR: 0.040 | AvgQ: 1.78 | Eps: 0.000 | SPS: 4 | ETA: 51.5 min
+Step: 7699 | Grad: 14400 | Loss: 0.503 | SPR: 0.029 | AvgQ: 1.83 | Eps: 0.000 | SPS: 4 | ETA: 51.3 min
+Step: 7749 | Grad: 14500 | Loss: 0.224 | SPR: 0.033 | AvgQ: 1.65 | Eps: 0.000 | SPS: 4 | ETA: 51.0 min
+Step: 7799 | Grad: 14600 | Loss: 0.556 | SPR: 0.046 | AvgQ: 1.74 | Eps: 0.000 | SPS: 4 | ETA: 50.8 min
+Step: 7849 | Grad: 14700 | Loss: 0.629 | SPR: 0.038 | AvgQ: 1.86 | Eps: 0.000 | SPS: 4 | ETA: 50.6 min
+Step: 7899 | Grad: 14800 | Loss: 0.341 | SPR: 0.031 | AvgQ: 1.59 | Eps: 0.000 | SPS: 4 | ETA: 50.4 min
+Step: 7949 | Grad: 14900 | Loss: 0.624 | SPR: 0.039 | AvgQ: 1.77 | Eps: 0.000 | SPS: 4 | ETA: 50.2 min
+Step: 7999 | Grad: 15000 | Loss: 0.434 | SPR: 0.031 | AvgQ: 1.81 | Eps: 0.000 | SPS: 4 | ETA: 50.0 min
+Step: 8049 | Grad: 15100 | Loss: 0.912 | SPR: 0.029 | AvgQ: 1.98 | Eps: 0.000 | SPS: 4 | ETA: 49.8 min
+Step: 8099 | Grad: 15200 | Loss: 0.706 | SPR: 0.037 | AvgQ: 1.80 | Eps: 0.000 | SPS: 4 | ETA: 49.6 min
+Step: 8149 | Grad: 15300 | Loss: 0.645 | SPR: 0.029 | AvgQ: 1.82 | Eps: 0.000 | SPS: 4 | ETA: 49.4 min
+Step: 8199 | Grad: 15400 | Loss: 0.633 | SPR: 0.033 | AvgQ: 1.67 | Eps: 0.000 | SPS: 4 | ETA: 49.2 min
+Step: 8249 | Grad: 15500 | Loss: 0.624 | SPR: 0.034 | AvgQ: 1.82 | Eps: 0.000 | SPS: 4 | ETA: 49.0 min
+Step: 8299 | Grad: 15600 | Loss: 0.524 | SPR: 0.031 | AvgQ: 1.96 | Eps: 0.000 | SPS: 4 | ETA: 48.8 min
+Step: 8349 | Grad: 15700 | Loss: 0.724 | SPR: 0.032 | AvgQ: 1.92 | Eps: 0.000 | SPS: 4 | ETA: 48.5 min
+Step: 8399 | Grad: 15800 | Loss: 0.669 | SPR: 0.034 | AvgQ: 1.74 | Eps: 0.000 | SPS: 4 | ETA: 48.3 min
+Step: 8449 | Grad: 15900 | Loss: 0.615 | SPR: 0.038 | AvgQ: 1.96 | Eps: 0.000 | SPS: 4 | ETA: 48.1 min
+Step: 8499 | Grad: 16000 | Loss: 0.566 | SPR: 0.031 | AvgQ: 1.83 | Eps: 0.000 | SPS: 4 | ETA: 47.9 min
+Step: 8549 | Grad: 16100 | Loss: 0.628 | SPR: 0.035 | AvgQ: 1.75 | Eps: 0.000 | SPS: 4 | ETA: 47.7 min
+Step: 8599 | Grad: 16200 | Loss: 0.585 | SPR: 0.028 | AvgQ: 1.77 | Eps: 0.000 | SPS: 4 | ETA: 47.5 min
+Step: 8649 | Grad: 16300 | Loss: 0.470 | SPR: 0.030 | AvgQ: 1.83 | Eps: 0.000 | SPS: 4 | ETA: 47.3 min
+Step: 8699 | Grad: 16400 | Loss: 0.663 | SPR: 0.033 | AvgQ: 1.90 | Eps: 0.000 | SPS: 4 | ETA: 47.1 min
+Step: 8749 | Grad: 16500 | Loss: 0.543 | SPR: 0.031 | AvgQ: 1.98 | Eps: 0.000 | SPS: 4 | ETA: 46.9 min
+Step: 8799 | Grad: 16600 | Loss: 0.536 | SPR: 0.035 | AvgQ: 1.88 | Eps: 0.000 | SPS: 4 | ETA: 46.7 min
+Step: 8849 | Grad: 16700 | Loss: 0.454 | SPR: 0.031 | AvgQ: 1.96 | Eps: 0.000 | SPS: 4 | ETA: 46.5 min
+Step: 8899 | Grad: 16800 | Loss: 0.757 | SPR: 0.030 | AvgQ: 2.07 | Eps: 0.000 | SPS: 4 | ETA: 46.3 min
+Step: 8949 | Grad: 16900 | Loss: 0.503 | SPR: 0.036 | AvgQ: 1.95 | Eps: 0.000 | SPS: 4 | ETA: 46.0 min
+Step: 8999 | Grad: 17000 | Loss: 0.785 | SPR: 0.028 | AvgQ: 1.78 | Eps: 0.000 | SPS: 4 | ETA: 45.8 min
+Step: 9049 | Grad: 17100 | Loss: 0.348 | SPR: 0.031 | AvgQ: 2.18 | Eps: 0.000 | SPS: 4 | ETA: 45.6 min
+Step: 9099 | Grad: 17200 | Loss: 0.506 | SPR: 0.026 | AvgQ: 1.91 | Eps: 0.000 | SPS: 4 | ETA: 45.4 min
+Step: 9149 | Grad: 17300 | Loss: 0.456 | SPR: 0.038 | AvgQ: 1.78 | Eps: 0.000 | SPS: 4 | ETA: 45.2 min
+Step: 9199 | Grad: 17400 | Loss: 0.538 | SPR: 0.030 | AvgQ: 1.85 | Eps: 0.000 | SPS: 4 | ETA: 45.0 min
+Step: 9249 | Grad: 17500 | Loss: 0.545 | SPR: 0.028 | AvgQ: 1.90 | Eps: 0.000 | SPS: 4 | ETA: 44.8 min
+Step: 9299 | Grad: 17600 | Loss: 0.726 | SPR: 0.033 | AvgQ: 2.06 | Eps: 0.000 | SPS: 4 | ETA: 44.6 min
+Step: 9349 | Grad: 17700 | Loss: 0.685 | SPR: 0.033 | AvgQ: 1.91 | Eps: 0.000 | SPS: 4 | ETA: 44.4 min
+Step: 9399 | Grad: 17800 | Loss: 0.686 | SPR: 0.037 | AvgQ: 2.00 | Eps: 0.000 | SPS: 4 | ETA: 44.2 min
+Step: 9449 | Grad: 17900 | Loss: 0.553 | SPR: 0.033 | AvgQ: 1.94 | Eps: 0.000 | SPS: 4 | ETA: 44.0 min
+Step: 9499 | Grad: 18000 | Loss: 0.617 | SPR: 0.029 | AvgQ: 1.98 | Eps: 0.000 | SPS: 4 | ETA: 43.8 min
+Step: 9549 | Grad: 18100 | Loss: 0.607 | SPR: 0.032 | AvgQ: 1.88 | Eps: 0.000 | SPS: 4 | ETA: 43.5 min
+Step: 9599 | Grad: 18200 | Loss: 0.673 | SPR: 0.027 | AvgQ: 1.91 | Eps: 0.000 | SPS: 4 | ETA: 43.3 min
+Step: 9649 | Grad: 18300 | Loss: 0.580 | SPR: 0.033 | AvgQ: 1.96 | Eps: 0.000 | SPS: 4 | ETA: 43.1 min
+Step: 9699 | Grad: 18400 | Loss: 0.490 | SPR: 0.032 | AvgQ: 1.81 | Eps: 0.000 | SPS: 4 | ETA: 42.9 min
+Step: 9749 | Grad: 18500 | Loss: 0.555 | SPR: 0.030 | AvgQ: 1.98 | Eps: 0.000 | SPS: 4 | ETA: 42.7 min
+Step: 9799 | Grad: 18600 | Loss: 0.573 | SPR: 0.029 | AvgQ: 1.85 | Eps: 0.000 | SPS: 4 | ETA: 42.5 min
+Step: 9849 | Grad: 18700 | Loss: 0.618 | SPR: 0.035 | AvgQ: 2.20 | Eps: 0.000 | SPS: 4 | ETA: 42.3 min
+Step: 9899 | Grad: 18800 | Loss: 0.520 | SPR: 0.033 | AvgQ: 1.89 | Eps: 0.000 | SPS: 4 | ETA: 42.1 min
+Step: 9949 | Grad: 18900 | Loss: 0.687 | SPR: 0.034 | AvgQ: 2.15 | Eps: 0.000 | SPS: 4 | ETA: 41.9 min
+Step: 9999 | Grad: 19000 | Loss: 0.610 | SPR: 0.030 | AvgQ: 1.89 | Eps: 0.000 | SPS: 4 | ETA: 41.7 min
+Step: 10049 | Grad: 19100 | Loss: 0.558 | SPR: 0.032 | AvgQ: 2.00 | Eps: 0.000 | SPS: 4 | ETA: 41.5 min
+Step: 10099 | Grad: 19200 | Loss: 0.554 | SPR: 0.032 | AvgQ: 1.91 | Eps: 0.000 | SPS: 4 | ETA: 41.3 min
+Step: 10149 | Grad: 19300 | Loss: 0.692 | SPR: 0.045 | AvgQ: 2.05 | Eps: 0.000 | SPS: 4 | ETA: 41.0 min
+Step: 10199 | Grad: 19400 | Loss: 0.661 | SPR: 0.034 | AvgQ: 1.94 | Eps: 0.000 | SPS: 4 | ETA: 40.8 min
+Step: 10249 | Grad: 19500 | Loss: 0.615 | SPR: 0.030 | AvgQ: 1.95 | Eps: 0.000 | SPS: 4 | ETA: 40.6 min
+Step: 10299 | Grad: 19600 | Loss: 0.830 | SPR: 0.030 | AvgQ: 2.02 | Eps: 0.000 | SPS: 4 | ETA: 40.4 min
+Step: 10349 | Grad: 19700 | Loss: 0.699 | SPR: 0.045 | AvgQ: 2.10 | Eps: 0.000 | SPS: 4 | ETA: 40.2 min
+Step: 10399 | Grad: 19800 | Loss: 0.479 | SPR: 0.029 | AvgQ: 1.86 | Eps: 0.000 | SPS: 4 | ETA: 40.0 min
+Step: 10449 | Grad: 19900 | Loss: 0.584 | SPR: 0.033 | AvgQ: 1.81 | Eps: 0.000 | SPS: 4 | ETA: 39.8 min
+Step: 10499 | Grad: 20000 | Loss: 0.523 | SPR: 0.035 | AvgQ: 2.03 | Eps: 0.000 | SPS: 4 | ETA: 39.6 min
+Step: 10549 | Grad: 20100 | Loss: 0.683 | SPR: 0.034 | AvgQ: 2.05 | Eps: 0.000 | SPS: 4 | ETA: 39.4 min
+Step: 10599 | Grad: 20200 | Loss: 0.667 | SPR: 0.028 | AvgQ: 2.26 | Eps: 0.000 | SPS: 4 | ETA: 39.2 min
+Step: 10649 | Grad: 20300 | Loss: 0.596 | SPR: 0.028 | AvgQ: 1.96 | Eps: 0.000 | SPS: 4 | ETA: 39.0 min
+Step: 10699 | Grad: 20400 | Loss: 0.719 | SPR: 0.044 | AvgQ: 2.25 | Eps: 0.000 | SPS: 4 | ETA: 38.8 min
+Step: 10749 | Grad: 20500 | Loss: 0.601 | SPR: 0.029 | AvgQ: 2.02 | Eps: 0.000 | SPS: 4 | ETA: 38.5 min
+Step: 10799 | Grad: 20600 | Loss: 0.639 | SPR: 0.036 | AvgQ: 1.88 | Eps: 0.000 | SPS: 4 | ETA: 38.3 min
+Step: 10849 | Grad: 20700 | Loss: 0.469 | SPR: 0.034 | AvgQ: 2.13 | Eps: 0.000 | SPS: 4 | ETA: 38.1 min
+Step: 10899 | Grad: 20800 | Loss: 0.656 | SPR: 0.030 | AvgQ: 2.12 | Eps: 0.000 | SPS: 4 | ETA: 37.9 min
+Step: 10949 | Grad: 20900 | Loss: 0.563 | SPR: 0.027 | AvgQ: 2.09 | Eps: 0.000 | SPS: 4 | ETA: 37.7 min
+Step: 10999 | Grad: 21000 | Loss: 0.327 | SPR: 0.032 | AvgQ: 2.06 | Eps: 0.000 | SPS: 4 | ETA: 37.5 min
+Step: 11049 | Grad: 21100 | Loss: 0.484 | SPR: 0.035 | AvgQ: 2.07 | Eps: 0.000 | SPS: 4 | ETA: 37.3 min
+Step: 11099 | Grad: 21200 | Loss: 0.719 | SPR: 0.028 | AvgQ: 2.19 | Eps: 0.000 | SPS: 4 | ETA: 37.1 min
+Step: 11149 | Grad: 21300 | Loss: 0.630 | SPR: 0.026 | AvgQ: 2.09 | Eps: 0.000 | SPS: 4 | ETA: 36.9 min
+Step: 11199 | Grad: 21400 | Loss: 0.501 | SPR: 0.033 | AvgQ: 1.97 | Eps: 0.000 | SPS: 4 | ETA: 36.7 min
+Step: 11249 | Grad: 21500 | Loss: 0.616 | SPR: 0.029 | AvgQ: 1.98 | Eps: 0.000 | SPS: 4 | ETA: 36.5 min
+Step: 11299 | Grad: 21600 | Loss: 0.676 | SPR: 0.031 | AvgQ: 2.04 | Eps: 0.000 | SPS: 4 | ETA: 36.3 min
+Step: 11349 | Grad: 21700 | Loss: 0.649 | SPR: 0.027 | AvgQ: 2.09 | Eps: 0.000 | SPS: 4 | ETA: 36.0 min
+Step: 11399 | Grad: 21800 | Loss: 0.673 | SPR: 0.035 | AvgQ: 1.84 | Eps: 0.000 | SPS: 4 | ETA: 35.8 min
+Step: 11449 | Grad: 21900 | Loss: 0.632 | SPR: 0.027 | AvgQ: 2.15 | Eps: 0.000 | SPS: 4 | ETA: 35.6 min
+Step: 11499 | Grad: 22000 | Loss: 0.532 | SPR: 0.032 | AvgQ: 2.10 | Eps: 0.000 | SPS: 4 | ETA: 35.4 min
+Step: 11549 | Grad: 22100 | Loss: 0.636 | SPR: 0.029 | AvgQ: 2.01 | Eps: 0.000 | SPS: 4 | ETA: 35.2 min
+Step: 11599 | Grad: 22200 | Loss: 1.448 | SPR: 0.033 | AvgQ: 2.11 | Eps: 0.000 | SPS: 4 | ETA: 35.0 min
+Step: 11649 | Grad: 22300 | Loss: 0.644 | SPR: 0.029 | AvgQ: 2.25 | Eps: 0.000 | SPS: 4 | ETA: 34.8 min
+Step: 11699 | Grad: 22400 | Loss: 0.704 | SPR: 0.029 | AvgQ: 2.35 | Eps: 0.000 | SPS: 4 | ETA: 34.6 min
+Step: 11749 | Grad: 22500 | Loss: 0.666 | SPR: 0.028 | AvgQ: 2.22 | Eps: 0.000 | SPS: 4 | ETA: 34.4 min
+Step: 11799 | Grad: 22600 | Loss: 0.606 | SPR: 0.032 | AvgQ: 2.06 | Eps: 0.000 | SPS: 4 | ETA: 34.2 min
+Step: 11849 | Grad: 22700 | Loss: 0.495 | SPR: 0.033 | AvgQ: 2.10 | Eps: 0.000 | SPS: 4 | ETA: 34.0 min
+Step: 11899 | Grad: 22800 | Loss: 0.772 | SPR: 0.028 | AvgQ: 2.15 | Eps: 0.000 | SPS: 4 | ETA: 33.8 min
+Step: 11949 | Grad: 22900 | Loss: 0.662 | SPR: 0.029 | AvgQ: 2.05 | Eps: 0.000 | SPS: 4 | ETA: 33.5 min
+Step: 11999 | Grad: 23000 | Loss: 0.500 | SPR: 0.030 | AvgQ: 2.24 | Eps: 0.000 | SPS: 4 | ETA: 33.3 min
+Step: 12049 | Grad: 23100 | Loss: 0.499 | SPR: 0.029 | AvgQ: 1.94 | Eps: 0.000 | SPS: 4 | ETA: 33.1 min
+Step: 12099 | Grad: 23200 | Loss: 0.621 | SPR: 0.034 | AvgQ: 2.37 | Eps: 0.000 | SPS: 4 | ETA: 32.9 min
+Step: 12149 | Grad: 23300 | Loss: 0.692 | SPR: 0.033 | AvgQ: 2.18 | Eps: 0.000 | SPS: 4 | ETA: 32.7 min
+Step: 12199 | Grad: 23400 | Loss: 0.576 | SPR: 0.037 | AvgQ: 2.02 | Eps: 0.000 | SPS: 4 | ETA: 32.5 min
+Step: 12249 | Grad: 23500 | Loss: 0.336 | SPR: 0.032 | AvgQ: 2.17 | Eps: 0.000 | SPS: 4 | ETA: 32.3 min
+Step: 12299 | Grad: 23600 | Loss: 0.651 | SPR: 0.030 | AvgQ: 2.12 | Eps: 0.000 | SPS: 4 | ETA: 32.1 min
+Step: 12349 | Grad: 23700 | Loss: 0.663 | SPR: 0.027 | AvgQ: 2.23 | Eps: 0.000 | SPS: 4 | ETA: 31.9 min
+Step: 12399 | Grad: 23800 | Loss: 0.677 | SPR: 0.030 | AvgQ: 2.20 | Eps: 0.000 | SPS: 4 | ETA: 31.7 min
+Step: 12449 | Grad: 23900 | Loss: 0.845 | SPR: 0.028 | AvgQ: 2.31 | Eps: 0.000 | SPS: 4 | ETA: 31.5 min
+Step: 12499 | Grad: 24000 | Loss: 0.415 | SPR: 0.028 | AvgQ: 2.23 | Eps: 0.000 | SPS: 4 | ETA: 31.3 min
+Step: 12549 | Grad: 24100 | Loss: 1.043 | SPR: 0.028 | AvgQ: 2.26 | Eps: 0.000 | SPS: 4 | ETA: 31.0 min
+Step: 12599 | Grad: 24200 | Loss: 0.664 | SPR: 0.033 | AvgQ: 2.07 | Eps: 0.000 | SPS: 4 | ETA: 30.8 min
+Step: 12649 | Grad: 24300 | Loss: 1.339 | SPR: 0.029 | AvgQ: 2.40 | Eps: 0.000 | SPS: 4 | ETA: 30.6 min
+Step: 12699 | Grad: 24400 | Loss: 0.686 | SPR: 0.035 | AvgQ: 2.14 | Eps: 0.000 | SPS: 4 | ETA: 30.4 min
+Step: 12749 | Grad: 24500 | Loss: 0.985 | SPR: 0.038 | AvgQ: 2.47 | Eps: 0.000 | SPS: 4 | ETA: 30.2 min
+Step: 12799 | Grad: 24600 | Loss: 0.881 | SPR: 0.027 | AvgQ: 2.27 | Eps: 0.000 | SPS: 4 | ETA: 30.0 min
+Step: 12849 | Grad: 24700 | Loss: 0.724 | SPR: 0.029 | AvgQ: 2.19 | Eps: 0.000 | SPS: 4 | ETA: 29.8 min
+Step: 12899 | Grad: 24800 | Loss: 1.544 | SPR: 0.025 | AvgQ: 2.64 | Eps: 0.000 | SPS: 4 | ETA: 29.6 min
+Step: 12949 | Grad: 24900 | Loss: 1.108 | SPR: 0.028 | AvgQ: 2.34 | Eps: 0.000 | SPS: 4 | ETA: 29.4 min
+Step: 12999 | Grad: 25000 | Loss: 0.674 | SPR: 0.032 | AvgQ: 2.28 | Eps: 0.000 | SPS: 4 | ETA: 29.2 min
+Step: 13049 | Grad: 25100 | Loss: 0.898 | SPR: 0.032 | AvgQ: 2.48 | Eps: 0.000 | SPS: 4 | ETA: 29.0 min
+Step: 13099 | Grad: 25200 | Loss: 0.732 | SPR: 0.028 | AvgQ: 2.31 | Eps: 0.000 | SPS: 4 | ETA: 28.8 min
+Step: 13149 | Grad: 25300 | Loss: 0.888 | SPR: 0.028 | AvgQ: 2.41 | Eps: 0.000 | SPS: 4 | ETA: 28.5 min
+Step: 13199 | Grad: 25400 | Loss: 0.731 | SPR: 0.034 | AvgQ: 2.34 | Eps: 0.000 | SPS: 4 | ETA: 28.3 min
+Step: 13249 | Grad: 25500 | Loss: 0.507 | SPR: 0.031 | AvgQ: 2.35 | Eps: 0.000 | SPS: 4 | ETA: 28.1 min
+Step: 13299 | Grad: 25600 | Loss: 0.786 | SPR: 0.027 | AvgQ: 2.42 | Eps: 0.000 | SPS: 4 | ETA: 27.9 min
+Step: 13349 | Grad: 25700 | Loss: 0.732 | SPR: 0.029 | AvgQ: 2.47 | Eps: 0.000 | SPS: 4 | ETA: 27.7 min
+Step: 13399 | Grad: 25800 | Loss: 0.696 | SPR: 0.026 | AvgQ: 2.44 | Eps: 0.000 | SPS: 4 | ETA: 27.5 min
+Step: 13449 | Grad: 25900 | Loss: 0.580 | SPR: 0.024 | AvgQ: 2.08 | Eps: 0.000 | SPS: 4 | ETA: 27.3 min
+Step: 13499 | Grad: 26000 | Loss: 0.831 | SPR: 0.027 | AvgQ: 2.42 | Eps: 0.000 | SPS: 4 | ETA: 27.1 min
+Step: 13549 | Grad: 26100 | Loss: 0.716 | SPR: 0.036 | AvgQ: 2.38 | Eps: 0.000 | SPS: 4 | ETA: 26.9 min
+Step: 13599 | Grad: 26200 | Loss: 0.683 | SPR: 0.030 | AvgQ: 2.30 | Eps: 0.000 | SPS: 4 | ETA: 26.7 min
+Step: 13649 | Grad: 26300 | Loss: 0.794 | SPR: 0.027 | AvgQ: 2.49 | Eps: 0.000 | SPS: 4 | ETA: 26.5 min
+Step: 13699 | Grad: 26400 | Loss: 0.577 | SPR: 0.035 | AvgQ: 2.43 | Eps: 0.000 | SPS: 4 | ETA: 26.3 min
+Step: 13749 | Grad: 26500 | Loss: 0.809 | SPR: 0.028 | AvgQ: 2.40 | Eps: 0.000 | SPS: 4 | ETA: 26.0 min
+Step: 13799 | Grad: 26600 | Loss: 0.698 | SPR: 0.027 | AvgQ: 2.32 | Eps: 0.000 | SPS: 4 | ETA: 25.8 min
+Step: 13849 | Grad: 26700 | Loss: 0.767 | SPR: 0.031 | AvgQ: 2.31 | Eps: 0.000 | SPS: 4 | ETA: 25.6 min
+Step: 13899 | Grad: 26800 | Loss: 0.516 | SPR: 0.036 | AvgQ: 2.46 | Eps: 0.000 | SPS: 4 | ETA: 25.4 min
+Step: 13949 | Grad: 26900 | Loss: 0.731 | SPR: 0.030 | AvgQ: 2.45 | Eps: 0.000 | SPS: 4 | ETA: 25.2 min
+Step: 13999 | Grad: 27000 | Loss: 0.769 | SPR: 0.028 | AvgQ: 2.62 | Eps: 0.000 | SPS: 4 | ETA: 25.0 min
+Step: 14049 | Grad: 27100 | Loss: 0.796 | SPR: 0.029 | AvgQ: 2.64 | Eps: 0.000 | SPS: 4 | ETA: 24.8 min
+Step: 14099 | Grad: 27200 | Loss: 0.663 | SPR: 0.031 | AvgQ: 2.49 | Eps: 0.000 | SPS: 4 | ETA: 24.6 min
+Step: 14149 | Grad: 27300 | Loss: 0.465 | SPR: 0.025 | AvgQ: 2.51 | Eps: 0.000 | SPS: 4 | ETA: 24.4 min
+Step: 14199 | Grad: 27400 | Loss: 0.537 | SPR: 0.027 | AvgQ: 2.35 | Eps: 0.000 | SPS: 4 | ETA: 24.2 min
+Step: 14249 | Grad: 27500 | Loss: 0.682 | SPR: 0.031 | AvgQ: 2.46 | Eps: 0.000 | SPS: 4 | ETA: 24.0 min
+Step: 14299 | Grad: 27600 | Loss: 0.642 | SPR: 0.027 | AvgQ: 2.41 | Eps: 0.000 | SPS: 4 | ETA: 23.8 min
+Step: 14349 | Grad: 27700 | Loss: 1.181 | SPR: 0.035 | AvgQ: 2.70 | Eps: 0.000 | SPS: 4 | ETA: 23.5 min
+Step: 14399 | Grad: 27800 | Loss: 0.788 | SPR: 0.026 | AvgQ: 2.49 | Eps: 0.000 | SPS: 4 | ETA: 23.3 min
+Step: 14449 | Grad: 27900 | Loss: 0.632 | SPR: 0.034 | AvgQ: 2.71 | Eps: 0.000 | SPS: 4 | ETA: 23.1 min
+Step: 14499 | Grad: 28000 | Loss: 0.650 | SPR: 0.027 | AvgQ: 2.66 | Eps: 0.000 | SPS: 4 | ETA: 22.9 min
+Step: 14549 | Grad: 28100 | Loss: 0.629 | SPR: 0.029 | AvgQ: 2.38 | Eps: 0.000 | SPS: 4 | ETA: 22.7 min
+Step: 14599 | Grad: 28200 | Loss: 0.889 | SPR: 0.040 | AvgQ: 2.66 | Eps: 0.000 | SPS: 4 | ETA: 22.5 min
+Step: 14649 | Grad: 28300 | Loss: 1.111 | SPR: 0.027 | AvgQ: 2.80 | Eps: 0.000 | SPS: 4 | ETA: 22.3 min
+Step: 14699 | Grad: 28400 | Loss: 0.717 | SPR: 0.026 | AvgQ: 2.71 | Eps: 0.000 | SPS: 4 | ETA: 22.1 min
+Step: 14749 | Grad: 28500 | Loss: 0.692 | SPR: 0.029 | AvgQ: 2.72 | Eps: 0.000 | SPS: 4 | ETA: 21.9 min
+Step: 14799 | Grad: 28600 | Loss: 0.551 | SPR: 0.029 | AvgQ: 2.44 | Eps: 0.000 | SPS: 4 | ETA: 21.7 min
+Step: 14849 | Grad: 28700 | Loss: 0.588 | SPR: 0.031 | AvgQ: 2.49 | Eps: 0.000 | SPS: 4 | ETA: 21.5 min
+Step: 14899 | Grad: 28800 | Loss: 0.926 | SPR: 0.030 | AvgQ: 2.68 | Eps: 0.000 | SPS: 4 | ETA: 21.3 min
+Step: 14949 | Grad: 28900 | Loss: 0.618 | SPR: 0.032 | AvgQ: 2.20 | Eps: 0.000 | SPS: 4 | ETA: 21.0 min
+Step: 14999 | Grad: 29000 | Loss: 0.815 | SPR: 0.028 | AvgQ: 2.88 | Eps: 0.000 | SPS: 4 | ETA: 20.8 min
+Step: 15049 | Grad: 29100 | Loss: 0.578 | SPR: 0.026 | AvgQ: 2.75 | Eps: 0.000 | SPS: 4 | ETA: 20.6 min
+Step: 15099 | Grad: 29200 | Loss: 0.581 | SPR: 0.026 | AvgQ: 2.33 | Eps: 0.000 | SPS: 4 | ETA: 20.4 min
+Step: 15149 | Grad: 29300 | Loss: 0.652 | SPR: 0.028 | AvgQ: 2.43 | Eps: 0.000 | SPS: 4 | ETA: 20.2 min
+Step: 15199 | Grad: 29400 | Loss: 0.820 | SPR: 0.029 | AvgQ: 2.66 | Eps: 0.000 | SPS: 4 | ETA: 20.0 min
+Step: 15249 | Grad: 29500 | Loss: 1.422 | SPR: 0.031 | AvgQ: 2.86 | Eps: 0.000 | SPS: 4 | ETA: 19.8 min
+Step: 15299 | Grad: 29600 | Loss: 1.210 | SPR: 0.035 | AvgQ: 2.57 | Eps: 0.000 | SPS: 4 | ETA: 19.6 min
+Step: 15349 | Grad: 29700 | Loss: 0.610 | SPR: 0.032 | AvgQ: 2.78 | Eps: 0.000 | SPS: 4 | ETA: 19.4 min
+Step: 15399 | Grad: 29800 | Loss: 0.802 | SPR: 0.026 | AvgQ: 2.45 | Eps: 0.000 | SPS: 4 | ETA: 19.2 min
+Step: 15449 | Grad: 29900 | Loss: 0.687 | SPR: 0.027 | AvgQ: 2.85 | Eps: 0.000 | SPS: 4 | ETA: 19.0 min
+Step: 15499 | Grad: 30000 | Loss: 0.847 | SPR: 0.032 | AvgQ: 2.86 | Eps: 0.000 | SPS: 4 | ETA: 18.8 min
+Step: 15549 | Grad: 30100 | Loss: 1.148 | SPR: 0.025 | AvgQ: 2.73 | Eps: 0.000 | SPS: 4 | ETA: 18.5 min
+Step: 15599 | Grad: 30200 | Loss: 0.648 | SPR: 0.029 | AvgQ: 2.69 | Eps: 0.000 | SPS: 4 | ETA: 18.3 min
+Step: 15649 | Grad: 30300 | Loss: 1.095 | SPR: 0.025 | AvgQ: 2.62 | Eps: 0.000 | SPS: 4 | ETA: 18.1 min
+Step: 15699 | Grad: 30400 | Loss: 0.963 | SPR: 0.028 | AvgQ: 2.78 | Eps: 0.000 | SPS: 4 | ETA: 17.9 min
+Step: 15749 | Grad: 30500 | Loss: 0.910 | SPR: 0.035 | AvgQ: 2.54 | Eps: 0.000 | SPS: 4 | ETA: 17.7 min
+Step: 15799 | Grad: 30600 | Loss: 0.781 | SPR: 0.029 | AvgQ: 2.96 | Eps: 0.000 | SPS: 4 | ETA: 17.5 min
+Step: 15849 | Grad: 30700 | Loss: 0.487 | SPR: 0.024 | AvgQ: 2.54 | Eps: 0.000 | SPS: 4 | ETA: 17.3 min
+Step: 15899 | Grad: 30800 | Loss: 0.677 | SPR: 0.029 | AvgQ: 2.85 | Eps: 0.000 | SPS: 4 | ETA: 17.1 min
+Step: 15949 | Grad: 30900 | Loss: 0.662 | SPR: 0.032 | AvgQ: 2.66 | Eps: 0.000 | SPS: 4 | ETA: 16.9 min
+Step: 15999 | Grad: 31000 | Loss: 1.491 | SPR: 0.026 | AvgQ: 2.90 | Eps: 0.000 | SPS: 4 | ETA: 16.7 min
+Step: 16049 | Grad: 31100 | Loss: 0.999 | SPR: 0.026 | AvgQ: 2.72 | Eps: 0.000 | SPS: 4 | ETA: 16.5 min
+Step: 16099 | Grad: 31200 | Loss: 0.851 | SPR: 0.024 | AvgQ: 2.67 | Eps: 0.000 | SPS: 4 | ETA: 16.3 min
+Step: 16149 | Grad: 31300 | Loss: 0.682 | SPR: 0.025 | AvgQ: 2.77 | Eps: 0.000 | SPS: 4 | ETA: 16.0 min
+Step: 16199 | Grad: 31400 | Loss: 0.642 | SPR: 0.026 | AvgQ: 2.90 | Eps: 0.000 | SPS: 4 | ETA: 15.8 min
+Step: 16249 | Grad: 31500 | Loss: 1.036 | SPR: 0.026 | AvgQ: 2.65 | Eps: 0.000 | SPS: 4 | ETA: 15.6 min
+Step: 16299 | Grad: 31600 | Loss: 0.839 | SPR: 0.026 | AvgQ: 2.70 | Eps: 0.000 | SPS: 4 | ETA: 15.4 min
+Step: 16349 | Grad: 31700 | Loss: 0.574 | SPR: 0.033 | AvgQ: 2.86 | Eps: 0.000 | SPS: 4 | ETA: 15.2 min
+Step: 16399 | Grad: 31800 | Loss: 0.945 | SPR: 0.026 | AvgQ: 2.31 | Eps: 0.000 | SPS: 4 | ETA: 15.0 min
+Step: 16449 | Grad: 31900 | Loss: 1.171 | SPR: 0.027 | AvgQ: 2.74 | Eps: 0.000 | SPS: 4 | ETA: 14.8 min
+Step: 16499 | Grad: 32000 | Loss: 0.482 | SPR: 0.026 | AvgQ: 2.76 | Eps: 0.000 | SPS: 4 | ETA: 14.6 min
+Step: 16549 | Grad: 32100 | Loss: 1.035 | SPR: 0.026 | AvgQ: 2.62 | Eps: 0.000 | SPS: 4 | ETA: 14.4 min
+Step: 16599 | Grad: 32200 | Loss: 1.000 | SPR: 0.024 | AvgQ: 2.56 | Eps: 0.000 | SPS: 4 | ETA: 14.2 min
+Step: 16649 | Grad: 32300 | Loss: 1.225 | SPR: 0.027 | AvgQ: 2.61 | Eps: 0.000 | SPS: 4 | ETA: 14.0 min
+Step: 16699 | Grad: 32400 | Loss: 0.942 | SPR: 0.025 | AvgQ: 2.66 | Eps: 0.000 | SPS: 4 | ETA: 13.8 min
+Step: 16749 | Grad: 32500 | Loss: 0.675 | SPR: 0.027 | AvgQ: 2.62 | Eps: 0.000 | SPS: 4 | ETA: 13.5 min
+Step: 16799 | Grad: 32600 | Loss: 0.727 | SPR: 0.026 | AvgQ: 2.83 | Eps: 0.000 | SPS: 4 | ETA: 13.3 min
+Step: 16849 | Grad: 32700 | Loss: 1.042 | SPR: 0.023 | AvgQ: 2.84 | Eps: 0.000 | SPS: 4 | ETA: 13.1 min
+Step: 16899 | Grad: 32800 | Loss: 1.353 | SPR: 0.022 | AvgQ: 2.75 | Eps: 0.000 | SPS: 4 | ETA: 12.9 min
+Step: 16949 | Grad: 32900 | Loss: 0.640 | SPR: 0.025 | AvgQ: 2.79 | Eps: 0.000 | SPS: 4 | ETA: 12.7 min
+Step: 16999 | Grad: 33000 | Loss: 1.246 | SPR: 0.024 | AvgQ: 2.72 | Eps: 0.000 | SPS: 4 | ETA: 12.5 min
+Step: 17049 | Grad: 33100 | Loss: 0.854 | SPR: 0.023 | AvgQ: 2.89 | Eps: 0.000 | SPS: 4 | ETA: 12.3 min
+Step: 17099 | Grad: 33200 | Loss: 0.673 | SPR: 0.026 | AvgQ: 2.63 | Eps: 0.000 | SPS: 4 | ETA: 12.1 min
+Step: 17149 | Grad: 33300 | Loss: 1.308 | SPR: 0.024 | AvgQ: 2.61 | Eps: 0.000 | SPS: 4 | ETA: 11.9 min
+Step: 17199 | Grad: 33400 | Loss: 0.951 | SPR: 0.028 | AvgQ: 2.48 | Eps: 0.000 | SPS: 4 | ETA: 11.7 min
+Step: 17249 | Grad: 33500 | Loss: 0.673 | SPR: 0.025 | AvgQ: 2.33 | Eps: 0.000 | SPS: 4 | ETA: 11.5 min
+Step: 17299 | Grad: 33600 | Loss: 0.755 | SPR: 0.027 | AvgQ: 2.63 | Eps: 0.000 | SPS: 4 | ETA: 11.3 min
+Step: 17349 | Grad: 33700 | Loss: 0.933 | SPR: 0.032 | AvgQ: 2.49 | Eps: 0.000 | SPS: 4 | ETA: 11.0 min
+Step: 17399 | Grad: 33800 | Loss: 1.128 | SPR: 0.025 | AvgQ: 2.78 | Eps: 0.000 | SPS: 4 | ETA: 10.8 min
+Step: 17449 | Grad: 33900 | Loss: 0.630 | SPR: 0.026 | AvgQ: 2.67 | Eps: 0.000 | SPS: 4 | ETA: 10.6 min
+Step: 17499 | Grad: 34000 | Loss: 0.990 | SPR: 0.027 | AvgQ: 2.66 | Eps: 0.000 | SPS: 4 | ETA: 10.4 min
+Step: 17549 | Grad: 34100 | Loss: 1.024 | SPR: 0.022 | AvgQ: 2.31 | Eps: 0.000 | SPS: 4 | ETA: 10.2 min
+Step: 17599 | Grad: 34200 | Loss: 0.891 | SPR: 0.023 | AvgQ: 2.46 | Eps: 0.000 | SPS: 4 | ETA: 10.0 min
+Step: 17649 | Grad: 34300 | Loss: 1.151 | SPR: 0.024 | AvgQ: 2.67 | Eps: 0.000 | SPS: 4 | ETA: 9.8 min
+Step: 17699 | Grad: 34400 | Loss: 0.835 | SPR: 0.024 | AvgQ: 2.58 | Eps: 0.000 | SPS: 4 | ETA: 9.6 min
+Step: 17749 | Grad: 34500 | Loss: 1.080 | SPR: 0.023 | AvgQ: 2.63 | Eps: 0.000 | SPS: 4 | ETA: 9.4 min
+Step: 17799 | Grad: 34600 | Loss: 1.054 | SPR: 0.029 | AvgQ: 2.51 | Eps: 0.000 | SPS: 4 | ETA: 9.2 min
+Step: 17849 | Grad: 34700 | Loss: 0.631 | SPR: 0.025 | AvgQ: 2.45 | Eps: 0.000 | SPS: 4 | ETA: 9.0 min
+Step: 17899 | Grad: 34800 | Loss: 0.829 | SPR: 0.024 | AvgQ: 2.20 | Eps: 0.000 | SPS: 4 | ETA: 8.8 min
+Step: 17949 | Grad: 34900 | Loss: 0.835 | SPR: 0.023 | AvgQ: 2.59 | Eps: 0.000 | SPS: 4 | ETA: 8.5 min
+Step: 17999 | Grad: 35000 | Loss: 1.388 | SPR: 0.024 | AvgQ: 2.53 | Eps: 0.000 | SPS: 4 | ETA: 8.3 min
+Step: 18049 | Grad: 35100 | Loss: 0.761 | SPR: 0.021 | AvgQ: 2.83 | Eps: 0.000 | SPS: 4 | ETA: 8.1 min
+Step: 18099 | Grad: 35200 | Loss: 1.104 | SPR: 0.022 | AvgQ: 2.43 | Eps: 0.000 | SPS: 4 | ETA: 7.9 min
+Step: 18149 | Grad: 35300 | Loss: 1.392 | SPR: 0.038 | AvgQ: 2.64 | Eps: 0.000 | SPS: 4 | ETA: 7.7 min
+Step: 18199 | Grad: 35400 | Loss: 0.493 | SPR: 0.023 | AvgQ: 2.38 | Eps: 0.000 | SPS: 4 | ETA: 7.5 min
+Step: 18249 | Grad: 35500 | Loss: 1.375 | SPR: 0.024 | AvgQ: 2.86 | Eps: 0.000 | SPS: 4 | ETA: 7.3 min
+Step: 18299 | Grad: 35600 | Loss: 0.692 | SPR: 0.027 | AvgQ: 2.52 | Eps: 0.000 | SPS: 4 | ETA: 7.1 min
+Step: 18349 | Grad: 35700 | Loss: 1.325 | SPR: 0.027 | AvgQ: 2.82 | Eps: 0.000 | SPS: 4 | ETA: 6.9 min
+Step: 18399 | Grad: 35800 | Loss: 1.045 | SPR: 0.027 | AvgQ: 2.54 | Eps: 0.000 | SPS: 4 | ETA: 6.7 min
+Step: 18449 | Grad: 35900 | Loss: 0.656 | SPR: 0.020 | AvgQ: 2.41 | Eps: 0.000 | SPS: 4 | ETA: 6.5 min
+Step: 18499 | Grad: 36000 | Loss: 1.009 | SPR: 0.023 | AvgQ: 2.23 | Eps: 0.000 | SPS: 4 | ETA: 6.3 min
+Step: 18549 | Grad: 36100 | Loss: 0.528 | SPR: 0.020 | AvgQ: 2.44 | Eps: 0.000 | SPS: 4 | ETA: 6.0 min
+Step: 18599 | Grad: 36200 | Loss: 0.711 | SPR: 0.023 | AvgQ: 2.62 | Eps: 0.000 | SPS: 4 | ETA: 5.8 min
+Step: 18649 | Grad: 36300 | Loss: 0.483 | SPR: 0.020 | AvgQ: 2.64 | Eps: 0.000 | SPS: 4 | ETA: 5.6 min
+Step: 18699 | Grad: 36400 | Loss: 0.822 | SPR: 0.023 | AvgQ: 2.30 | Eps: 0.000 | SPS: 4 | ETA: 5.4 min
+Step: 18749 | Grad: 36500 | Loss: 0.410 | SPR: 0.024 | AvgQ: 2.41 | Eps: 0.000 | SPS: 4 | ETA: 5.2 min
+Step: 18799 | Grad: 36600 | Loss: 1.052 | SPR: 0.026 | AvgQ: 2.46 | Eps: 0.000 | SPS: 4 | ETA: 5.0 min
+Step: 18849 | Grad: 36700 | Loss: 0.908 | SPR: 0.022 | AvgQ: 2.61 | Eps: 0.000 | SPS: 4 | ETA: 4.8 min
+Step: 18899 | Grad: 36800 | Loss: 1.048 | SPR: 0.020 | AvgQ: 2.52 | Eps: 0.000 | SPS: 4 | ETA: 4.6 min
+Step: 18949 | Grad: 36900 | Loss: 0.887 | SPR: 0.024 | AvgQ: 2.29 | Eps: 0.000 | SPS: 4 | ETA: 4.4 min
+Step: 18999 | Grad: 37000 | Loss: 0.748 | SPR: 0.028 | AvgQ: 2.27 | Eps: 0.000 | SPS: 4 | ETA: 4.2 min
+Step: 19049 | Grad: 37100 | Loss: 0.583 | SPR: 0.021 | AvgQ: 2.55 | Eps: 0.000 | SPS: 4 | ETA: 4.0 min
+Step: 19099 | Grad: 37200 | Loss: 1.069 | SPR: 0.024 | AvgQ: 2.55 | Eps: 0.000 | SPS: 4 | ETA: 3.8 min
+Step: 19149 | Grad: 37300 | Loss: 0.541 | SPR: 0.027 | AvgQ: 2.58 | Eps: 0.000 | SPS: 4 | ETA: 3.5 min
+Step: 19199 | Grad: 37400 | Loss: 0.847 | SPR: 0.025 | AvgQ: 2.64 | Eps: 0.000 | SPS: 4 | ETA: 3.3 min
+Step: 19249 | Grad: 37500 | Loss: 1.134 | SPR: 0.022 | AvgQ: 2.79 | Eps: 0.000 | SPS: 4 | ETA: 3.1 min
+Step: 19299 | Grad: 37600 | Loss: 0.691 | SPR: 0.020 | AvgQ: 2.51 | Eps: 0.000 | SPS: 4 | ETA: 2.9 min
+Step: 19349 | Grad: 37700 | Loss: 0.519 | SPR: 0.030 | AvgQ: 2.28 | Eps: 0.000 | SPS: 4 | ETA: 2.7 min
+Step: 19399 | Grad: 37800 | Loss: 1.195 | SPR: 0.021 | AvgQ: 2.66 | Eps: 0.000 | SPS: 4 | ETA: 2.5 min
+Step: 19449 | Grad: 37900 | Loss: 0.954 | SPR: 0.024 | AvgQ: 2.84 | Eps: 0.000 | SPS: 4 | ETA: 2.3 min
+Step: 19499 | Grad: 38000 | Loss: 1.224 | SPR: 0.021 | AvgQ: 2.89 | Eps: 0.000 | SPS: 4 | ETA: 2.1 min
+Step: 19549 | Grad: 38100 | Loss: 0.904 | SPR: 0.023 | AvgQ: 2.30 | Eps: 0.000 | SPS: 4 | ETA: 1.9 min
+Step: 19599 | Grad: 38200 | Loss: 0.975 | SPR: 0.024 | AvgQ: 2.19 | Eps: 0.000 | SPS: 4 | ETA: 1.7 min
+Step: 19649 | Grad: 38300 | Loss: 0.701 | SPR: 0.021 | AvgQ: 2.45 | Eps: 0.000 | SPS: 4 | ETA: 1.5 min
+Step: 19699 | Grad: 38400 | Loss: 0.553 | SPR: 0.020 | AvgQ: 2.66 | Eps: 0.000 | SPS: 4 | ETA: 1.3 min
+Step: 19749 | Grad: 38500 | Loss: 1.149 | SPR: 0.023 | AvgQ: 2.72 | Eps: 0.000 | SPS: 4 | ETA: 1.0 min
+Step: 19799 | Grad: 38600 | Loss: 0.770 | SPR: 0.024 | AvgQ: 2.14 | Eps: 0.000 | SPS: 4 | ETA: 0.8 min
+Step: 19849 | Grad: 38700 | Loss: 0.597 | SPR: 0.020 | AvgQ: 2.55 | Eps: 0.000 | SPS: 4 | ETA: 0.6 min
+Step: 19899 | Grad: 38800 | Loss: 1.011 | SPR: 0.020 | AvgQ: 2.49 | Eps: 0.000 | SPS: 4 | ETA: 0.4 min
+Step: 19949 | Grad: 38900 | Loss: 1.205 | SPR: 0.026 | AvgQ: 2.68 | Eps: 0.000 | SPS: 4 | ETA: 0.2 min
+Step: 19999 | Grad: 39000 | Loss: 1.313 | SPR: 0.026 | AvgQ: 2.77 | Eps: 0.000 | SPS: 4 | ETA: 0.0 min
+
+[EVAL:select_final] Starting evaluation: episodes=2, epsilon=0.0010, sticky_prob=0.000, clip_rewards=False
+[EVAL:select_final] Episode 1/2 Return=6 Length=26991
+[EVAL:select_final] Episode 2/2 Return=6 Length=9854
+[EVAL:select_final] Summary: mean=6.00, median=6.00, min=6.00, max=6.00, mean_len=18422.5
+    ★ New eval-best checkpoint at step 20000: mean return 6.00
+
+============================================================
+TRAINING COMPLETE - FINAL SUMMARY
+============================================================
+  Run Name:       Breakout-v5__agent_bbf__1__1772799448
+  Replay Ratio:   64
+  Reset Interval: 0 (env steps)
+  Seed:           1
+  Environment:    ALE/Breakout-v5
+  Total Time:     73.4 minutes
+  Grad Steps:     39000
+  Eval Best:      6.00 @ step 20000
+  Best Model:     ./results_final_bbf/Breakout-v5__agent_bbf__1__1772799448/best_model.pt
+============================================================
+
+
+[EVAL:final] Starting evaluation: episodes=5, epsilon=0.0010, sticky_prob=0.000, clip_rewards=False
+[EVAL:final] Episode 1/5 Return=14 Length=13270
+[EVAL:final] Episode 2/5 Return=12 Length=26992
+[EVAL:final] Episode 3/5 Return=2 Length=1157
+[EVAL:final] Episode 4/5 Return=14 Length=8100
+[EVAL:final] Episode 5/5 Return=1 Length=7650
+[EVAL:final] Summary: mean=8.60, median=12.00, min=1.00, max=14.00, mean_len=11433.8
+
+[EVAL:best] Starting evaluation: episodes=5, epsilon=0.0010, sticky_prob=0.000, clip_rewards=False
+[EVAL:best] Episode 1/5 Return=5 Length=6953
+[EVAL:best] Episode 2/5 Return=10 Length=26995
+[EVAL:best] Episode 3/5 Return=1 Length=26992
+[EVAL:best] Episode 4/5 Return=14 Length=13071
+[EVAL:best] Episode 5/5 Return=5 Length=4738
+[EVAL:best] Summary: mean=7.00, median=5.00, min=1.00, max=14.00, mean_len=15749.8
+Done.
