@@ -2373,7 +2373,7 @@ def main():
         # Reinitialize agent with correct observation space from vectorized env
         agent = Agent(envs.single_observation_space, envs.single_action_space, config)
 
-        if config.torch_profile:
+        if config.torch_profile and agent.profiler is None:
             profiler_dir = os.path.join(run_dir, "profiler")
             os.makedirs(profiler_dir, exist_ok=True)
             agent.profiler = profile(
