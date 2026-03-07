@@ -1191,6 +1191,17 @@ class Agent:
         self._compiled_target_encode_project: Callable[..., torch.Tensor] = self.target_network.encode_project
         self.torch_compile_active = False
         self._configure_torch_compile()
+        self.amp_enabled = bool(self.config.use_amp and self.device.type == "cuda")
+        self._amp_dtype = torch.float16
+        if self.config.use_amp and not self.amp_enabled:
+            print("[WARN] AMP requested but CUDA is unavailable; running in full precision.")
+        scaler_kwargs: Dict[str, Any] = {"enabled": self.amp_enabled}
+        scaler_params = inspect.signature(GradScaler).parameters
+        if "device" in scaler_params:
+            scaler_kwargs["device"] = "cuda"
+        self.grad_scaler = GradScaler(**scaler_kwargs)
+        if self.amp_enabled:
+            print(f"[INFO] AMP enabled (dtype={self._amp_dtype}, GradScaler active).")
 
         self.aug = RandomShift(pad=4).to(self.device)
 
@@ -1316,6 +1327,11 @@ class Agent:
         if self._num_updates_per_train_step % self._batches_to_group != 0:
             raise ValueError("replay ratio / batch grouping mismatch")
         self._num_updates_per_train_step = max(1, self._num_updates_per_train_step // self._batches_to_group)
+
+    def _amp_autocast(self):
+        if not self.amp_enabled:
+            return nullcontext()
+        return autocast(device_type="cuda", dtype=self._amp_dtype)
 
     def _step_profiler(self) -> None:
         if not self.profiler_active or self.profiler is None:
@@ -1653,32 +1669,34 @@ class Agent:
         use_spr = self.config.spr_weight > 0
 
         with rf("fwd/online"):
-            online_out = self._compiled_q_compute_outputs(
-                current_state,
-                actions=actions[:, :-1],
-                do_rollout=use_spr,
-            )
+            with self._amp_autocast():
+                online_out = self._compiled_q_compute_outputs(
+                    current_state,
+                    actions=actions[:, :-1],
+                    do_rollout=use_spr,
+                )
             logits = online_out["logits"]
 
         with rf("fwd/target_c51"), torch.no_grad():
-            if self.config.use_target_network or not self.config.double_dqn:
-                target_next_logits = self._compiled_target_compute_outputs(next_states)["logits"]
-            else:
-                target_next_logits = None
+            with self._amp_autocast():
+                if self.config.use_target_network or not self.config.double_dqn:
+                    target_next_logits = self._compiled_target_compute_outputs(next_states)["logits"]
+                else:
+                    target_next_logits = None
 
-            if (not self.config.use_target_network) or self.config.double_dqn:
-                online_next_logits = self._compiled_q_compute_outputs(next_states)["logits"]
-            else:
-                online_next_logits = None
+                if (not self.config.use_target_network) or self.config.double_dqn:
+                    online_next_logits = self._compiled_q_compute_outputs(next_states)["logits"]
+                else:
+                    online_next_logits = None
 
             backup_logits = target_next_logits if self.config.use_target_network else online_next_logits
             select_logits = online_next_logits if self.config.double_dqn else target_next_logits
 
-            select_prob = F.softmax(select_logits, dim=-1)
+            select_prob = F.softmax(select_logits.float(), dim=-1)
             select_q = (select_prob * self.q_network.support).sum(dim=-1)
             next_action = torch.argmax(select_q, dim=-1)
 
-            backup_prob = F.softmax(backup_logits, dim=-1)
+            backup_prob = F.softmax(backup_logits.float(), dim=-1)
             next_probabilities = backup_prob[torch.arange(backup_prob.shape[0], device=self.device), next_action]
 
             gamma_terminal = cumulative_gamma * (1.0 - terminals)
@@ -1686,7 +1704,7 @@ class Agent:
             target_dist = self._project_distribution(target_support, next_probabilities, self.q_network.support)
 
         with rf("loss/c51"):
-            chosen_logits = logits[torch.arange(logits.shape[0], device=self.device), actions[:, 0]]
+            chosen_logits = logits.float()[torch.arange(logits.shape[0], device=self.device), actions[:, 0]]
             dqn_loss = -(target_dist * F.log_softmax(chosen_logits, dim=-1)).sum(dim=-1)
 
         with rf("loss/spr"):
@@ -1695,11 +1713,12 @@ class Agent:
                 with torch.no_grad():
                     future_states = states[:, 1:]
                     b, j, c, h, w = future_states.shape
-                    target_proj = self._compiled_target_encode_project(future_states.reshape(b * j, c, h, w))
+                    with self._amp_autocast():
+                        target_proj = self._compiled_target_encode_project(future_states.reshape(b * j, c, h, w))
                     spr_target = target_proj.view(b, j, -1)
 
-                spr_pred = F.normalize(spr_pred, p=2, dim=-1)
-                spr_target = F.normalize(spr_target, p=2, dim=-1)
+                spr_pred = F.normalize(spr_pred.float(), p=2, dim=-1)
+                spr_target = F.normalize(spr_target.float(), p=2, dim=-1)
                 spr_loss_t = ((spr_pred - spr_target) ** 2).sum(dim=-1)
                 spr_loss = (spr_loss_t * same_traj_mask).mean(dim=1)
             else:
@@ -1711,11 +1730,20 @@ class Agent:
 
         with rf("bwd"):
             self.optimizer.zero_grad(set_to_none=True)
-            loss.backward()
+            if self.amp_enabled:
+                self.grad_scaler.scale(loss).backward()
+            else:
+                loss.backward()
 
         with rf("optim/step"):
+            if self.amp_enabled:
+                self.grad_scaler.unscale_(self.optimizer)
             nn.utils.clip_grad_norm_(self.q_network.parameters(), 10.0)
-            self.optimizer.step()
+            if self.amp_enabled:
+                self.grad_scaler.step(self.optimizer)
+                self.grad_scaler.update()
+            else:
+                self.optimizer.step()
 
         with rf("target/update"):
             if self.grad_steps % int(self.config.target_update_period) == 0:
@@ -2454,6 +2482,7 @@ def main():
     print(f"  Total Steps:    {config.total_steps}")
     print(f"  Seed:           {config.seed}")
     print(f"  Learning Rate:  {config.learning_rate}")
+    print(f"  AMP Requested:  {config.use_amp}")
     print(f"  Torch Compile:  {config.torch_compile} ({config.torch_compile_mode})")
     print(f"  Full Actions:   {config.full_action_space}")
     print(f"  Continual:      {config.continual}")
