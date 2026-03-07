@@ -141,7 +141,6 @@ def make_env(env_id, seed, idx, capture_video=False, run_name="", full_action_sp
             env = gym.make(env_id, frameskip=1, repeat_action_probability=0.0,
                           full_action_space=full_action_space)
             
-        env = gym.wrappers.RecordEpisodeStatistics(env)
         env = NoopResetEnv(env, noop_max=30)
         env = MaxAndSkipEnv(env, skip=4)
         env = EpisodicLifeEnv(env)
@@ -154,6 +153,8 @@ def make_env(env_id, seed, idx, capture_video=False, run_name="", full_action_sp
         
         env = gym.wrappers.ResizeObservation(env, (84, 84))
         env = gym.wrappers.GrayscaleObservation(env)
+        # Keep this outermost so vector `final_info` carries episodic-life episode stats.
+        env = gym.wrappers.RecordEpisodeStatistics(env)
         
         env.action_space.seed(seed)
         return env
@@ -1202,6 +1203,15 @@ class Agent:
             raise ValueError("replay ratio / batch grouping mismatch")
         self._num_updates_per_train_step = max(1, self._num_updates_per_train_step // self._batches_to_group)
 
+    def _step_profiler(self) -> None:
+        if not self.profiler_active or self.profiler is None:
+            return
+        try:
+            self.profiler.step()
+        except Exception as exc:
+            print(f"[WARN] profiler.step() failed; disabling profiler. ({exc})")
+            self.profiler_active = False
+
     def _build_optimizer(self) -> optim.Optimizer:
         cfg = self.config
         enc_decay, enc_no_decay = [], []
@@ -1506,30 +1516,34 @@ class Agent:
         *,
         tau: float,
     ) -> Dict[str, torch.Tensor]:
+        rf = record_function if self.profiler_active else (lambda _: nullcontext())
         self.q_network.train()
         self.target_network.train()
 
-        states = self._process_states(batch["state"], augment=self.config.data_augmentation)
-        next_states = self._process_single_states(batch["next_state"][:, 0], augment=self.config.data_augmentation)
+        with rf("aug"):
+            states = self._process_states(batch["state"], augment=self.config.data_augmentation)
+            next_states = self._process_single_states(batch["next_state"][:, 0], augment=self.config.data_augmentation)
 
-        actions = batch["action"].long()
-        n_step_returns = batch["return"][:, 0].float()
-        terminals = batch["terminal"][:, 0].float()
-        same_traj_mask = batch["same_trajectory"][:, 1:].float()
-        loss_weights = batch["loss_weights"].float()
-        cumulative_gamma = batch["discount"][:, 0].float()
+        with rf("batch/prep"):
+            actions = batch["action"].long()
+            n_step_returns = batch["return"][:, 0].float()
+            terminals = batch["terminal"][:, 0].float()
+            same_traj_mask = batch["same_trajectory"][:, 1:].float()
+            loss_weights = batch["loss_weights"].float()
+            cumulative_gamma = batch["discount"][:, 0].float()
 
         current_state = states[:, 0]
         use_spr = self.config.spr_weight > 0
 
-        online_out = self.q_network.compute_outputs(
-            current_state,
-            actions=actions[:, :-1],
-            do_rollout=use_spr,
-        )
-        logits = online_out["logits"]
+        with rf("fwd/online"):
+            online_out = self.q_network.compute_outputs(
+                current_state,
+                actions=actions[:, :-1],
+                do_rollout=use_spr,
+            )
+            logits = online_out["logits"]
 
-        with torch.no_grad():
+        with rf("fwd/target_c51"), torch.no_grad():
             if self.config.use_target_network or not self.config.double_dqn:
                 target_next_logits = self.target_network.compute_outputs(next_states)["logits"]
             else:
@@ -1554,34 +1568,41 @@ class Agent:
             target_support = n_step_returns.unsqueeze(1) + gamma_terminal.unsqueeze(1) * self.q_network.support.unsqueeze(0)
             target_dist = self._project_distribution(target_support, next_probabilities, self.q_network.support)
 
-        chosen_logits = logits[torch.arange(logits.shape[0], device=self.device), actions[:, 0]]
-        dqn_loss = -(target_dist * F.log_softmax(chosen_logits, dim=-1)).sum(dim=-1)
+        with rf("loss/c51"):
+            chosen_logits = logits[torch.arange(logits.shape[0], device=self.device), actions[:, 0]]
+            dqn_loss = -(target_dist * F.log_softmax(chosen_logits, dim=-1)).sum(dim=-1)
 
-        if use_spr:
-            spr_pred = online_out["spr_predictions"]
-            with torch.no_grad():
-                future_states = states[:, 1:]
-                b, j, c, h, w = future_states.shape
-                target_proj = self.target_network.encode_project(future_states.reshape(b * j, c, h, w))
-                spr_target = target_proj.view(b, j, -1)
+        with rf("loss/spr"):
+            if use_spr:
+                spr_pred = online_out["spr_predictions"]
+                with torch.no_grad():
+                    future_states = states[:, 1:]
+                    b, j, c, h, w = future_states.shape
+                    target_proj = self.target_network.encode_project(future_states.reshape(b * j, c, h, w))
+                    spr_target = target_proj.view(b, j, -1)
 
-            spr_pred = F.normalize(spr_pred, p=2, dim=-1)
-            spr_target = F.normalize(spr_target, p=2, dim=-1)
-            spr_loss_t = ((spr_pred - spr_target) ** 2).sum(dim=-1)
-            spr_loss = (spr_loss_t * same_traj_mask).mean(dim=1)
-        else:
-            spr_loss = torch.zeros_like(dqn_loss)
+                spr_pred = F.normalize(spr_pred, p=2, dim=-1)
+                spr_target = F.normalize(spr_target, p=2, dim=-1)
+                spr_loss_t = ((spr_pred - spr_target) ** 2).sum(dim=-1)
+                spr_loss = (spr_loss_t * same_traj_mask).mean(dim=1)
+            else:
+                spr_loss = torch.zeros_like(dqn_loss)
 
-        total_loss_per_sample = dqn_loss + float(self.config.spr_weight) * spr_loss
-        loss = (total_loss_per_sample * loss_weights).mean()
+        with rf("loss/total"):
+            total_loss_per_sample = dqn_loss + float(self.config.spr_weight) * spr_loss
+            loss = (total_loss_per_sample * loss_weights).mean()
 
-        self.optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        nn.utils.clip_grad_norm_(self.q_network.parameters(), 10.0)
-        self.optimizer.step()
+        with rf("bwd"):
+            self.optimizer.zero_grad(set_to_none=True)
+            loss.backward()
 
-        if self.grad_steps % int(self.config.target_update_period) == 0:
-            self._soft_update_target(float(tau))
+        with rf("optim/step"):
+            nn.utils.clip_grad_norm_(self.q_network.parameters(), 10.0)
+            self.optimizer.step()
+
+        with rf("target/update"):
+            if self.grad_steps % int(self.config.target_update_period) == 0:
+                self._soft_update_target(float(tau))
 
         avg_q = online_out["q_values"].mean()
 
@@ -1594,16 +1615,18 @@ class Agent:
 
     def _training_step_update(self, offline: bool = False):
         del offline
+        rf = record_function if self.profiler_active else (lambda _: nullcontext())
         curr_n = int(self.update_horizon_scheduler(self.cycle_grad_steps))
         curr_gamma = float(self.gamma_scheduler(self.cycle_grad_steps))
         tau = float(self.target_update_tau_scheduler(self.cycle_grad_steps))
 
-        replay_batch = self.replay_buffer.sample_transition_batch(
-            batch_size=int(self.config.batch_size) * self._batches_to_group,
-            update_horizon=curr_n,
-            gamma=curr_gamma,
-            subseq_len=self.seq_len,
-        )
+        with rf("rb/sample"):
+            replay_batch = self.replay_buffer.sample_transition_batch(
+                batch_size=int(self.config.batch_size) * self._batches_to_group,
+                update_horizon=curr_n,
+                gamma=curr_gamma,
+                subseq_len=self.seq_len,
+            )
 
         indices = replay_batch["indices"]
         sampling_probabilities = replay_batch["sampling_probabilities"]
@@ -1615,12 +1638,13 @@ class Agent:
         else:
             loss_weights_np = np.ones((indices.shape[0],), dtype=np.float32)
 
-        torch_batch = {
-            k: torch.as_tensor(v, device=self.device)
-            for k, v in replay_batch.items()
-            if k != "sampling_probabilities"
-        }
-        torch_batch["loss_weights"] = torch.as_tensor(loss_weights_np, device=self.device)
+        with rf("batch/tensorize"):
+            torch_batch = {
+                k: torch.as_tensor(v, device=self.device)
+                for k, v in replay_batch.items()
+                if k != "sampling_probabilities"
+            }
+            torch_batch["loss_weights"] = torch.as_tensor(loss_weights_np, device=self.device)
 
         all_dqn_losses = []
         all_losses = []
@@ -1634,7 +1658,8 @@ class Agent:
                 k: (v[sl] if isinstance(v, torch.Tensor) and v.ndim > 0 and v.shape[0] == bsz * self._batches_to_group else v)
                 for k, v in torch_batch.items()
             }
-            out = self._train_batch_chunk(chunk, tau=tau)
+            with rf("batch/chunk"):
+                out = self._train_batch_chunk(chunk, tau=tau)
 
             all_dqn_losses.append(out["dqn_loss"].detach().cpu().numpy())
             all_losses.append(float(out["loss"].item()))
@@ -1646,8 +1671,9 @@ class Agent:
             self.cycle_grad_steps += 1
 
         if self.config.use_per:
-            priorities = np.sqrt(np.concatenate(all_dqn_losses, axis=0) + 1e-10)
-            self.replay_buffer.set_priority(indices.astype(np.int32), priorities.astype(np.float32))
+            with rf("prio/update"):
+                priorities = np.sqrt(np.concatenate(all_dqn_losses, axis=0) + 1e-10)
+                self.replay_buffer.set_priority(indices.astype(np.int32), priorities.astype(np.float32))
 
         return {
             "loss": float(np.mean(all_losses)),
@@ -1704,6 +1730,7 @@ class Agent:
         else:
             self.last_obs = self._extract_frame(next_observation)
 
+        self._step_profiler()
         return train_stats
 
     def save_model(self, path: str):
@@ -2311,6 +2338,14 @@ def main():
         # Write continual summary
         summary_path = os.path.join(run_dir, "continual_summary.json")
         write_continual_summary(results, summary_path)
+        if agent.profiler is not None:
+            try:
+                agent.profiler.stop()
+            except Exception as exc:
+                print(f"*** Torch Profiler stop failed: {exc} ***")
+            agent.profiler_active = False
+            agent.profiler = None
+            print(f"*** View results: tensorboard --logdir={run_dir}/profiler ***")
     else:
         # Single game mode - CleanRL-style training loop with SyncVectorEnv
         num_envs = config.num_envs  # BBF uses single env for sequence correctness
@@ -2327,9 +2362,30 @@ def main():
                 for i in range(num_envs)
             ]
         )
-        
+
         # Reinitialize agent with correct observation space from vectorized env
         agent = Agent(envs.single_observation_space, envs.single_action_space, config)
+
+        if config.torch_profile:
+            profiler_dir = os.path.join(run_dir, "profiler")
+            os.makedirs(profiler_dir, exist_ok=True)
+            agent.profiler = profile(
+                activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                schedule=schedule(
+                    wait=max(1, config.learning_starts // 10),
+                    warmup=5,
+                    active=config.torch_profile_steps,
+                    repeat=1
+                ),
+                on_trace_ready=tensorboard_trace_handler(profiler_dir),
+                record_shapes=True,
+                profile_memory=True,
+                with_stack=False,
+            )
+            agent.profiler.start()
+            agent.profiler_active = True
+            print(f"*** Torch Profiler ENABLED - will profile {config.torch_profile_steps} steps ***")
+            print(f"*** Profiler output: {profiler_dir} ***")
         
         obs, _ = envs.reset(seed=config.seed)
         start_time = time.time()
@@ -2396,18 +2452,48 @@ def main():
             )
             obs = next_obs
 
-            if "final_info" in infos:
-                for info in infos["final_info"]:
-                    if info and "episode" in info:
-                        ep_return = float(info["episode"]["r"])
-                        all_returns.append(ep_return)
-                        print(f"--> Episode Done. Step={global_step}, Return={ep_return:.0f}, Length={info['episode']['l']}")
-                        writer.add_scalar("charts/episodic_return", ep_return, global_step)
-                        writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
-                        if ep_return > train_best_return:
-                            train_best_return = ep_return
-                            train_best_step = global_step
-                            writer.add_scalar("charts/train_best_return", train_best_return, global_step)
+            episode_infos: List[Dict[str, object]] = []
+            final_infos = infos.get("final_info")
+            if final_infos is not None:
+                final_info_mask = infos.get("_final_info")
+                if final_info_mask is None:
+                    for info in final_infos:
+                        if info:
+                            episode_infos.append(info)
+                else:
+                    for has_info, info in zip(final_info_mask, final_infos):
+                        if has_info and info:
+                            episode_infos.append(info)
+            elif "episode" in infos:
+                # Fallback for vector wrappers that surface `episode` directly with a mask.
+                episode_data = infos["episode"]
+                episode_mask = infos.get("_episode")
+                if isinstance(episode_data, dict) and episode_mask is not None:
+                    for env_idx, has_episode in enumerate(episode_mask):
+                        if has_episode:
+                            episode_infos.append(
+                                {
+                                    "episode": {
+                                        key: value[env_idx]
+                                        for key, value in episode_data.items()
+                                    }
+                                }
+                            )
+
+            for info in episode_infos:
+                if "episode" not in info:
+                    continue
+                episode = info["episode"]
+                ep_return = float(episode["r"])
+                ep_length = int(episode["l"])
+                all_returns.append(ep_return)
+                print(f"--> Episode Done. Step={global_step}, Return={ep_return:.0f}, Length={ep_length}")
+                writer.add_scalar("charts/episodic_return", ep_return, global_step)
+                writer.add_scalar("charts/episodic_length", ep_length, global_step)
+                if ep_return > train_best_return:
+                    train_best_return = ep_return
+                    train_best_step = global_step
+                    writer.add_scalar("charts/train_best_return", train_best_return, global_step)
 
             if train_stats:
                 if training_start_time is None:
@@ -2456,8 +2542,12 @@ def main():
         if config.eval_select_episodes > 0 and best_eval_score == float("-inf"):
             run_eval_checkpoint_selection(config.total_steps, "final")
 
-        # Mark profiler as inactive if still running (it will auto-cleanup)
-        if agent.profiler_active and agent.profiler is not None:
+        # Stop and flush profiler output.
+        if agent.profiler is not None:
+            try:
+                agent.profiler.stop()
+            except Exception as exc:
+                print(f"*** Torch Profiler stop failed: {exc} ***")
             agent.profiler_active = False
             agent.profiler = None
             print(f"*** Torch Profiler completed at end of training ***")
