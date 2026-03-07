@@ -31,7 +31,7 @@ import time
 from dataclasses import dataclass
 import json
 from contextlib import nullcontext
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 import gymnasium as gym
 import numpy as np
@@ -1128,6 +1128,11 @@ class Agent:
         self.q_network = BBFNetwork(self.in_channels, self.num_actions, config, obs_hw=self.frame_shape).to(self.device)
         self.target_network = BBFNetwork(self.in_channels, self.num_actions, config, obs_hw=self.frame_shape).to(self.device)
         self.target_network.load_state_dict(self.q_network.state_dict())
+        self._compiled_q_compute_outputs: Callable[..., Dict[str, torch.Tensor]] = self.q_network.compute_outputs
+        self._compiled_target_compute_outputs: Callable[..., Dict[str, torch.Tensor]] = self.target_network.compute_outputs
+        self._compiled_target_encode_project: Callable[..., torch.Tensor] = self.target_network.encode_project
+        self.torch_compile_active = False
+        self._configure_torch_compile()
 
         self.aug = RandomShift(pad=4).to(self.device)
 
@@ -1215,6 +1220,35 @@ class Agent:
             "same_trajectory",
             "loss_weights",
         )
+
+    def _configure_torch_compile(self) -> None:
+        if not bool(self.config.torch_compile):
+            return
+        compile_fn = getattr(torch, "compile", None)
+        if compile_fn is None:
+            print("[WARN] torch.compile requested but not available; using eager mode.")
+            return
+
+        compile_kwargs: Dict[str, Any] = {}
+        compile_params = inspect.signature(compile_fn).parameters
+        if "fullgraph" in compile_params:
+            compile_kwargs["fullgraph"] = False
+        mode = str(self.config.torch_compile_mode).strip()
+        if mode and mode.lower() != "default" and "mode" in compile_params:
+            compile_kwargs["mode"] = mode
+        try:
+            self._compiled_q_compute_outputs = compile_fn(self.q_network.compute_outputs, **compile_kwargs)
+            self._compiled_target_compute_outputs = compile_fn(self.target_network.compute_outputs, **compile_kwargs)
+            self._compiled_target_encode_project = compile_fn(self.target_network.encode_project, **compile_kwargs)
+            self.torch_compile_active = True
+            mode_label = compile_kwargs.get("mode", "default")
+            print(f"[INFO] torch.compile enabled for BBF network calls (mode={mode_label}).")
+        except Exception as exc:
+            self._compiled_q_compute_outputs = self.q_network.compute_outputs
+            self._compiled_target_compute_outputs = self.target_network.compute_outputs
+            self._compiled_target_encode_project = self.target_network.encode_project
+            self.torch_compile_active = False
+            print(f"[WARN] torch.compile setup failed; using eager mode. ({exc})")
 
     def _set_replay_settings(self) -> None:
         n_envs = 1
@@ -1461,8 +1495,10 @@ class Agent:
         else:
             obs_t = self._prepare_obs_for_network(stacked_state)
             with torch.no_grad():
-                net = self.target_network if self.config.target_action_selection else self.q_network
-                q_values = net.compute_outputs(obs_t)["q_values"]
+                if self.config.target_action_selection:
+                    q_values = self._compiled_target_compute_outputs(obs_t)["q_values"]
+                else:
+                    q_values = self._compiled_q_compute_outputs(obs_t)["q_values"]
                 action = int(torch.argmax(q_values, dim=1).item())
 
         self.last_obs = current_frame
@@ -1558,7 +1594,7 @@ class Agent:
         use_spr = self.config.spr_weight > 0
 
         with rf("fwd/online"):
-            online_out = self.q_network.compute_outputs(
+            online_out = self._compiled_q_compute_outputs(
                 current_state,
                 actions=actions[:, :-1],
                 do_rollout=use_spr,
@@ -1567,12 +1603,12 @@ class Agent:
 
         with rf("fwd/target_c51"), torch.no_grad():
             if self.config.use_target_network or not self.config.double_dqn:
-                target_next_logits = self.target_network.compute_outputs(next_states)["logits"]
+                target_next_logits = self._compiled_target_compute_outputs(next_states)["logits"]
             else:
                 target_next_logits = None
 
             if (not self.config.use_target_network) or self.config.double_dqn:
-                online_next_logits = self.q_network.compute_outputs(next_states)["logits"]
+                online_next_logits = self._compiled_q_compute_outputs(next_states)["logits"]
             else:
                 online_next_logits = None
 
@@ -1600,7 +1636,7 @@ class Agent:
                 with torch.no_grad():
                     future_states = states[:, 1:]
                     b, j, c, h, w = future_states.shape
-                    target_proj = self.target_network.encode_project(future_states.reshape(b * j, c, h, w))
+                    target_proj = self._compiled_target_encode_project(future_states.reshape(b * j, c, h, w))
                     spr_target = target_proj.view(b, j, -1)
 
                 spr_pred = F.normalize(spr_pred, p=2, dim=-1)
@@ -2342,6 +2378,7 @@ def main():
     print(f"  Total Steps:    {config.total_steps}")
     print(f"  Seed:           {config.seed}")
     print(f"  Learning Rate:  {config.learning_rate}")
+    print(f"  Torch Compile:  {config.torch_compile} ({config.torch_compile_mode})")
     print(f"  Full Actions:   {config.full_action_space}")
     print(f"  Continual:      {config.continual}")
     if config.continual:
