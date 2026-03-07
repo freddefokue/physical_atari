@@ -475,8 +475,63 @@ class SumTree:
         tree_idx = idx + self.capacity - 1
         change = float(priority) - self.tree[tree_idx]
         self.tree[tree_idx] = float(priority)
-        self._propagate(tree_idx, change)
+        while tree_idx != 0:
+            tree_idx = (tree_idx - 1) // 2
+            self.tree[tree_idx] += change
         self.max_priority = max(self.max_priority, float(priority))
+
+    def set_batch(self, indices: np.ndarray, priorities: np.ndarray) -> None:
+        """Bulk leaf update with aggregated parent propagation.
+
+        Semantics match repeated `set()` calls, including duplicate indices:
+        only the last priority for each index is applied.
+        """
+        idx = np.asarray(indices, dtype=np.int64).reshape(-1)
+        pri = np.asarray(priorities, dtype=np.float64).reshape(-1)
+        if idx.size == 0:
+            return
+        if idx.size != pri.size:
+            raise ValueError(f"indices/priorities length mismatch: {idx.size} vs {pri.size}")
+        # Preserve sequential set() semantics for max_priority tracking.
+        max_incoming = float(np.max(pri))
+
+        # Match sequential set() semantics for duplicates: keep only the last write.
+        if idx.size > 1:
+            rev_idx = idx[::-1]
+            _, first_rev = np.unique(rev_idx, return_index=True)
+            keep = idx.size - 1 - first_rev
+            keep.sort()
+            idx = idx[keep]
+            pri = pri[keep]
+
+        leaf_idx = idx + self.capacity - 1
+        old = self.tree[leaf_idx].copy()
+        self.tree[leaf_idx] = pri
+        delta = pri - old
+
+        nonzero = np.nonzero(delta)[0]
+        if nonzero.size == 0:
+            if max_incoming > self.max_priority:
+                self.max_priority = max_incoming
+            return
+
+        nodes = leaf_idx[nonzero]
+        changes = delta[nonzero]
+        while nodes.size > 0:
+            parents = (nodes - 1) // 2
+            uniq, inv = np.unique(parents, return_inverse=True)
+            if uniq.size == parents.size:
+                summed = changes
+            else:
+                summed = np.bincount(inv, weights=changes, minlength=uniq.size)
+            self.tree[uniq] += summed
+
+            non_root = uniq != 0
+            nodes = uniq[non_root]
+            changes = summed[non_root]
+
+        if max_incoming > self.max_priority:
+            self.max_priority = max_incoming
 
     def get(self, s: float) -> int:
         idx = 0
@@ -505,8 +560,12 @@ class SumTree:
         return self.tree[indices + self.capacity - 1]
 
     def reset_priorities(self, size: int) -> None:
-        for i in range(int(size)):
-            self.set(i, self.max_priority)
+        count = int(size)
+        if count <= 0:
+            return
+        idx = np.arange(count, dtype=np.int64)
+        pri = np.full((count,), float(self.max_priority), dtype=np.float64)
+        self.set_batch(idx, pri)
 
     @property
     def total(self) -> float:
@@ -915,8 +974,7 @@ class PrioritizedSubsequenceReplayBuffer(SubsequenceReplayBuffer):
     def set_priority(self, indices: np.ndarray, priorities: np.ndarray) -> None:
         indices = np.asarray(indices, dtype=np.int32).reshape(-1)
         priorities = np.asarray(priorities, dtype=np.float32).reshape(-1)
-        for idx, priority in zip(indices, priorities):
-            self.sum_tree.set(int(idx), float(priority))
+        self.sum_tree.set_batch(indices, priorities)
 
     def reset_priorities(self) -> None:
         self.sum_tree.reset_priorities(self.size)
@@ -1760,8 +1818,11 @@ class Agent:
 
         if self.config.use_per:
             with rf("prio/update"):
-                priorities_t = torch.sqrt(torch.cat(all_dqn_losses, dim=0) + 1e-10)
-                priorities_np = priorities_t.to(dtype=torch.float32).cpu().numpy()
+                # One D2H copy for PER targets, then do cheap elementwise math on CPU.
+                dqn_losses_np = torch.cat(all_dqn_losses, dim=0).to(dtype=torch.float32, device="cpu").numpy()
+                np.add(dqn_losses_np, 1e-10, out=dqn_losses_np)
+                np.sqrt(dqn_losses_np, out=dqn_losses_np)
+                priorities_np = dqn_losses_np
                 self.replay_buffer.set_priority(indices, priorities_np)
 
         with rf("batch/reduce_stats"):
