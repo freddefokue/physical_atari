@@ -220,23 +220,28 @@ class RandomShift(nn.Module):
         self.pad = int(pad)
         self.intensity_scale = float(intensity_scale)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, apply_intensity: bool = True) -> torch.Tensor:
         if x.dtype == torch.uint8:
             x = x.float().div_(255.0)
 
         b, c, h, w = x.shape
         if self.pad > 0:
             x = F.pad(x, (self.pad, self.pad, self.pad, self.pad), mode="replicate")
-            max_off = 2 * self.pad + 1
+            # Match official BBF/JAX offset count: randint max is exclusive, so this
+            # samples exactly 2 * pad start positions per axis.
+            max_off = 2 * self.pad
             off_y = torch.randint(0, max_off, (b,), device=x.device)
             off_x = torch.randint(0, max_off, (b,), device=x.device)
-            out = torch.empty((b, c, h, w), device=x.device, dtype=x.dtype)
-            for i in range(b):
-                out[i] = x[i, :, off_y[i]:off_y[i] + h, off_x[i]:off_x[i] + w]
+            # Batched per-image crop via integer indexing (no Python loop / scalar sync).
+            bi = torch.arange(b, device=x.device)[:, None, None, None]
+            ci = torch.arange(c, device=x.device)[None, :, None, None]
+            yi = off_y[:, None, None, None] + torch.arange(h, device=x.device)[None, None, :, None]
+            xi = off_x[:, None, None, None] + torch.arange(w, device=x.device)[None, None, None, :]
+            out = x[bi, ci, yi, xi]
         else:
             out = x
 
-        if self.training:
+        if apply_intensity:
             noise = torch.randn(b, 1, 1, 1, device=out.device, dtype=out.dtype).clamp_(-2.0, 2.0)
             out = out * (1.0 + self.intensity_scale * noise)
         return out
