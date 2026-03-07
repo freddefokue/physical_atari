@@ -1205,7 +1205,6 @@ class Agent:
         self.game_frame_counters: Dict[str, int] = {}
         self.profiler = None
         self.profiler_active = False
-        self._pin_replay_memory = self.device.type == "cuda"
         self._replay_train_keys = (
             "state",
             "action",
@@ -1216,8 +1215,6 @@ class Agent:
             "same_trajectory",
             "loss_weights",
         )
-        self._h2d_stream = torch.cuda.Stream(device=self.device) if self.device.type == "cuda" else None
-        self._h2d_chunk_buffers: List[Dict[str, torch.Tensor]] = [{}, {}]
 
     def _set_replay_settings(self) -> None:
         n_envs = 1
@@ -1667,15 +1664,9 @@ class Agent:
             torch_batch_cpu: Dict[str, torch.Tensor] = {}
             for key in ("state", "action", "return", "discount", "next_state", "terminal", "same_trajectory"):
                 value = replay_batch[key]
-                tensor = torch.as_tensor(value)
-                if self._pin_replay_memory:
-                    tensor = tensor.pin_memory()
-                torch_batch_cpu[key] = tensor
+                torch_batch_cpu[key] = torch.as_tensor(value)
 
-            loss_weights = torch.as_tensor(loss_weights_np)
-            if self._pin_replay_memory:
-                loss_weights = loss_weights.pin_memory()
-            torch_batch_cpu["loss_weights"] = loss_weights
+            torch_batch_cpu["loss_weights"] = torch.as_tensor(loss_weights_np)
 
         return {
             "cycle_grad_steps": int(cycle_grad_steps),
@@ -1685,34 +1676,6 @@ class Agent:
             "indices": indices,
             "torch_batch_cpu": torch_batch_cpu,
         }
-
-    def _get_h2d_chunk_buffer(self, slot: int, key: str, src: torch.Tensor) -> torch.Tensor:
-        dst = self._h2d_chunk_buffers[slot].get(key)
-        if dst is None or dst.shape != src.shape or dst.dtype != src.dtype:
-            dst = torch.empty(src.shape, dtype=src.dtype, device=self.device)
-            self._h2d_chunk_buffers[slot][key] = dst
-        return dst
-
-    def _launch_chunk_h2d(
-        self,
-        torch_batch_cpu: Dict[str, torch.Tensor],
-        sl: slice,
-        slot: int,
-        rf,
-    ) -> tuple[Dict[str, torch.Tensor], torch.cuda.Event]:
-        if self._h2d_stream is None:
-            raise RuntimeError("H2D stream requested on non-CUDA device.")
-
-        chunk: Dict[str, torch.Tensor] = {}
-        with rf("batch/tensorize"), torch.cuda.stream(self._h2d_stream):
-            for key in self._replay_train_keys:
-                src = torch_batch_cpu[key][sl]
-                dst = self._get_h2d_chunk_buffer(slot, key, src)
-                dst.copy_(src, non_blocking=True)
-                chunk[key] = dst
-            event = torch.cuda.Event()
-            event.record(self._h2d_stream)
-        return chunk, event
 
     def _training_step_update_from_prepared(self, prepared: Dict[str, Any], rf=None):
         if rf is None:
@@ -1730,63 +1693,32 @@ class Agent:
         all_avg_q = []
 
         bsz = int(self.config.batch_size)
-        if self.device.type == "cuda" and self._h2d_stream is not None and self._batches_to_group > 0:
-            curr_slot = 0
-            curr_sl = slice(0, bsz)
-            curr_chunk, curr_event = self._launch_chunk_h2d(torch_batch_cpu, curr_sl, curr_slot, rf)
-            current_stream = torch.cuda.current_stream(device=self.device)
+        with rf("batch/tensorize"):
+            if self.device.type == "cuda":
+                torch_batch = {
+                    key: torch_batch_cpu[key].to(self.device, non_blocking=True)
+                    for key in self._replay_train_keys
+                }
+            else:
+                torch_batch = {key: torch_batch_cpu[key].to(self.device) for key in self._replay_train_keys}
 
-            for i in range(self._batches_to_group):
-                with rf("batch/tensorize_wait"):
-                    current_stream.wait_event(curr_event)
+        for i in range(self._batches_to_group):
+            sl = slice(i * bsz, (i + 1) * bsz)
+            chunk = {key: torch_batch[key][sl] for key in self._replay_train_keys}
 
-                next_chunk = None
-                next_event = None
-                next_slot = curr_slot
-                if i + 1 < self._batches_to_group:
-                    next_slot = 1 - curr_slot
-                    next_sl = slice((i + 1) * bsz, (i + 2) * bsz)
-                    next_chunk, next_event = self._launch_chunk_h2d(torch_batch_cpu, next_sl, next_slot, rf)
+            with rf("batch/chunk"):
+                out = self._train_batch_chunk(chunk, tau=tau)
 
-                with rf("batch/chunk"):
-                    out = self._train_batch_chunk(curr_chunk, tau=tau)
+            all_dqn_losses.append(out["dqn_loss"].detach().cpu().numpy())
+            all_losses.append(float(out["loss"].item()))
+            all_spr.append(float(out["spr_loss"].mean().item()))
+            all_avg_q.append(float(out["avg_q"].item()))
 
-                all_dqn_losses.append(out["dqn_loss"].detach().cpu().numpy())
-                all_losses.append(float(out["loss"].item()))
-                all_spr.append(float(out["spr_loss"].mean().item()))
-                all_avg_q.append(float(out["avg_q"].item()))
-
-                self.grad_steps += 1
-                self.grad_step = self.grad_steps
-                self.cycle_grad_steps += 1
-                if self.profiler_active:
-                    # Keep profiler steps aligned with optimizer updates for detailed traces.
-                    self._step_profiler()
-
-                if next_chunk is not None and next_event is not None:
-                    curr_chunk, curr_event, curr_slot = next_chunk, next_event, next_slot
-        else:
-            for i in range(self._batches_to_group):
-                sl = slice(i * bsz, (i + 1) * bsz)
-                with rf("batch/tensorize"):
-                    chunk = {
-                        key: torch_batch_cpu[key][sl].to(self.device)
-                        for key in self._replay_train_keys
-                    }
-
-                with rf("batch/chunk"):
-                    out = self._train_batch_chunk(chunk, tau=tau)
-
-                all_dqn_losses.append(out["dqn_loss"].detach().cpu().numpy())
-                all_losses.append(float(out["loss"].item()))
-                all_spr.append(float(out["spr_loss"].mean().item()))
-                all_avg_q.append(float(out["avg_q"].item()))
-
-                self.grad_steps += 1
-                self.grad_step = self.grad_steps
-                self.cycle_grad_steps += 1
-                if self.profiler_active:
-                    self._step_profiler()
+            self.grad_steps += 1
+            self.grad_step = self.grad_steps
+            self.cycle_grad_steps += 1
+            if self.profiler_active:
+                self._step_profiler()
 
         if self.config.use_per:
             with rf("prio/update"):
