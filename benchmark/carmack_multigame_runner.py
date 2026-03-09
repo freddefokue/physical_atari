@@ -508,6 +508,106 @@ class CarmackMultiGameRunner:
         latency_accumulator = 0.0
         pending_catchup_frames = 0
         realtime_catchup_frames = 0
+        last_logged_frame = 0
+        last_log_time = float(run_start_time)
+        last_train_steps = 0
+
+        def _coerce_optional_float(value: Any) -> Optional[float]:
+            try:
+                out = float(value)
+            except (TypeError, ValueError):
+                return None
+            return out if math.isfinite(out) else None
+
+        def _coerce_optional_int(value: Any) -> Optional[int]:
+            if isinstance(value, bool):
+                return int(value)
+            if isinstance(value, int):
+                return int(value)
+            try:
+                out_f = float(value)
+            except (TypeError, ValueError):
+                return None
+            if not math.isfinite(out_f):
+                return None
+            return int(out_f)
+
+        def _is_bbf_stats(stats: Dict[str, Any]) -> bool:
+            if not isinstance(stats, dict):
+                return False
+            if "last_train_spr_loss" in stats or "replay_add_count" in stats:
+                return True
+            phase = stats.get("phase")
+            return isinstance(phase, str) and phase in {"warmup", "training"}
+
+        def _build_bbf_train_log(
+            *,
+            frame: int,
+            game_id: str,
+            visit_idx: int,
+            cycle_idx: int,
+            stats: Dict[str, Any],
+            fps: Optional[float] = None,
+            train_sps: Optional[float] = None,
+            train_sps_total: Optional[float] = None,
+            train_steps_fallback: Optional[int] = None,
+        ) -> Optional[str]:
+            if not _is_bbf_stats(stats):
+                return None
+            parts = [
+                f"[train] frame={int(frame)}",
+                f"game={str(game_id)}",
+                f"visit_idx={int(visit_idx)}",
+                f"cycle_idx={int(cycle_idx)}",
+            ]
+            if fps is not None:
+                parts.append(f"fps={float(fps):.2f}")
+
+            phase = stats.get("phase")
+            if isinstance(phase, str) and phase:
+                parts.append(f"phase={phase}")
+
+            replay_add = _coerce_optional_int(stats.get("replay_add_count"))
+            replay_size = _coerce_optional_int(stats.get("replay_size"))
+            buffer_size = _coerce_optional_int(stats.get("buffer_size"))
+            learning_starts = _coerce_optional_int(stats.get("learning_starts"))
+            replay_fill = replay_size if replay_size is not None else replay_add
+            if replay_fill is not None and buffer_size is not None:
+                parts.append(f"replay={replay_fill}/{buffer_size}")
+            elif replay_fill is not None:
+                parts.append(f"replay={replay_fill}")
+            if learning_starts is not None:
+                parts.append(f"learning_starts={learning_starts}")
+
+            train_steps_value = _coerce_optional_int(stats.get("train_steps"))
+            if train_steps_value is None:
+                train_steps_value = train_steps_fallback
+            if train_steps_value is not None:
+                parts.append(f"train_steps={int(train_steps_value)}")
+
+            grad_steps_value = _coerce_optional_int(stats.get("grad_steps"))
+            if grad_steps_value is not None:
+                parts.append(f"grad_steps={int(grad_steps_value)}")
+
+            if train_sps is not None:
+                parts.append(f"train_sps={float(train_sps):.2f}")
+            if train_sps_total is not None:
+                parts.append(f"train_sps_total={float(train_sps_total):.2f}")
+
+            loss_value = _coerce_optional_float(stats.get("last_train_loss"))
+            if loss_value is not None:
+                parts.append(f"loss={loss_value:.3f}")
+            spr_value = _coerce_optional_float(stats.get("last_train_spr_loss"))
+            if spr_value is not None:
+                parts.append(f"spr={spr_value:.3f}")
+            avg_q_value = _coerce_optional_float(stats.get("last_train_avg_q"))
+            if avg_q_value is not None:
+                parts.append(f"avg_q={avg_q_value:.2f}")
+            gamma_value = _coerce_optional_float(stats.get("last_train_gamma"))
+            if gamma_value is not None:
+                parts.append(f"gamma={gamma_value:.4f}")
+
+            return " ".join(parts)
 
         taken_action = int(self.config.default_action_idx)
         catchup_hold_action = int(taken_action)
@@ -675,8 +775,12 @@ class CarmackMultiGameRunner:
                                 stats = payload
                         except Exception:  # pragma: no cover - defensive
                             stats = {}
-                    elapsed = max(float(self.time_fn()) - run_start_time, 1e-6)
+                    now = float(self.time_fn())
+                    elapsed = max(now - run_start_time, 1e-6)
+                    delta_t = max(now - last_log_time, 1e-9)
+                    delta_frames = int(global_frame_idx + 1 - last_logged_frame)
                     fps = float(global_frame_idx + 1) / elapsed
+                    fps_window = float(delta_frames / delta_t)
                     fr = global_frame_idx + 1
                     gm = visit.game_id
                     vi = visit.visit_idx
@@ -696,6 +800,29 @@ class CarmackMultiGameRunner:
                             f'game {gm} cycle {ci} visit {vi}',
                             flush=True,
                         )
+                    elif _is_bbf_stats(stats):
+                        train_steps = _coerce_optional_int(stats.get("train_steps"))
+                        if train_steps is None:
+                            train_steps = _coerce_optional_int(stats.get("train_steps_estimate"))
+                        if train_steps is None:
+                            train_steps = int(last_train_steps)
+                        train_delta = int(max(int(train_steps) - int(last_train_steps), 0))
+                        train_sps = float(train_delta / delta_t)
+                        train_sps_total = float(int(train_steps) / elapsed)
+                        bbf_msg = _build_bbf_train_log(
+                            frame=int(fr),
+                            game_id=str(gm),
+                            visit_idx=int(vi),
+                            cycle_idx=int(ci),
+                            stats=stats,
+                            fps=float(fps_window),
+                            train_sps=float(train_sps),
+                            train_sps_total=float(train_sps_total),
+                            train_steps_fallback=int(train_steps),
+                        )
+                        if bbf_msg is not None:
+                            print(bbf_msg, flush=True)
+                        last_train_steps = int(train_steps)
                     else:
                         msg = (
                             f"[train] frame={fr} game={gm} visit_idx={vi} fps={fps:.1f}"
@@ -716,6 +843,8 @@ class CarmackMultiGameRunner:
                                 except (TypeError, ValueError):
                                     msg += f" {key}={value}"
                         print(msg, flush=True)
+                    last_logged_frame = int(global_frame_idx + 1)
+                    last_log_time = float(now)
 
                 if self.event_writer is not None:
                     self.event_writer.write(event)

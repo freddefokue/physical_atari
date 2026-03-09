@@ -270,3 +270,84 @@ def test_build_agent_bbf_multigame_import_error_is_actionable(monkeypatch):
 
     with pytest.raises(ImportError, match=r"agent=bbf requires benchmark.agents_bbf"):
         build_multigame_agent(args, num_actions=18, total_frames=200)
+
+
+def test_bbf_adapter_get_stats_exposes_stable_bbf_scalars(monkeypatch):
+    router = _FakeImportRouter()
+    monkeypatch.setattr("benchmark.agents_bbf.importlib.import_module", router)
+
+    adapter = BBFAgentAdapter(
+        seed=0,
+        num_actions=6,
+        total_frames=40,
+        config=BBFAdapterConfig(learning_starts=2000),
+    )
+    assert router.agent is not None
+
+    class _Replay:
+        def __init__(self) -> None:
+            self.add_count = 2500
+
+        def num_elements(self):
+            return 1234
+
+    router.agent.replay_buffer = _Replay()
+    router.agent.training_steps = 77
+    router.agent.grad_steps = 44
+    router.agent.global_step = 301
+
+    adapter._raw_frames = 12
+    adapter._decision_steps = 5
+    adapter._transition_steps = 3
+    adapter._last_train_stats = {
+        "loss": np.float32(2.3456),
+        "spr_loss": np.float32(0.6789),
+        "avg_q": np.float32(1.25),
+        "gamma": np.float32(0.97654),
+    }
+
+    stats = adapter.get_stats()
+
+    assert stats["phase"] == "training"
+    assert stats["replay_size"] == 1234
+    assert stats["replay_add_count"] == 2500
+    assert stats["buffer_size"] == 200000
+    assert stats["learning_starts"] == 2000
+    assert stats["train_steps"] == 77
+    assert stats["grad_steps"] == 44
+    assert stats["global_step"] == 301
+    assert stats["decision_steps"] == 5
+    assert stats["transition_steps"] == 3
+    assert stats["last_train_loss"] == pytest.approx(2.3456, rel=1e-4)
+    assert stats["last_train_spr_loss"] == pytest.approx(0.6789, rel=1e-4)
+    assert stats["last_train_avg_q"] == pytest.approx(1.25, rel=1e-4)
+    assert stats["last_train_gamma"] == pytest.approx(0.97654, rel=1e-4)
+
+
+def test_bbf_adapter_phase_stays_warmup_until_update_gate_or_grad_steps(monkeypatch):
+    router = _FakeImportRouter()
+    monkeypatch.setattr("benchmark.agents_bbf.importlib.import_module", router)
+
+    adapter = BBFAgentAdapter(
+        seed=0,
+        num_actions=6,
+        total_frames=40,
+        config=BBFAdapterConfig(learning_starts=2000, buffer_size=50000),
+    )
+    assert router.agent is not None
+
+    class _Replay:
+        def __init__(self) -> None:
+            self.add_count = 2501
+
+        def num_elements(self):
+            return 2501
+
+    router.agent.replay_buffer = _Replay()
+    router.agent.training_steps = 2001
+    router.agent.grad_steps = 0
+    router.agent.learning_ready_step = 3000
+    router.agent.update_period = 4
+
+    stats = adapter.get_stats()
+    assert stats["phase"] == "warmup"

@@ -85,6 +85,32 @@ class RecordingFrameAgent:
         return int(self.action_idx)
 
 
+class RecordingFrameAgentWithBBFStats(RecordingFrameAgent):
+    def __init__(self, action_idx: int = 1) -> None:
+        super().__init__(action_idx=action_idx)
+        self._train_steps = 0
+
+    def frame(self, obs_rgb, reward, boundary) -> int:
+        out = super().frame(obs_rgb, reward, boundary)
+        self._train_steps += 3
+        return int(out)
+
+    def get_stats(self):
+        return {
+            "phase": "warmup",
+            "replay_add_count": 45,
+            "replay_size": 45,
+            "buffer_size": 50000,
+            "learning_starts": 2000,
+            "train_steps": int(self._train_steps),
+            "grad_steps": 0,
+            "last_train_loss": 1.8823,
+            "last_train_spr_loss": 0.6404,
+            "last_train_avg_q": 2.113,
+            "last_train_gamma": 0.97804,
+        }
+
+
 def _run_with_memory(env, agent, schedule, config, *, time_fn=None):
     events = MemoryWriter()
     episodes = MemoryWriter()
@@ -427,3 +453,35 @@ def test_carmack_multigame_real_time_handles_termination_during_catchup():
     assert summary["reset_count"] >= 1
     assert len(episodes) >= 2
     assert len(segments) >= 2
+
+
+def test_carmack_multigame_bbf_stats_use_bbf_train_log_branch(capsys):
+    schedule = Schedule(
+        ScheduleConfig(games=["pong"], base_visit_frames=2, num_cycles=1, seed=0, jitter_pct=0.0, min_visit_frames=1)
+    )
+    env = MockMultiGameEnv(action_sets={"pong": list(range(8))})
+    agent = RecordingFrameAgentWithBBFStats(action_idx=1)
+    config = CarmackMultiGameRunnerConfig(
+        decision_interval=1,
+        delay_frames=0,
+        default_action_idx=0,
+        include_timestamps=False,
+        global_action_set=tuple(range(8)),
+        episode_log_interval=0,
+        train_log_interval=1,
+    )
+    summary, _, _, _ = _run_with_memory(env, agent, schedule, config)
+    out = capsys.readouterr().out
+
+    assert summary["frames"] == 2
+    assert "[train] frame=1 game=pong visit_idx=0 cycle_idx=0" in out
+    assert "phase=warmup" in out
+    assert "replay=45/50000" in out
+    assert "learning_starts=2000" in out
+    assert "train_steps=" in out
+    assert "grad_steps=0" in out
+    assert "loss=1.882" in out
+    assert "spr=0.640" in out
+    assert "avg_q=2.11" in out
+    assert "gamma=0.9780" in out
+    assert "train_loss_ema=" not in out

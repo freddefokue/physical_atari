@@ -62,6 +62,32 @@ class RecordingFrameAgentWithMalformedStats(RecordingFrameAgent):
         }
 
 
+class RecordingFrameAgentWithBBFStats(RecordingFrameAgent):
+    def __init__(self, action_idx: int = 1) -> None:
+        super().__init__(action_idx=action_idx)
+        self._train_steps = 0
+
+    def frame(self, obs_rgb, reward, end_of_episode) -> int:
+        out = super().frame(obs_rgb, reward, end_of_episode)
+        self._train_steps += 4
+        return int(out)
+
+    def get_stats(self):
+        return {
+            "phase": "training",
+            "replay_add_count": 120,
+            "replay_size": 120,
+            "buffer_size": 50000,
+            "learning_starts": 2000,
+            "train_steps": int(self._train_steps),
+            "grad_steps": 9,
+            "last_train_loss": 2.3142,
+            "last_train_spr_loss": 0.8422,
+            "last_train_avg_q": 1.9234,
+            "last_train_gamma": 0.97105,
+        }
+
+
 class RecordingBoundaryFrameAgent:
     def __init__(self, action_idx: int = 1) -> None:
         self.action_idx = int(action_idx)
@@ -426,6 +452,41 @@ def test_carmack_runner_malformed_stats_do_not_crash_logging(capsys):
     assert summary["frames"] == 2
     assert summary["episodes_completed"] == 1
     assert "[train]" in out
+
+
+def test_carmack_runner_bbf_stats_use_bbf_train_log_branch(capsys):
+    env = ScriptedEnv(
+        action_set=list(range(4)),
+        rewards=[0.0, 0.0],
+        lives_seq=[3, 3],
+        terminated_at=set(),
+        truncated_at=set(),
+    )
+    agent = RecordingFrameAgentWithBBFStats(action_idx=1)
+    config = CarmackRunnerConfig(
+        total_frames=2,
+        delay_frames=0,
+        include_timestamps=False,
+        progress_log_interval_frames=1,
+        pulse_log_interval=0,
+        reset_log_interval=0,
+        max_frames_without_reward=999,
+    )
+    summary, _, _ = run_with_memory(env, agent, config)
+    out = capsys.readouterr().out
+
+    assert summary["frames"] == 2
+    assert "[train] frame=1" in out
+    assert "phase=training" in out
+    assert "replay=120/50000" in out
+    assert "learning_starts=2000" in out
+    assert "train_steps=" in out
+    assert "grad_steps=9" in out
+    assert "loss=2.314" in out
+    assert "spr=0.842" in out
+    assert "avg_q=1.92" in out
+    assert "gamma=0.9710" in out
+    assert "err_avg=" not in out
 
 
 def test_carmack_runner_new_boundary_payload_timeout_marks_truncated():

@@ -344,6 +344,101 @@ class CarmackCompatRunner:
                 return None
             return out if math.isfinite(out) else None
 
+        def _coerce_optional_int(value: Any) -> Optional[int]:
+            if isinstance(value, bool):
+                return int(value)
+            if isinstance(value, int):
+                return int(value)
+            try:
+                out_f = float(value)
+            except (TypeError, ValueError):
+                return None
+            if not math.isfinite(out_f):
+                return None
+            return int(out_f)
+
+        def _is_bbf_stats(stats: Dict[str, Any]) -> bool:
+            if not isinstance(stats, dict):
+                return False
+            if "last_train_spr_loss" in stats or "replay_add_count" in stats:
+                return True
+            phase = stats.get("phase")
+            return isinstance(phase, str) and phase in {"warmup", "training"}
+
+        def _build_bbf_train_log(
+            *,
+            frame: int,
+            stats: Dict[str, Any],
+            fps: Optional[float] = None,
+            fps_total: Optional[float] = None,
+            train_sps: Optional[float] = None,
+            train_sps_total: Optional[float] = None,
+            episode_return_value: Optional[float] = None,
+            episode_length_value: Optional[int] = None,
+            resets_value: Optional[int] = None,
+            train_steps_fallback: Optional[int] = None,
+        ) -> Optional[str]:
+            if not _is_bbf_stats(stats):
+                return None
+            parts = [f"[train] frame={int(frame)}"]
+            if fps is not None:
+                parts.append(f"fps={float(fps):.2f}")
+            if fps_total is not None:
+                parts.append(f"fps_total={float(fps_total):.2f}")
+
+            phase = stats.get("phase")
+            if isinstance(phase, str) and phase:
+                parts.append(f"phase={phase}")
+
+            replay_add = _coerce_optional_int(stats.get("replay_add_count"))
+            replay_size = _coerce_optional_int(stats.get("replay_size"))
+            buffer_size = _coerce_optional_int(stats.get("buffer_size"))
+            learning_starts = _coerce_optional_int(stats.get("learning_starts"))
+            replay_fill = replay_size if replay_size is not None else replay_add
+            if replay_fill is not None and buffer_size is not None:
+                parts.append(f"replay={replay_fill}/{buffer_size}")
+            elif replay_fill is not None:
+                parts.append(f"replay={replay_fill}")
+            if learning_starts is not None:
+                parts.append(f"learning_starts={learning_starts}")
+
+            train_steps_value = _coerce_optional_int(stats.get("train_steps"))
+            if train_steps_value is None:
+                train_steps_value = train_steps_fallback
+            if train_steps_value is not None:
+                parts.append(f"train_steps={int(train_steps_value)}")
+
+            grad_steps_value = _coerce_optional_int(stats.get("grad_steps"))
+            if grad_steps_value is not None:
+                parts.append(f"grad_steps={int(grad_steps_value)}")
+
+            if train_sps is not None:
+                parts.append(f"train_sps={float(train_sps):.2f}")
+            if train_sps_total is not None:
+                parts.append(f"train_sps_total={float(train_sps_total):.2f}")
+
+            if episode_return_value is not None:
+                parts.append(f"episode_return={float(episode_return_value):.3f}")
+            if episode_length_value is not None:
+                parts.append(f"episode_length={int(episode_length_value)}")
+            if resets_value is not None:
+                parts.append(f"resets={int(resets_value)}")
+
+            loss_value = _coerce_optional_float(stats.get("last_train_loss"))
+            if loss_value is not None:
+                parts.append(f"loss={loss_value:.3f}")
+            spr_value = _coerce_optional_float(stats.get("last_train_spr_loss"))
+            if spr_value is not None:
+                parts.append(f"spr={spr_value:.3f}")
+            avg_q_value = _coerce_optional_float(stats.get("last_train_avg_q"))
+            if avg_q_value is not None:
+                parts.append(f"avg_q={avg_q_value:.2f}")
+            gamma_value = _coerce_optional_float(stats.get("last_train_gamma"))
+            if gamma_value is not None:
+                parts.append(f"gamma={gamma_value:.4f}")
+
+            return " ".join(parts)
+
         frame_idx = 0
         while frame_idx < int(self.config.total_frames):
             # Mirror agent_delay_target.py cadence: update rolling average only when the
@@ -536,6 +631,18 @@ class CarmackCompatRunner:
                             f"avg {avg_for_log:4.1f}",
                             flush=True,
                         )
+                    elif _is_bbf_stats(stats):
+                        bbf_msg = _build_bbf_train_log(
+                            frame=int(frame_idx),
+                            stats=stats,
+                            fps=float(frame_rate),
+                            episode_return_value=float(event_episode_return),
+                            episode_length_value=int(event_episode_length),
+                            resets_value=int(reset_count),
+                            train_steps_fallback=_coerce_optional_int(stats.get("train_steps_estimate")),
+                        )
+                        if bbf_msg is not None:
+                            print(bbf_msg, flush=True)
                     else:
                         err_avg = _coerce_float(stats.get("avg_error_ema", 0.0), default=0.0)
                         err_max = _coerce_float(stats.get("max_error_ema", 0.0), default=0.0)
@@ -620,6 +727,21 @@ class CarmackCompatRunner:
                         f"kl {_ft(stats.get('approx_kl'))}",
                         flush=True,
                     )
+                elif _is_bbf_stats(stats):
+                    bbf_msg = _build_bbf_train_log(
+                        frame=int(fr),
+                        stats=stats,
+                        fps=float(fps),
+                        fps_total=float(fps_total),
+                        train_sps=float(train_sps),
+                        train_sps_total=float(train_sps_total),
+                        episode_return_value=float(event_episode_return),
+                        episode_length_value=int(event_episode_length),
+                        resets_value=int(reset_count),
+                        train_steps_fallback=int(train_steps),
+                    )
+                    if bbf_msg is not None:
+                        print(bbf_msg, flush=True)
                 else:
                     msg = (
                         "[train] "

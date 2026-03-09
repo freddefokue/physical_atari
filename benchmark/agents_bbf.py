@@ -343,10 +343,81 @@ class BBFAgentAdapter:
             "decision_steps": int(self._decision_steps),
             "transition_steps": int(self._transition_steps),
             "last_action_idx": int(self._held_action_idx),
+            "learning_starts": int(self._config.learning_starts),
+            "buffer_size": int(self._config.buffer_size),
         }
+
+        replay_buffer = getattr(self._agent, "replay_buffer", None)
+        replay_add_count: Optional[int] = None
+        replay_size: Optional[int] = None
+        if replay_buffer is not None:
+            add_count = getattr(replay_buffer, "add_count", None)
+            if isinstance(add_count, (int, np.integer)):
+                replay_add_count = int(add_count)
+            size_fn = getattr(replay_buffer, "num_elements", None)
+            if callable(size_fn):
+                try:
+                    size_value = size_fn()
+                    if isinstance(size_value, (int, np.integer)):
+                        replay_size = int(size_value)
+                except Exception:  # pragma: no cover - defensive
+                    replay_size = None
+            if replay_size is None:
+                try:
+                    replay_size = int(len(replay_buffer))
+                except Exception:  # pragma: no cover - defensive
+                    replay_size = None
+        if replay_add_count is not None:
+            stats["replay_add_count"] = int(replay_add_count)
+        if replay_size is not None:
+            stats["replay_size"] = int(replay_size)
+
+        for key in ("training_steps", "grad_steps", "global_step"):
+            value = getattr(self._agent, key, None)
+            if isinstance(value, (int, np.integer)):
+                mapped = "train_steps" if key == "training_steps" else str(key)
+                stats[mapped] = int(value)
+        for key in ("learning_ready_step", "update_period"):
+            value = getattr(self._agent, key, None)
+            if isinstance(value, (int, np.integer)):
+                stats[str(key)] = int(value)
+
         if self._last_train_stats:
-            for key, value in self._last_train_stats.items():
-                stats[f"last_train_{key}"] = _to_json_scalar(value)
+            metric_map = {
+                "loss": "last_train_loss",
+                "spr_loss": "last_train_spr_loss",
+                "avg_q": "last_train_avg_q",
+                "gamma": "last_train_gamma",
+            }
+            for src, dst in metric_map.items():
+                if src in self._last_train_stats:
+                    value = _to_json_scalar(self._last_train_stats[src])
+                    if isinstance(value, (int, float, bool, str)) or value is None:
+                        stats[dst] = value
+
+        train_steps_value = stats.get("train_steps")
+        grad_steps_value = stats.get("grad_steps")
+        learning_ready_step = stats.get("learning_ready_step")
+        update_period = stats.get("update_period")
+        can_train_gate = None
+        if isinstance(replay_add_count, int) and isinstance(train_steps_value, int):
+            ready_step = (
+                int(learning_ready_step)
+                if isinstance(learning_ready_step, int)
+                else int(self._config.learning_starts)
+            )
+            period = int(update_period) if isinstance(update_period, int) and int(update_period) > 0 else 1
+            can_train_gate = bool(
+                int(replay_add_count) > int(self._config.learning_starts)
+                and int(train_steps_value) >= int(ready_step)
+                and (int(train_steps_value) % int(period) == 0)
+            )
+
+        # "training" should indicate BBF updates are active, not just post-warmup replay fill.
+        if isinstance(grad_steps_value, int):
+            stats["phase"] = "training" if int(grad_steps_value) > 0 else "warmup"
+        elif isinstance(can_train_gate, bool):
+            stats["phase"] = "training" if bool(can_train_gate) else "warmup"
 
         get_stats_fn = getattr(self._agent, "get_stats", None)
         if callable(get_stats_fn):
@@ -354,7 +425,11 @@ class BBFAgentAdapter:
                 payload = get_stats_fn()
                 if isinstance(payload, dict):
                     for key, value in payload.items():
-                        stats[str(key)] = _to_json_scalar(value)
+                        if key in stats:
+                            continue
+                        scalar = _to_json_scalar(value)
+                        if isinstance(scalar, (int, float, bool, str)) or scalar is None:
+                            stats[str(key)] = scalar
             except Exception:  # pragma: no cover - defensive
                 pass
         return stats
