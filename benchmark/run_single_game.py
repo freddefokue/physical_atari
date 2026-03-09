@@ -9,7 +9,7 @@ import platform
 import random
 import sys
 from pathlib import Path
-from typing import Dict, Mapping, Optional
+from typing import Dict, Mapping, Optional, Sequence
 
 import numpy as np
 
@@ -25,6 +25,59 @@ from benchmark.logging_utils import JsonlWriter, dump_json, make_run_dir
 from benchmark.runner import BenchmarkRunner, RunnerConfig
 
 RUNTIME_FINGERPRINT_SCHEMA_VERSION = "runtime_fingerprint_v1"
+
+
+def _resolve_global_action_set() -> Sequence[int]:
+    """Resolve canonical Atari action vocabulary (prefer ale_py.Action values)."""
+    try:
+        from ale_py import Action  # pylint: disable=import-outside-toplevel
+
+        values = [int(action) for action in Action]
+        if values:
+            return tuple(values)
+    except Exception:  # pragma: no cover - optional runtime path
+        pass
+    return tuple(range(18))
+
+
+class _CanonicalActionSetEnvAdapter:
+    """
+    Present a canonical action-index space while stepping the wrapped ALE env.
+
+    Used by BBF so single-game runs match the same global action-index contract
+    as multi-game runs: agent outputs an index over canonical ALE actions and the
+    adapter resolves that to the current game's local action index.
+    """
+
+    def __init__(self, env: ALEAtariEnv, global_action_set: Sequence[int], default_action_idx: int) -> None:
+        if not global_action_set:
+            raise ValueError("global_action_set must not be empty")
+        self._env = env
+        self.action_set = [int(a) for a in global_action_set]
+        if default_action_idx < 0 or default_action_idx >= len(self.action_set):
+            raise ValueError(f"--default-action-idx must be in [0, {len(self.action_set) - 1}]")
+
+        local_actions = [int(a) for a in self._env.action_set]
+        if not local_actions:
+            raise ValueError("wrapped env.action_set must not be empty")
+
+        self._local_lookup = {int(action): idx for idx, action in enumerate(local_actions)}
+        default_ale_action = int(self.action_set[int(default_action_idx)])
+        self._local_fallback_idx = int(self._local_lookup.get(default_ale_action, 0))
+
+    def reset(self):
+        return self._env.reset()
+
+    def lives(self) -> int:
+        return int(self._env.lives())
+
+    def step(self, action_idx: int):
+        action_idx = int(action_idx)
+        if action_idx < 0 or action_idx >= len(self.action_set):
+            raise ValueError(f"action_idx {action_idx} out of bounds [0, {len(self.action_set) - 1}]")
+        ale_action = int(self.action_set[action_idx])
+        local_idx = int(self._local_lookup.get(ale_action, self._local_fallback_idx))
+        return self._env.step(local_idx)
 
 
 def parse_args() -> argparse.Namespace:
@@ -57,7 +110,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--agent",
         type=str,
-        choices=["random", "repeat", "tinydqn", "delay_target", "ppo"],
+        choices=["random", "repeat", "tinydqn", "delay_target", "ppo", "bbf"],
         default="random",
         help="Agent type.",
     )
@@ -261,6 +314,38 @@ def parse_args() -> argparse.Namespace:
         default=4,
         help="PPO decision interval in frames (agent-owned action repeat).",
     )
+    parser.add_argument("--bbf-learning-starts", type=int, default=2000, help="BBF warmup transitions before learning.")
+    parser.add_argument("--bbf-buffer-size", type=int, default=200000, help="BBF replay buffer size.")
+    parser.add_argument("--bbf-batch-size", type=int, default=32, help="BBF batch size.")
+    parser.add_argument("--bbf-replay-ratio", type=int, default=64, help="BBF replay ratio.")
+    parser.add_argument(
+        "--bbf-reset-interval",
+        type=int,
+        default=20000,
+        help="BBF periodic hard-reset interval in decision steps (0 disables).",
+    )
+    parser.add_argument("--bbf-no-resets-after", type=int, default=100000, help="Disable BBF resets after this step.")
+    parser.add_argument(
+        "--bbf-use-per",
+        type=int,
+        choices=[0, 1],
+        default=1,
+        help="Enable prioritized replay in BBF (1=yes, 0=no).",
+    )
+    parser.add_argument(
+        "--bbf-use-amp",
+        type=int,
+        choices=[0, 1],
+        default=0,
+        help="Enable AMP for BBF (CUDA only).",
+    )
+    parser.add_argument(
+        "--bbf-torch-compile",
+        type=int,
+        choices=[0, 1],
+        default=0,
+        help="Enable torch.compile for BBF.",
+    )
     parser.add_argument(
         "--timestamps",
         type=int,
@@ -306,6 +391,15 @@ def validate_args(args: argparse.Namespace) -> None:
             "--agent ppo currently requires --runner-mode carmack_compat "
             "to ensure reward/action alignment from Carmack boundary payloads."
         )
+    if str(args.agent) == "bbf" and str(args.runner_mode) != "carmack_compat":
+        raise ValueError(
+            "--agent bbf currently requires --runner-mode carmack_compat "
+            "so the adapter can reconstruct Atari-style step cadence from frame-level boundaries."
+        )
+    if str(args.agent) == "bbf" and int(args.full_action_space) != 1:
+        raise ValueError("--agent bbf requires --full-action-space 1 (canonical action mapping).")
+    if str(args.agent) == "bbf" and bool(int(getattr(args, "real_time_mode", 0))):
+        raise ValueError("--agent bbf currently requires --real-time-mode 0.")
     if str(args.agent) == "tinydqn" and int(args.dqn_decision_interval) <= 0:
         raise ValueError("--dqn-decision-interval must be > 0 for --agent tinydqn.")
     if str(args.agent) == "ppo" and int(getattr(args, "ppo_decision_interval", 1)) <= 0:
@@ -423,6 +517,32 @@ def build_agent(args: argparse.Namespace, num_actions: int, total_frames: int):
             device=str(args.ppo_device),
         )
         base = PPOAgent(action_space_n=num_actions, seed=int(args.seed), config=ppo_config)
+    elif args.agent == "bbf":
+        try:
+            from benchmark.agents_bbf import BBFAgentAdapter, BBFAdapterConfig  # pylint: disable=import-outside-toplevel
+        except ImportError as exc:  # pragma: no cover - optional dependency path
+            raise ImportError(
+                "agent=bbf requires benchmark.agents_bbf plus root agent_bbf.py dependencies "
+                "(torch, gymnasium, and ALE stack)."
+            ) from exc
+
+        bbf_config = BBFAdapterConfig(
+            learning_starts=int(args.bbf_learning_starts),
+            buffer_size=int(args.bbf_buffer_size),
+            batch_size=int(args.bbf_batch_size),
+            replay_ratio=int(args.bbf_replay_ratio),
+            reset_interval=int(args.bbf_reset_interval),
+            no_resets_after=int(args.bbf_no_resets_after),
+            use_per=bool(int(args.bbf_use_per)),
+            use_amp=bool(int(args.bbf_use_amp)),
+            torch_compile=bool(int(args.bbf_torch_compile)),
+        )
+        base = BBFAgentAdapter(
+            seed=int(args.seed),
+            num_actions=int(num_actions),
+            total_frames=int(total_frames),
+            config=bbf_config,
+        )
     else:
         try:
             from benchmark.agents_tinydqn import TinyDQNAgent, TinyDQNConfig  # pylint: disable=import-outside-toplevel
@@ -527,6 +647,17 @@ def build_config_payload(
             "deterministic_actions": bool(int(args.ppo_deterministic_actions)),
             "device": str(args.ppo_device),
             "decision_interval": int(args.ppo_decision_interval),
+        },
+        "bbf_config": {
+            "learning_starts": int(getattr(args, "bbf_learning_starts", 2000)),
+            "buffer_size": int(getattr(args, "bbf_buffer_size", 200000)),
+            "batch_size": int(getattr(args, "bbf_batch_size", 32)),
+            "replay_ratio": int(getattr(args, "bbf_replay_ratio", 64)),
+            "reset_interval": int(getattr(args, "bbf_reset_interval", 20000)),
+            "no_resets_after": int(getattr(args, "bbf_no_resets_after", 100000)),
+            "use_per": bool(int(getattr(args, "bbf_use_per", 1))),
+            "use_amp": bool(int(getattr(args, "bbf_use_amp", 0))),
+            "torch_compile": bool(int(getattr(args, "bbf_torch_compile", 0))),
         },
         "timestamps": bool(args.timestamps),
         "real_time_mode": bool(args.real_time_mode),
@@ -675,7 +806,14 @@ def main() -> None:
         full_action_space=bool(args.full_action_space),
         life_loss_termination=bool(args.life_loss_termination),
     )
-    env = ALEAtariEnv(env_config)
+    ale_env = ALEAtariEnv(env_config)
+    env = ale_env
+    if str(args.agent) == "bbf":
+        env = _CanonicalActionSetEnvAdapter(
+            ale_env,
+            global_action_set=_resolve_global_action_set(),
+            default_action_idx=int(args.default_action_idx),
+        )
 
     if args.default_action_idx < 0 or args.default_action_idx >= len(env.action_set):
         raise ValueError(f"--default-action-idx must be in [0, {len(env.action_set) - 1}]")

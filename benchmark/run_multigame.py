@@ -99,6 +99,15 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
     set_if_present("ppo_deterministic_actions", ["ppo_deterministic_actions"], int)
     set_if_present("ppo_device", ["ppo_device"], str)
     set_if_present("ppo_decision_interval", ["ppo_decision_interval"], int)
+    set_if_present("bbf_learning_starts", ["bbf_learning_starts"], int)
+    set_if_present("bbf_buffer_size", ["bbf_buffer_size"], int)
+    set_if_present("bbf_batch_size", ["bbf_batch_size"], int)
+    set_if_present("bbf_replay_ratio", ["bbf_replay_ratio"], int)
+    set_if_present("bbf_reset_interval", ["bbf_reset_interval"], int)
+    set_if_present("bbf_no_resets_after", ["bbf_no_resets_after"], int)
+    set_if_present("bbf_use_per", ["bbf_use_per"], int)
+    set_if_present("bbf_use_amp", ["bbf_use_amp"], int)
+    set_if_present("bbf_torch_compile", ["bbf_torch_compile"], int)
     set_if_present("default_action_idx", ["default_action_idx"], int)
     set_if_present("log_episode_every", ["log_episode_every", "episode_log_interval"], int)
     set_if_present("log_train_every", ["log_train_every", "train_log_interval"], int)
@@ -164,6 +173,15 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "ppo_deterministic_actions",
         "ppo_device",
         "ppo_decision_interval",
+        "bbf_learning_starts",
+        "bbf_buffer_size",
+        "bbf_batch_size",
+        "bbf_replay_ratio",
+        "bbf_reset_interval",
+        "bbf_no_resets_after",
+        "bbf_use_per",
+        "bbf_use_amp",
+        "bbf_torch_compile",
     ]:
         if key in config_data and config_data[key] is not None:
             merged_cfg[key] = config_data[key]
@@ -208,6 +226,15 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "ppo_deterministic_actions": int,
         "ppo_device": str,
         "ppo_decision_interval": int,
+        "bbf_learning_starts": int,
+        "bbf_buffer_size": int,
+        "bbf_batch_size": int,
+        "bbf_replay_ratio": int,
+        "bbf_reset_interval": int,
+        "bbf_no_resets_after": int,
+        "bbf_use_per": int,
+        "bbf_use_amp": int,
+        "bbf_torch_compile": int,
     }
     for arg_name in [
         "dqn_gamma",
@@ -249,6 +276,15 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "ppo_deterministic_actions",
         "ppo_device",
         "ppo_decision_interval",
+        "bbf_learning_starts",
+        "bbf_buffer_size",
+        "bbf_batch_size",
+        "bbf_replay_ratio",
+        "bbf_reset_interval",
+        "bbf_no_resets_after",
+        "bbf_use_per",
+        "bbf_use_amp",
+        "bbf_torch_compile",
     ]:
         if arg_name in merged_cfg and merged_cfg[arg_name] is not None:
             defaults[arg_name] = arg_cast[arg_name](merged_cfg[arg_name])
@@ -275,14 +311,29 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "ring_buffer_size": "delay_target_ring_buffer_size",
         "lr_log2": "delay_target_lr_log2",
         "base_lr_log2": "delay_target_base_lr_log2",
+        "learning_starts": "bbf_learning_starts",
+        "replay_ratio": "bbf_replay_ratio",
+        "reset_interval": "bbf_reset_interval",
+        "no_resets_after": "bbf_no_resets_after",
+        "use_per": "bbf_use_per",
+        "use_amp": "bbf_use_amp",
+        "torch_compile": "bbf_torch_compile",
     }
     for field_name, arg_name in field_to_arg.items():
         if field_name in merged_cfg and merged_cfg[field_name] is not None:
             value = merged_cfg[field_name]
-            if arg_name in {"dqn_use_replay", "delay_target_use_cuda_graphs"}:
+            if arg_name in {"dqn_use_replay", "delay_target_use_cuda_graphs", "bbf_use_per", "bbf_use_amp", "bbf_torch_compile"}:
                 defaults[arg_name] = int(value)
             else:
                 defaults[arg_name] = value
+
+    bbf_field_to_arg = {
+        "buffer_size": "bbf_buffer_size",
+        "batch_size": "bbf_batch_size",
+    }
+    for field_name, arg_name in bbf_field_to_arg.items():
+        if field_name in merged_cfg and merged_cfg[field_name] is not None:
+            defaults[arg_name] = int(merged_cfg[field_name])
 
     ppo_field_to_arg = {
         "learning_rate": "ppo_lr",
@@ -360,7 +411,7 @@ def _build_parser(defaults: Optional[Dict[str, Any]] = None) -> argparse.Argumen
     parser.add_argument(
         "--agent",
         type=str,
-        choices=["random", "repeat", "tinydqn", "delay_target", "ppo"],
+        choices=["random", "repeat", "tinydqn", "delay_target", "ppo", "bbf"],
         default="random",
         help="Agent type.",
     )
@@ -508,6 +559,38 @@ def _build_parser(defaults: Optional[Dict[str, Any]] = None) -> argparse.Argumen
         default=4,
         help="PPO decision interval in frames (agent-owned action repeat).",
     )
+    parser.add_argument("--bbf-learning-starts", type=int, default=2000, help="BBF warmup transitions before learning.")
+    parser.add_argument("--bbf-buffer-size", type=int, default=200000, help="BBF replay buffer size.")
+    parser.add_argument("--bbf-batch-size", type=int, default=32, help="BBF batch size.")
+    parser.add_argument("--bbf-replay-ratio", type=int, default=64, help="BBF replay ratio.")
+    parser.add_argument(
+        "--bbf-reset-interval",
+        type=int,
+        default=20000,
+        help="BBF periodic hard-reset interval in decision steps (0 disables).",
+    )
+    parser.add_argument("--bbf-no-resets-after", type=int, default=100000, help="Disable BBF resets after this step.")
+    parser.add_argument(
+        "--bbf-use-per",
+        type=int,
+        choices=[0, 1],
+        default=1,
+        help="Enable prioritized replay in BBF (1=yes, 0=no).",
+    )
+    parser.add_argument(
+        "--bbf-use-amp",
+        type=int,
+        choices=[0, 1],
+        default=0,
+        help="Enable AMP for BBF (CUDA only).",
+    )
+    parser.add_argument(
+        "--bbf-torch-compile",
+        type=int,
+        choices=[0, 1],
+        default=0,
+        help="Enable torch.compile for BBF.",
+    )
     parser.add_argument(
         "--default-action-idx",
         type=int,
@@ -577,6 +660,15 @@ def validate_args(args: argparse.Namespace) -> None:
         )
     if str(args.agent) == "delay_target" and str(args.runner_mode) == "standard" and int(args.decision_interval) != 1:
         raise ValueError("agent=delay_target currently requires --decision-interval 1 to avoid double frame-skipping.")
+    if str(args.agent) == "bbf" and str(args.runner_mode) != "carmack_compat":
+        raise ValueError(
+            "agent=bbf currently requires --runner-mode carmack_compat "
+            "so the adapter can reconstruct Atari-style step cadence from frame-level boundaries."
+        )
+    if str(args.agent) == "bbf" and int(args.full_action_space) != 1:
+        raise ValueError("agent=bbf requires --full-action-space 1 (canonical action mapping).")
+    if str(args.agent) == "bbf" and bool(int(getattr(args, "real_time_mode", 0))):
+        raise ValueError("agent=bbf currently requires --real-time-mode 0.")
     if str(args.agent) == "tinydqn" and int(args.dqn_decision_interval) <= 0:
         raise ValueError("--dqn-decision-interval must be > 0 for --agent tinydqn.")
     if str(args.agent) == "ppo" and int(getattr(args, "ppo_decision_interval", 1)) <= 0:
@@ -656,6 +748,33 @@ def build_agent(args: argparse.Namespace, num_actions: int, total_frames: int):
         )
         agent = PPOAgent(action_space_n=num_actions, seed=int(args.seed), config=ppo_config)
         return agent, ppo_config.as_dict()
+    if args.agent == "bbf":
+        try:
+            from benchmark.agents_bbf import BBFAgentAdapter, BBFAdapterConfig  # pylint: disable=import-outside-toplevel
+        except ImportError as exc:  # pragma: no cover - optional dependency path
+            raise ImportError(
+                "agent=bbf requires benchmark.agents_bbf plus root agent_bbf.py dependencies "
+                "(torch, gymnasium, and ALE stack)."
+            ) from exc
+
+        bbf_config = BBFAdapterConfig(
+            learning_starts=int(args.bbf_learning_starts),
+            buffer_size=int(args.bbf_buffer_size),
+            batch_size=int(args.bbf_batch_size),
+            replay_ratio=int(args.bbf_replay_ratio),
+            reset_interval=int(args.bbf_reset_interval),
+            no_resets_after=int(args.bbf_no_resets_after),
+            use_per=bool(int(args.bbf_use_per)),
+            use_amp=bool(int(args.bbf_use_amp)),
+            torch_compile=bool(int(args.bbf_torch_compile)),
+        )
+        agent = BBFAgentAdapter(
+            seed=int(args.seed),
+            num_actions=int(num_actions),
+            total_frames=int(total_frames),
+            config=bbf_config,
+        )
+        return agent, bbf_config.as_dict()
     try:
         from benchmark.agents_tinydqn import TinyDQNAgent, TinyDQNConfig  # pylint: disable=import-outside-toplevel
     except ImportError as exc:  # pragma: no cover - depends on optional torch dependency
@@ -786,6 +905,17 @@ def build_config_payload(
             "deterministic_actions": bool(int(args.ppo_deterministic_actions)),
             "device": str(args.ppo_device),
             "decision_interval": int(args.ppo_decision_interval),
+        },
+        "bbf_config": {
+            "learning_starts": int(args.bbf_learning_starts),
+            "buffer_size": int(args.bbf_buffer_size),
+            "batch_size": int(args.bbf_batch_size),
+            "replay_ratio": int(args.bbf_replay_ratio),
+            "reset_interval": int(args.bbf_reset_interval),
+            "no_resets_after": int(args.bbf_no_resets_after),
+            "use_per": bool(int(args.bbf_use_per)),
+            "use_amp": bool(int(args.bbf_use_amp)),
+            "torch_compile": bool(int(args.bbf_torch_compile)),
         },
         "repeat_action_idx": int(args.repeat_action_idx),
         "default_action_idx": int(args.default_action_idx),
@@ -936,6 +1066,8 @@ def main() -> None:
                 decision_interval = int(args.dqn_decision_interval)
             elif str(args.agent) == "ppo":
                 decision_interval = int(args.ppo_decision_interval)
+            elif str(args.agent) == "bbf":
+                decision_interval = 1
             else:
                 decision_interval = 1
             agent = FrameFromStepAdapter(agent, decision_interval=decision_interval)

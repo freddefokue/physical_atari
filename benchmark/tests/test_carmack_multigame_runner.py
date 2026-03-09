@@ -132,6 +132,7 @@ def test_carmack_multigame_runner_emits_required_boundary_payload():
 
     assert summary["frames"] == 3
     assert len(agent.calls) == 3
+    assert all("transition_obs_rgb" in call["boundary"] for call in agent.calls)
     first_boundary = agent.calls[0]["boundary"]
     assert set(first_boundary.keys()) == {
         "terminated",
@@ -140,12 +141,16 @@ def test_carmack_multigame_runner_emits_required_boundary_payload():
         "has_prev_applied_action",
         "prev_applied_action_idx",
         "global_frame_idx",
+        "transition_obs_rgb",
     }
     assert first_boundary["has_prev_applied_action"] is True
+    assert "reset_obs_rgb" not in first_boundary
     assert [call["boundary"]["prev_applied_action_idx"] for call in agent.calls] == [
         row["applied_action_idx"] for row in events
     ]
     assert agent.calls[1]["boundary"]["end_of_episode_pulse"] is True
+    assert "reset_obs_rgb" in agent.calls[1]["boundary"]
+    assert "reset_obs_rgb" not in agent.calls[2]["boundary"]
     assert events[1]["boundary_cause"] == "terminated"
     assert events[1]["env_termination_reason"] == "scripted_end"
     assert events[0]["multi_run_profile"] == CARMACK_MULTI_RUN_PROFILE
@@ -275,6 +280,41 @@ def test_carmack_multigame_carries_last_decision_across_visit_switch():
     # decided action on the first frame of visit 1 (not overwritten to default).
     assert events[0]["next_policy_action_idx"] == 5
     assert events[1]["decided_action_idx"] == 5
+
+
+def test_carmack_multigame_uses_initial_action_hook_at_visit_start():
+    schedule = Schedule(
+        ScheduleConfig(games=["a", "b"], base_visit_frames=2, num_cycles=1, seed=0, jitter_pct=0.0, min_visit_frames=1)
+    )
+    env = MockMultiGameEnv(action_sets={"a": list(range(8)), "b": list(range(8))})
+
+    class _InitialActionFrameAgent:
+        def __init__(self) -> None:
+            self._initial = [5, 6]
+            self._idx = 0
+
+        def initial_action(self, obs_rgb) -> int:
+            del obs_rgb
+            action = self._initial[min(self._idx, len(self._initial) - 1)]
+            self._idx += 1
+            return int(action)
+
+        def frame(self, obs_rgb, reward, boundary) -> int:
+            del obs_rgb, reward, boundary
+            return 1
+
+    agent = _InitialActionFrameAgent()
+    config = CarmackMultiGameRunnerConfig(
+        decision_interval=1,
+        delay_frames=0,
+        default_action_idx=0,
+        include_timestamps=False,
+        global_action_set=tuple(range(8)),
+    )
+    _, events, _, _ = _run_with_memory(env, agent, schedule, config)
+
+    assert events[0]["applied_action_idx"] == 5
+    assert events[2]["applied_action_idx"] == 6
 
 
 def test_carmack_multigame_real_time_mode_off_matches_default():

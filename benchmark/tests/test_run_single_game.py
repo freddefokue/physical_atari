@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from benchmark.carmack_runner import CARMACK_SINGLE_RUN_PROFILE, CARMACK_SINGLE_RUN_SCHEMA_VERSION, CarmackRunnerConfig
+from benchmark.run_single_game import _CanonicalActionSetEnvAdapter
 from benchmark.run_single_game import _FrameFromStepAdapter
 from benchmark.run_single_game import build_agent
 from benchmark.run_single_game import build_runtime_fingerprint_payload
@@ -62,6 +63,31 @@ def test_validate_args_ppo_requires_positive_decision_interval():
         validate_args(args)
 
 
+def test_validate_args_bbf_requires_carmack_mode():
+    args = Namespace(runner_mode="standard", frame_skip=1, agent="bbf", full_action_space=1, real_time_fps=60.0)
+    with pytest.raises(ValueError, match=r"agent bbf currently requires --runner-mode carmack_compat"):
+        validate_args(args)
+
+
+def test_validate_args_bbf_requires_full_action_space():
+    args = Namespace(runner_mode="carmack_compat", frame_skip=1, agent="bbf", full_action_space=0, real_time_fps=60.0)
+    with pytest.raises(ValueError, match=r"--agent bbf requires --full-action-space 1"):
+        validate_args(args)
+
+
+def test_validate_args_bbf_requires_real_time_mode_off():
+    args = Namespace(
+        runner_mode="carmack_compat",
+        frame_skip=1,
+        agent="bbf",
+        full_action_space=1,
+        real_time_mode=1,
+        real_time_fps=60.0,
+    )
+    with pytest.raises(ValueError, match=r"--agent bbf currently requires --real-time-mode 0"):
+        validate_args(args)
+
+
 def test_validate_args_requires_positive_real_time_fps():
     args = Namespace(runner_mode="carmack_compat", frame_skip=1, agent="random", real_time_fps=0.0)
     with pytest.raises(ValueError, match=r"--real-time-fps must be > 0"):
@@ -87,6 +113,57 @@ def test_parse_args_accepts_ppo_with_carmack_compat(monkeypatch):
     assert args.agent == "ppo"
     assert args.runner_mode == "carmack_compat"
     assert args.ppo_decision_interval == 4
+
+
+def test_parse_args_accepts_bbf_with_carmack_compat(monkeypatch):
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_single_game.py",
+            "--game",
+            "pong",
+            "--runner-mode",
+            "carmack_compat",
+            "--frame-skip",
+            "1",
+            "--agent",
+            "bbf",
+            "--full-action-space",
+            "1",
+        ],
+    )
+    args = parse_args()
+    assert args.agent == "bbf"
+    assert args.runner_mode == "carmack_compat"
+    assert args.bbf_learning_starts == 2000
+
+
+def test_canonical_action_adapter_maps_global_indices_to_local_actions():
+    class _DummyEnv:
+        def __init__(self) -> None:
+            self.action_set = [0, 2, 3]
+            self.calls = []
+
+        def reset(self):
+            return None
+
+        def lives(self):
+            return 3
+
+        def step(self, action_idx: int):
+            self.calls.append(int(action_idx))
+            return {"ok": True}
+
+    env = _DummyEnv()
+    wrapped = _CanonicalActionSetEnvAdapter(env, global_action_set=[0, 1, 2, 3], default_action_idx=1)
+
+    # global idx 0 -> ALE action 0 -> local idx 0
+    wrapped.step(0)
+    # global idx 2 -> ALE action 2 -> local idx 1
+    wrapped.step(2)
+    # global idx 1 -> ALE action 1 (illegal for this game) -> fallback to default ALE action 1; missing -> local idx 0
+    wrapped.step(1)
+    assert env.calls == [0, 1, 0]
 
 
 def test_build_config_payload_carmack_marks_agent_owned_cadence():

@@ -243,6 +243,38 @@ def test_carmack_runner_calls_agent_after_env_step():
     assert [row["applied_action_idx"] for row in events] == [0, 1, 1]
 
 
+def test_carmack_runner_uses_initial_action_hook_for_first_frame():
+    env = ScriptedEnv(
+        action_set=list(range(4)),
+        rewards=[0.0, 0.0, 0.0],
+        lives_seq=[3, 3, 3],
+        terminated_at=set(),
+        truncated_at=set(),
+    )
+
+    class _InitialActionAgent:
+        def __init__(self) -> None:
+            self.initial_obs_markers = []
+            self.frame_calls = 0
+
+        def initial_action(self, obs_rgb) -> int:
+            self.initial_obs_markers.append(int(obs_rgb[0, 0, 0]))
+            return 2
+
+        def frame(self, obs_rgb, reward, boundary) -> int:
+            del obs_rgb, reward, boundary
+            self.frame_calls += 1
+            return 1
+
+    agent = _InitialActionAgent()
+    config = CarmackRunnerConfig(total_frames=3, delay_frames=0, include_timestamps=False)
+    _, events, _ = run_with_memory(env, agent, config)
+
+    assert agent.initial_obs_markers == [201]
+    assert agent.frame_calls == 3
+    assert [row["applied_action_idx"] for row in events] == [2, 1, 1]
+
+
 def test_carmack_runner_life_loss_pulse_without_reset():
     env = ScriptedEnv(
         action_set=list(range(4)),
@@ -278,7 +310,7 @@ def test_carmack_runner_game_over_resets_and_uses_reset_obs_for_agent():
         terminated_at={2},
         truncated_at=set(),
     )
-    agent = RecordingFrameAgent(action_idx=1)
+    agent = RecordingBoundaryFrameAgent(action_idx=1)
     config = CarmackRunnerConfig(total_frames=4, delay_frames=0, include_timestamps=False, max_frames_without_reward=999)
     summary, events, episodes = run_with_memory(env, agent, config)
 
@@ -290,7 +322,11 @@ def test_carmack_runner_game_over_resets_and_uses_reset_obs_for_agent():
     assert events[2]["pulse_reason"] == "scripted_end"
     assert events[2]["reset_performed"] is True
     assert agent.calls[2]["obs_marker"] == 202
-    assert agent.calls[2]["end_of_episode"] == 1
+    assert agent.calls[2]["end_of_episode_pulse"] is True
+    assert int(agent.calls[0]["transition_obs_rgb"][0, 0, 0]) == 11
+    assert "reset_obs_rgb" not in agent.calls[0]
+    assert int(agent.calls[2]["transition_obs_rgb"][0, 0, 0]) == 13
+    assert int(agent.calls[2]["reset_obs_rgb"][0, 0, 0]) == 202
 
 
 def test_carmack_runner_timeout_resets():
@@ -444,6 +480,28 @@ def test_carmack_runner_new_boundary_payload_life_loss_pulse_without_reset():
     assert "boundary_cause" not in agent.calls[1]
 
 
+def test_carmack_runner_boundary_payload_exposes_transition_and_optional_reset_obs():
+    env = ScriptedEnv(
+        action_set=list(range(4)),
+        rewards=[0.0, 0.0, 0.0],
+        lives_seq=[3, 3, 3],
+        terminated_at={1},
+        truncated_at=set(),
+    )
+    agent = RecordingBoundaryFrameAgent(action_idx=1)
+    config = CarmackRunnerConfig(total_frames=3, delay_frames=0, include_timestamps=False, max_frames_without_reward=999)
+    _, _, _ = run_with_memory(env, agent, config)
+
+    assert len(agent.calls) == 3
+    assert all("transition_obs_rgb" in call for call in agent.calls)
+    assert int(agent.calls[0]["transition_obs_rgb"][0, 0, 0]) == 11
+    assert "reset_obs_rgb" not in agent.calls[0]
+    assert int(agent.calls[1]["transition_obs_rgb"][0, 0, 0]) == 12
+    assert int(agent.calls[1]["reset_obs_rgb"][0, 0, 0]) == 202
+    assert int(agent.calls[2]["transition_obs_rgb"][0, 0, 0]) == 13
+    assert "reset_obs_rgb" not in agent.calls[2]
+
+
 def test_carmack_runner_legacy_adapter_handles_unknown_third_arg_name():
     env = ScriptedEnv(
         action_set=list(range(4)),
@@ -518,7 +576,10 @@ def test_carmack_runner_variadic_frame_signature_remains_passthrough():
         "end_of_episode_pulse",
         "has_prev_applied_action",
         "prev_applied_action_idx",
+        "transition_obs_rgb",
     }
+    assert "reset_obs_rgb" not in first_call[2]
+    assert "reset_obs_rgb" in agent.calls[1][2]
     assert events[1]["terminated"] is True
 
 

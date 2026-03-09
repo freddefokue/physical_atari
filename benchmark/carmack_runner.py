@@ -219,6 +219,13 @@ class CarmackCompatRunner:
             raise ValueError(f"action_idx {action_idx} out of bounds [0, {self._num_actions - 1}]")
         return action_idx
 
+    def _resolve_initial_action(self, reset_obs_rgb: np.ndarray, fallback_action_idx: int) -> int:
+        initial_action_fn = getattr(self.agent, "initial_action", None)
+        if not callable(initial_action_fn):
+            return int(fallback_action_idx)
+        action_idx = initial_action_fn(reset_obs_rgb)
+        return self._validate_action_idx(action_idx)
+
     @classmethod
     def _resolve_boundary_and_reset(
         cls,
@@ -265,11 +272,11 @@ class CarmackCompatRunner:
         }
 
     def run(self) -> Dict[str, Any]:
-        self.env.reset()
+        reset_obs = self.env.reset()
         previous_lives = int(self.env.lives())
 
         delayed_actions = deque([int(self.config.default_action_idx)] * int(self.config.delay_frames))
-        taken_action = int(self.config.default_action_idx)
+        taken_action = self._resolve_initial_action(reset_obs, int(self.config.default_action_idx))
 
         episode_idx = 0
         episode_return = 0.0
@@ -433,6 +440,8 @@ class CarmackCompatRunner:
                 "end_of_episode_pulse": bool(end_of_episode),
                 "has_prev_applied_action": True,
                 "prev_applied_action_idx": int(applied_action_idx),
+                # Always include the true post-step transition observation.
+                "transition_obs_rgb": step.obs_rgb,
             }
             if real_time_mode:
                 boundary_payload["is_decision_frame"] = True
@@ -488,10 +497,14 @@ class CarmackCompatRunner:
                 episode_length = 0
 
                 obs_for_agent = self.env.reset()
+                boundary_payload["reset_obs_rgb"] = obs_for_agent
                 previous_lives = int(self.env.lives())
                 frames_without_reward = 0
                 reset_performed = True
                 reset_count += 1
+                if not is_decision_frame:
+                    taken_action = self._resolve_initial_action(obs_for_agent, int(taken_action))
+                    catchup_hold_action = int(taken_action)
                 if bool(self.config.reset_delay_queue_on_reset):
                     delayed_actions = deque([int(self.config.default_action_idx)] * int(self.config.delay_frames))
                 episode_end.append(int(frame_idx))

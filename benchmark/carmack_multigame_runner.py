@@ -274,6 +274,13 @@ class CarmackMultiGameRunner:
             raise ValueError(f"action_idx {action_idx} out of bounds [0, {self._num_global_actions - 1}]")
         return action_idx
 
+    def _resolve_initial_action(self, reset_obs_rgb: np.ndarray, fallback_action_idx: int) -> int:
+        initial_action_fn = getattr(self.agent, "initial_action", None)
+        if not callable(initial_action_fn):
+            return int(fallback_action_idx)
+        action_idx = initial_action_fn(reset_obs_rgb)
+        return self._validate_action_idx(action_idx)
+
     def _reset_control_state(self, *, reset_delay_queue: bool) -> None:
         self._decided_action_idx = int(self.config.default_action_idx)
         if reset_delay_queue or len(self._delay_queue) == 0:
@@ -512,6 +519,8 @@ class CarmackMultiGameRunner:
             self._reset_control_state(reset_delay_queue=bool(self.config.reset_delay_queue_on_visit_switch))
             self._start_episode(global_frame_idx)
             self._start_segment(global_frame_idx)
+            taken_action = self._resolve_initial_action(self._obs_rgb, int(taken_action))
+            catchup_hold_action = int(taken_action)
 
             visit_frame_idx = 0
             while visit_frame_idx < int(visit.visit_frames):
@@ -543,6 +552,8 @@ class CarmackMultiGameRunner:
                     applied_action_idx=int(applied_action_idx),
                     is_decision_frame=(True if real_time_mode else None),
                 )
+                # Always include the true post-step transition observation.
+                boundary_payload["transition_obs_rgb"] = step.obs_rgb
 
                 event = {
                     "multi_run_profile": CARMACK_MULTI_RUN_PROFILE,
@@ -624,10 +635,14 @@ class CarmackMultiGameRunner:
 
                 if bool(boundary["reset_in_visit"]):
                     self._obs_rgb = self.env.reset()
+                    boundary_payload["reset_obs_rgb"] = self._obs_rgb
                     self._lives = int(self.env.lives())
                     self._reset_control_state(reset_delay_queue=bool(self.config.reset_delay_queue_on_reset))
                     self._start_episode(global_frame_idx + 1)
                     self._start_segment(global_frame_idx + 1)
+                    if not is_decision_frame:
+                        taken_action = self._resolve_initial_action(self._obs_rgb, int(taken_action))
+                        catchup_hold_action = int(taken_action)
                     obs_for_agent = self._obs_rgb
                 else:
                     self._obs_rgb = step.obs_rgb

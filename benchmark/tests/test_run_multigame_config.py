@@ -167,6 +167,14 @@ def test_run_multigame_cli_accepts_ppo_agent():
     assert args.ppo_decision_interval == 4
 
 
+def test_run_multigame_cli_accepts_bbf_agent():
+    args = parse_args(["--games", "pong", "--agent", "bbf"])
+    assert args.agent == "bbf"
+    assert args.bbf_learning_starts == 2000
+    assert args.bbf_buffer_size == 200000
+    assert args.bbf_use_per == 1
+
+
 def test_run_multigame_config_parses_ppo_agent_config(tmp_path):
     config_path = tmp_path / "cfg_ppo.json"
     payload = {
@@ -200,9 +208,93 @@ def test_run_multigame_config_parses_ppo_agent_config(tmp_path):
     assert args.ppo_decision_interval == 6
 
 
+def test_run_multigame_config_parses_bbf_agent_config(tmp_path):
+    config_path = tmp_path / "cfg_bbf.json"
+    payload = {
+        "games": ["pong"],
+        "agent": "bbf",
+        "runner_mode": "carmack_compat",
+        "decision_interval": 1,
+        "full_action_space": 1,
+        "agent_config": {
+            "learning_starts": 123,
+            "buffer_size": 54321,
+            "batch_size": 16,
+            "replay_ratio": 8,
+            "reset_interval": 2500,
+            "no_resets_after": 9000,
+            "use_per": 0,
+            "use_amp": 1,
+            "torch_compile": 1,
+        },
+    }
+    with config_path.open("w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
+
+    args = parse_args(["--config", str(config_path)])
+    assert args.agent == "bbf"
+    assert args.runner_mode == "carmack_compat"
+    assert args.decision_interval == 1
+    assert args.bbf_learning_starts == 123
+    assert args.bbf_buffer_size == 54321
+    assert args.bbf_batch_size == 16
+    assert args.bbf_replay_ratio == 8
+    assert args.bbf_reset_interval == 2500
+    assert args.bbf_no_resets_after == 9000
+    assert args.bbf_use_per == 0
+    assert args.bbf_use_amp == 1
+    assert args.bbf_torch_compile == 1
+
+
 def test_validate_args_ppo_requires_positive_decision_interval():
     args = parse_args(["--games", "pong", "--agent", "ppo", "--ppo-decision-interval", "0"])
     with pytest.raises(ValueError, match=r"--ppo-decision-interval must be > 0"):
+        validate_args(args)
+
+
+def test_validate_args_bbf_requires_carmack_mode():
+    args = parse_args(["--games", "pong", "--agent", "bbf", "--full-action-space", "1"])
+    with pytest.raises(ValueError, match=r"agent=bbf currently requires --runner-mode carmack_compat"):
+        validate_args(args)
+
+
+def test_validate_args_bbf_requires_full_action_space():
+    args = parse_args(
+        [
+            "--games",
+            "pong",
+            "--agent",
+            "bbf",
+            "--runner-mode",
+            "carmack_compat",
+            "--decision-interval",
+            "1",
+            "--full-action-space",
+            "0",
+        ]
+    )
+    with pytest.raises(ValueError, match=r"agent=bbf requires --full-action-space 1"):
+        validate_args(args)
+
+
+def test_validate_args_bbf_requires_real_time_mode_off():
+    args = parse_args(
+        [
+            "--games",
+            "pong",
+            "--agent",
+            "bbf",
+            "--runner-mode",
+            "carmack_compat",
+            "--decision-interval",
+            "1",
+            "--full-action-space",
+            "1",
+            "--real-time-mode",
+            "1",
+        ]
+    )
+    with pytest.raises(ValueError, match=r"agent=bbf currently requires --real-time-mode 0"):
         validate_args(args)
 
 
