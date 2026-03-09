@@ -120,6 +120,39 @@ class ALEAtariEnv:
         obs = self.ale.getScreenRGB()
         return np.asarray(obs, dtype=np.uint8)
 
+    def get_action_meanings(self) -> List[str]:
+        """Return action meanings aligned with current local action_set when available."""
+        action_meaning_fn = getattr(self.ale, "getActionMeaning", None)
+        if callable(action_meaning_fn):
+            meanings: List[str] = []
+            for ale_action in self.action_set:
+                try:
+                    raw = action_meaning_fn(int(ale_action))
+                    if isinstance(raw, bytes):
+                        meanings.append(raw.decode("utf-8", errors="ignore"))
+                    else:
+                        meanings.append(str(raw))
+                except Exception:
+                    meanings.append(str(int(ale_action)))
+            return meanings
+
+        action_meanings_fn = getattr(self.ale, "getActionMeanings", None)
+        if callable(action_meanings_fn):
+            try:
+                raw_values = list(action_meanings_fn())
+            except Exception:
+                raw_values = []
+            if len(raw_values) == len(self.action_set):
+                out: List[str] = []
+                for value in raw_values:
+                    if isinstance(value, bytes):
+                        out.append(value.decode("utf-8", errors="ignore"))
+                    else:
+                        out.append(str(value))
+                return out
+
+        return [str(int(a)) for a in self.action_set]
+
     def step(self, action_idx: int) -> EnvStep:
         if action_idx < 0 or action_idx >= len(self.action_set):
             raise ValueError(f"action_idx {action_idx} out of bounds for action set size {len(self.action_set)}")

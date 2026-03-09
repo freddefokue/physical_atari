@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import importlib
 import math
+import random
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import numpy as np
 
@@ -77,6 +78,9 @@ class BBFAgentAdapter:
         num_actions: int,
         total_frames: int,
         config: Optional[BBFAdapterConfig] = None,
+        full_action_space: bool = True,
+        parity_mode: bool = False,
+        action_space_mode: str = "canonical_full",
     ) -> None:
         if num_actions <= 0:
             raise ValueError("num_actions must be > 0")
@@ -87,6 +91,9 @@ class BBFAgentAdapter:
         self._seed = int(seed)
         self._total_frames = int(total_frames)
         self._config = config or BBFAdapterConfig()
+        self._agent_full_action_space = bool(full_action_space)
+        self._parity_mode = bool(parity_mode)
+        self._action_space_mode = str(action_space_mode)
 
         bbf_module = self._import_bbf_module()
         gym_module = self._import_gymnasium_module()
@@ -100,7 +107,7 @@ class BBFAgentAdapter:
         self._bbf_config = cfg_cls(
             seed=int(self._seed),
             total_steps=total_steps,
-            full_action_space=True,
+            full_action_space=bool(self._agent_full_action_space),
             learning_starts=int(self._config.learning_starts),
             buffer_size=int(self._config.buffer_size),
             batch_size=int(self._config.batch_size),
@@ -327,12 +334,127 @@ class BBFAgentAdapter:
             },
         )
 
+    def _policy_action_for_eval(self, stacked_state: np.ndarray, rng: random.Random, epsilon: float) -> int:
+        if rng.random() < float(epsilon):
+            return int(rng.randrange(int(self._num_actions)))
+
+        q_network = getattr(self._agent, "q_network", None)
+        device = getattr(self._agent, "device", None)
+        if q_network is not None and device is not None and hasattr(q_network, "compute_outputs"):
+            try:
+                import torch  # pylint: disable=import-outside-toplevel
+
+                with torch.no_grad():
+                    obs_t = torch.as_tensor(stacked_state, device=device, dtype=torch.uint8).unsqueeze(0)
+                    outputs = q_network.compute_outputs(obs_t)
+                    if isinstance(outputs, dict) and "q_values" in outputs:
+                        q_values = outputs["q_values"]
+                        action = int(torch.argmax(q_values, dim=1).item())
+                        return self._validate_action(action)
+            except Exception:
+                pass
+
+        # Fallback for non-standard/partial backends: use adapter-compatible act path.
+        action = int(self._agent.act(stacked_state[-1]))
+        return self._validate_action(action)
+
+    def evaluate(
+        self,
+        env,
+        *,
+        episodes: int,
+        epsilon: float,
+        seed: int,
+        clip_rewards: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """Run no-learning single-game evaluation with native-style BBF decision cadence."""
+        if int(episodes) <= 0:
+            return None
+
+        rng = random.Random(int(seed))
+        returns: List[float] = []
+        lengths: List[int] = []
+
+        stacked = np.zeros((BBF_ACTION_REPEAT, BBF_OBS_SIZE, BBF_OBS_SIZE), dtype=np.uint8)
+        obs = env.reset()
+        first = self._preprocess_frame(np.asarray(obs, dtype=np.uint8))
+        stacked = np.roll(stacked, -1, axis=0)
+        stacked[-1] = first
+        episode_return = 0.0
+        episode_length = 0
+
+        while len(returns) < int(episodes):
+            action_idx = self._policy_action_for_eval(stacked, rng, float(epsilon))
+
+            reward_sum = 0.0
+            terminated = False
+            truncated = False
+            last_raw: Optional[np.ndarray] = None
+            prev_raw: Optional[np.ndarray] = None
+
+            for _ in range(BBF_ACTION_REPEAT):
+                step = env.step(int(action_idx))
+                reward_value = float(step.reward)
+                if bool(clip_rewards):
+                    reward_value = float(np.sign(reward_value))
+                reward_sum += reward_value
+                if last_raw is not None:
+                    prev_raw = last_raw
+                last_raw = np.asarray(step.obs_rgb, dtype=np.uint8)
+                terminated = bool(step.terminated)
+                truncated = bool(step.truncated)
+                if terminated or truncated:
+                    break
+
+            if last_raw is None:
+                break
+            decision_raw = last_raw if prev_raw is None else np.maximum(last_raw, prev_raw)
+            frame_u8 = self._preprocess_frame(decision_raw)
+            stacked = np.roll(stacked, -1, axis=0)
+            stacked[-1] = frame_u8
+
+            episode_return += float(reward_sum)
+            episode_length += 1
+
+            if terminated or truncated:
+                returns.append(float(episode_return))
+                lengths.append(int(episode_length))
+                episode_return = 0.0
+                episode_length = 0
+                obs = env.reset()
+                stacked.fill(0)
+                first = self._preprocess_frame(np.asarray(obs, dtype=np.uint8))
+                stacked = np.roll(stacked, -1, axis=0)
+                stacked[-1] = first
+
+        if not returns:
+            return None
+
+        returns_np = np.asarray(returns, dtype=np.float32)
+        lengths_np = np.asarray(lengths, dtype=np.float32)
+        return {
+            "episodes": int(len(returns)),
+            "mean_return": float(np.mean(returns_np)),
+            "std_return": float(np.std(returns_np)),
+            "median_return": float(np.median(returns_np)),
+            "min_return": float(np.min(returns_np)),
+            "max_return": float(np.max(returns_np)),
+            "mean_length": float(np.mean(lengths_np)),
+            "episode_returns": [float(x) for x in returns],
+            "episode_lengths": [int(x) for x in lengths],
+            "epsilon": float(epsilon),
+            "clip_rewards": bool(clip_rewards),
+        }
+
     def get_config(self) -> Dict[str, Any]:
         return {
             **self._config.as_dict(),
             "seed": int(self._seed),
             "num_actions": int(self._num_actions),
             "total_frames": int(self._total_frames),
+            "full_action_space": bool(self._agent_full_action_space),
+            "parity_mode": bool(self._parity_mode),
+            "action_space_mode": str(self._action_space_mode),
             "bbf_action_repeat": int(BBF_ACTION_REPEAT),
             "bbf_obs_size": int(BBF_OBS_SIZE),
         }
@@ -343,6 +465,9 @@ class BBFAgentAdapter:
             "decision_steps": int(self._decision_steps),
             "transition_steps": int(self._transition_steps),
             "last_action_idx": int(self._held_action_idx),
+            "bbf_parity_mode": bool(self._parity_mode),
+            "action_space_mode": str(self._action_space_mode),
+            "full_action_space": bool(self._agent_full_action_space),
             "learning_starts": int(self._config.learning_starts),
             "buffer_size": int(self._config.buffer_size),
         }

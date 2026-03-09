@@ -385,6 +385,28 @@ class CarmackCompatRunner:
             if fps is not None:
                 parts.append(f"fps={float(fps):.1f}")
 
+            if "bbf_parity_mode" in stats:
+                parts.append("mode=parity" if bool(stats.get("bbf_parity_mode")) else "mode=bench")
+            action_space_mode = stats.get("action_space_mode")
+            if isinstance(action_space_mode, str) and action_space_mode:
+                lowered = action_space_mode.lower()
+                if "local" in lowered or "minimal" in lowered:
+                    parts.append("as=min")
+                elif "canonical" in lowered or "full" in lowered:
+                    parts.append("as=full")
+                else:
+                    parts.append(f"as={action_space_mode}")
+
+            raw_frames = _coerce_optional_int(stats.get("raw_frames"))
+            if raw_frames is not None:
+                parts.append(f"raw={int(raw_frames)}")
+            decision_steps = _coerce_optional_int(stats.get("decision_steps"))
+            if decision_steps is not None:
+                parts.append(f"dec={int(decision_steps)}")
+            transition_steps = _coerce_optional_int(stats.get("transition_steps"))
+            if transition_steps is not None:
+                parts.append(f"tr={int(transition_steps)}")
+
             phase = stats.get("phase")
             if isinstance(phase, str) and phase:
                 phase_token = "train" if phase == "training" else str(phase)

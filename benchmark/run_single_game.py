@@ -9,7 +9,7 @@ import platform
 import random
 import sys
 from pathlib import Path
-from typing import Dict, Mapping, Optional, Sequence
+from typing import Any, Dict, Mapping, Optional, Sequence
 
 import numpy as np
 
@@ -80,6 +80,139 @@ class _CanonicalActionSetEnvAdapter:
         return self._env.step(local_idx)
 
 
+class _BBFResetSemanticsEnvAdapter:
+    """
+    Apply BBF-native reset semantics on top of raw ALE env resets.
+
+    - No-op reset randomization (NoopResetEnv semantics)
+    - Optional FIRE startup action sequence (FireResetEnv semantics)
+    """
+
+    _NOOP_ALE_ACTION = 0
+    _FIRE_ALE_ACTION = 1
+    _SECONDARY_FIRE_ALE_ACTION = 2
+
+    def __init__(
+        self,
+        env: ALEAtariEnv,
+        *,
+        seed: int,
+        noop_max: int = 0,
+        enable_fire_reset: bool = True,
+    ) -> None:
+        self._env = env
+        self._rng = np.random.default_rng(int(seed))
+        self._noop_max = max(0, int(noop_max))
+        self._enable_fire_reset = bool(enable_fire_reset)
+        self.action_set = list(self._env.action_set)
+
+        self._local_by_ale: Dict[int, int] = {int(a): idx for idx, a in enumerate(self.action_set)}
+        self._noop_local_idx = int(self._local_by_ale.get(self._NOOP_ALE_ACTION, 0))
+        self._fire_local_idx, self._fire_secondary_local_idx = self._resolve_fire_local_actions()
+        self.fire_reset_supported = bool(self._fire_local_idx is not None)
+
+    def _resolve_fire_local_actions(self) -> tuple[Optional[int], Optional[int]]:
+        fire_locals = []
+        meanings_fn = getattr(self._env, "get_action_meanings", None)
+        if callable(meanings_fn):
+            try:
+                meanings = list(meanings_fn())
+            except Exception:
+                meanings = []
+            if len(meanings) == len(self.action_set):
+                for idx, meaning in enumerate(meanings):
+                    if "FIRE" in str(meaning).upper():
+                        fire_locals.append(int(idx))
+
+        if not fire_locals and self._FIRE_ALE_ACTION in self._local_by_ale:
+            fire_locals.append(int(self._local_by_ale[self._FIRE_ALE_ACTION]))
+
+        if not fire_locals:
+            return None, None
+
+        primary = int(fire_locals[0])
+        if len(fire_locals) >= 2:
+            secondary = int(fire_locals[1])
+        elif self._SECONDARY_FIRE_ALE_ACTION in self._local_by_ale:
+            secondary = int(self._local_by_ale[self._SECONDARY_FIRE_ALE_ACTION])
+        else:
+            secondary = int(primary)
+        return int(primary), int(secondary)
+
+    def lives(self) -> int:
+        return int(self._env.lives())
+
+    def step(self, action_idx: int):
+        return self._env.step(int(action_idx))
+
+    def _apply_noop_reset(self, obs_rgb):
+        if self._noop_max <= 0:
+            return obs_rgb
+        noops = int(self._rng.integers(1, self._noop_max + 1))
+        obs = obs_rgb
+        for _ in range(noops):
+            step = self._env.step(int(self._noop_local_idx))
+            obs = step.obs_rgb
+            if bool(step.terminated) or bool(step.truncated):
+                obs = self._env.reset()
+        return obs
+
+    def _apply_fire_reset(self, obs_rgb):
+        if not self._enable_fire_reset or self._fire_local_idx is None:
+            return obs_rgb
+        obs = obs_rgb
+        for local_idx in (int(self._fire_local_idx), int(self._fire_secondary_local_idx or self._fire_local_idx)):
+            step = self._env.step(int(local_idx))
+            obs = step.obs_rgb
+            if bool(step.terminated) or bool(step.truncated):
+                obs = self._env.reset()
+        return obs
+
+    def reset(self):
+        obs = self._env.reset()
+        obs = self._apply_noop_reset(obs)
+        obs = self._apply_fire_reset(obs)
+        return obs
+
+
+def _resolve_bbf_runtime_settings(args: argparse.Namespace) -> Dict[str, Any]:
+    """Resolve single-game BBF runtime settings (canonical benchmark vs native parity)."""
+    if str(getattr(args, "agent", "")) != "bbf":
+        return {}
+
+    native_parity_mode = bool(int(getattr(args, "bbf_native_parity", 0)))
+    sticky_effective = 0.0 if native_parity_mode else float(getattr(args, "sticky", 0.25))
+    full_action_space_effective = False if native_parity_mode else bool(int(getattr(args, "full_action_space", 1)))
+    action_space_mode = "local_minimal" if not bool(full_action_space_effective) else "canonical_full"
+    use_canonical_action_adapter = bool(full_action_space_effective)
+    noop_reset_max = int(getattr(args, "bbf_noop_reset_max", 30)) if native_parity_mode else 0
+    fire_reset_requested = bool(int(getattr(args, "bbf_fire_reset", 1)))
+    # Preserve canonical benchmark semantics by only applying FIRE startup in parity mode.
+    fire_reset_enabled = bool(native_parity_mode and fire_reset_requested)
+    return {
+        "native_parity_mode": bool(native_parity_mode),
+        "sticky_effective": float(sticky_effective),
+        "full_action_space_effective": bool(full_action_space_effective),
+        "action_space_mode": str(action_space_mode),
+        "use_canonical_action_adapter": bool(use_canonical_action_adapter),
+        "noop_reset_max": int(noop_reset_max),
+        "fire_reset_requested": bool(fire_reset_requested),
+        "fire_reset_enabled": bool(fire_reset_enabled),
+    }
+
+
+def _resolve_bbf_eval_reset_settings(
+    args: argparse.Namespace,
+    bbf_runtime: Optional[Mapping[str, object]],
+) -> Dict[str, object]:
+    """Resolve BBF eval reset semantics from effective runtime settings."""
+    runtime = dict(bbf_runtime or {})
+    return {
+        "noop_reset_max": int(runtime.get("noop_reset_max", int(getattr(args, "bbf_noop_reset_max", 30)))),
+        "fire_reset_enabled": bool(runtime.get("fire_reset_enabled", bool(int(getattr(args, "bbf_fire_reset", 1))))),
+    }
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Single-game streaming Atari benchmark runner (ALE direct).")
     parser.add_argument("--game", type=str, required=True, help="ALE ROM key, e.g. ms_pacman, pong, breakout.")
@@ -110,7 +243,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--agent",
         type=str,
-        choices=["random", "repeat", "tinydqn", "delay_target", "ppo", "bbf"],
+        choices=["random", "repeat", "tinydqn", "delay_target", "dqn", "rainbow_dqn", "sac", "swift_sarsa", "r2d2", "ppo", "bbf"],
         default="random",
         help="Agent type.",
     )
@@ -210,6 +343,50 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional override for agent_delay_target base_lr_log2 (CNN backbone LR = 2**base_lr_log2).",
     )
+    parser.add_argument("--roboatari-dqn-gpu", type=int, default=0, help="GPU index for RoboAtari DQN.")
+    parser.add_argument(
+        "--roboatari-dqn-load-file",
+        type=str,
+        default=None,
+        help="Optional model file path for RoboAtari DQN.",
+    )
+    parser.add_argument("--rainbow-dqn-gpu", type=int, default=0, help="GPU index for RoboAtari Rainbow DQN.")
+    parser.add_argument(
+        "--rainbow-dqn-load-file",
+        type=str,
+        default=None,
+        help="Optional model file path for RoboAtari Rainbow DQN.",
+    )
+    parser.add_argument("--sac-gpu", type=int, default=0, help="GPU index for RoboAtari SAC.")
+    parser.add_argument("--sac-load-file", type=str, default=None, help="Optional model file path for RoboAtari SAC.")
+    parser.add_argument(
+        "--sac-eval-mode",
+        type=int,
+        choices=[0, 1],
+        default=0,
+        help="Run RoboAtari SAC with training disabled (1=yes, 0=no).",
+    )
+    parser.add_argument("--swift-sarsa-gpu", type=int, default=0, help="GPU index for RoboAtari Swift SARSA.")
+    parser.add_argument(
+        "--swift-sarsa-load-file",
+        type=str,
+        default=None,
+        help="Optional Swift SARSA weights file path.",
+    )
+    parser.add_argument(
+        "--swift-sarsa-sarsa-weights-path",
+        type=str,
+        default=None,
+        help="Optional explicit Swift SARSA weights path.",
+    )
+    parser.add_argument(
+        "--swift-sarsa-ppo-weights-path",
+        type=str,
+        default=None,
+        help="Optional PPO checkpoint path for the Swift SARSA feature extractor.",
+    )
+    parser.add_argument("--r2d2-gpu", type=int, default=0, help="GPU index for RoboAtari R2D2.")
+    parser.add_argument("--r2d2-load-file", type=str, default=None, help="Optional model file path for RoboAtari R2D2.")
     parser.add_argument("--dqn-gamma", type=float, default=0.99, help="TinyDQN discount factor.")
     parser.add_argument("--dqn-lr", type=float, default=1e-4, help="TinyDQN Adam learning rate.")
     parser.add_argument("--dqn-buffer-size", type=int, default=10000, help="TinyDQN replay buffer size.")
@@ -347,6 +524,54 @@ def parse_args() -> argparse.Namespace:
         help="Enable torch.compile for BBF.",
     )
     parser.add_argument(
+        "--bbf-native-parity",
+        type=int,
+        choices=[0, 1],
+        default=0,
+        help=(
+            "Enable BBF native-parity single-game mode: forces sticky=0.0, uses local/minimal action set, "
+            "and enables native-style reset semantics (no-op + FIRE startup)."
+        ),
+    )
+    parser.add_argument(
+        "--bbf-noop-reset-max",
+        type=int,
+        default=30,
+        help="Max no-op count for BBF native-style reset randomization (used when --bbf-native-parity=1).",
+    )
+    parser.add_argument(
+        "--bbf-fire-reset",
+        type=int,
+        choices=[0, 1],
+        default=1,
+        help="Enable native-style FIRE reset startup sequence for BBF parity mode.",
+    )
+    parser.add_argument(
+        "--bbf-eval-episodes",
+        type=int,
+        default=0,
+        help="Run final benchmark-side BBF evaluation for this many episodes (0 disables).",
+    )
+    parser.add_argument(
+        "--bbf-eval-epsilon",
+        type=float,
+        default=0.001,
+        help="Evaluation epsilon for final BBF eval.",
+    )
+    parser.add_argument(
+        "--bbf-eval-sticky",
+        type=float,
+        default=0.0,
+        help="Sticky-action probability for final BBF eval environment.",
+    )
+    parser.add_argument(
+        "--bbf-eval-clip-rewards",
+        type=int,
+        choices=[0, 1],
+        default=0,
+        help="Clip rewards during final BBF eval (native final eval defaults to unclipped).",
+    )
+    parser.add_argument(
         "--timestamps",
         type=int,
         choices=[0, 1],
@@ -386,6 +611,31 @@ def validate_args(args: argparse.Namespace) -> None:
             "--agent tinydqn currently requires --runner-mode carmack_compat "
             "because TinyDQN expects applied-action labels from the Carmack boundary payload."
         )
+    if str(args.agent) == "dqn" and str(args.runner_mode) != "carmack_compat":
+        raise ValueError(
+            "--agent dqn currently requires --runner-mode carmack_compat "
+            "so the legacy RoboAtari frame-agent receives raw per-frame observations."
+        )
+    if str(args.agent) == "rainbow_dqn" and str(args.runner_mode) != "carmack_compat":
+        raise ValueError(
+            "--agent rainbow_dqn currently requires --runner-mode carmack_compat "
+            "so the legacy RoboAtari frame-agent receives raw per-frame observations."
+        )
+    if str(args.agent) == "sac" and str(args.runner_mode) != "carmack_compat":
+        raise ValueError(
+            "--agent sac currently requires --runner-mode carmack_compat "
+            "so the legacy RoboAtari frame-agent receives raw per-frame observations."
+        )
+    if str(args.agent) == "swift_sarsa" and str(args.runner_mode) != "carmack_compat":
+        raise ValueError(
+            "--agent swift_sarsa currently requires --runner-mode carmack_compat "
+            "so the legacy RoboAtari frame-agent receives raw per-frame observations."
+        )
+    if str(args.agent) == "r2d2" and str(args.runner_mode) != "carmack_compat":
+        raise ValueError(
+            "--agent r2d2 currently requires --runner-mode carmack_compat "
+            "so the legacy RoboAtari frame-agent receives raw per-frame observations."
+        )
     if str(args.agent) == "ppo" and str(args.runner_mode) != "carmack_compat":
         raise ValueError(
             "--agent ppo currently requires --runner-mode carmack_compat "
@@ -396,10 +646,20 @@ def validate_args(args: argparse.Namespace) -> None:
             "--agent bbf currently requires --runner-mode carmack_compat "
             "so the adapter can reconstruct Atari-style step cadence from frame-level boundaries."
         )
-    if str(args.agent) == "bbf" and int(args.full_action_space) != 1:
+    if str(args.agent) == "bbf" and not bool(int(getattr(args, "bbf_native_parity", 0))) and int(args.full_action_space) != 1:
         raise ValueError("--agent bbf requires --full-action-space 1 (canonical action mapping).")
     if str(args.agent) == "bbf" and bool(int(getattr(args, "real_time_mode", 0))):
         raise ValueError("--agent bbf currently requires --real-time-mode 0.")
+    if str(args.agent) != "bbf" and bool(int(getattr(args, "bbf_native_parity", 0))):
+        raise ValueError("--bbf-native-parity is only valid with --agent bbf.")
+    if int(getattr(args, "bbf_noop_reset_max", 30)) < 0:
+        raise ValueError("--bbf-noop-reset-max must be >= 0.")
+    if int(getattr(args, "bbf_eval_episodes", 0)) < 0:
+        raise ValueError("--bbf-eval-episodes must be >= 0.")
+    if float(getattr(args, "bbf_eval_epsilon", 0.001)) < 0.0:
+        raise ValueError("--bbf-eval-epsilon must be >= 0.")
+    if not (0.0 <= float(getattr(args, "bbf_eval_sticky", 0.0)) <= 1.0):
+        raise ValueError("--bbf-eval-sticky must be in [0.0, 1.0].")
     if str(args.agent) == "tinydqn" and int(args.dqn_decision_interval) <= 0:
         raise ValueError("--dqn-decision-interval must be > 0 for --agent tinydqn.")
     if str(args.agent) == "ppo" and int(getattr(args, "ppo_decision_interval", 1)) <= 0:
@@ -488,6 +748,116 @@ def build_agent(args: argparse.Namespace, num_actions: int, total_frames: int):
             total_frames=int(total_frames),
             agent_kwargs=kwargs,
         )
+    elif args.agent == "dqn":
+        from benchmark.agents_legacy_roboatari import LegacyRoboAtariAdapter  # pylint: disable=import-outside-toplevel
+
+        kwargs = {
+            "gpu": int(args.roboatari_dqn_gpu),
+        }
+        if args.roboatari_dqn_load_file:
+            kwargs["load_file"] = str(args.roboatari_dqn_load_file)
+        base = LegacyRoboAtariAdapter(
+            agent_name="dqn",
+            module_name="algorithms.dqn.agent_dqn",
+            import_error_hint=(
+                "agent=dqn requires roboatari/algorithms/dqn/agent_dqn.py and its dependencies "
+                "(torch plus the local roboatari package imports)."
+            ),
+            data_dir=str(Path(args.logdir)),
+            seed=int(args.seed),
+            num_actions=int(num_actions),
+            total_frames=int(total_frames),
+            agent_kwargs=kwargs,
+        )
+    elif args.agent == "rainbow_dqn":
+        from benchmark.agents_legacy_roboatari import LegacyRoboAtariAdapter  # pylint: disable=import-outside-toplevel
+
+        kwargs = {
+            "gpu": int(args.rainbow_dqn_gpu),
+        }
+        if args.rainbow_dqn_load_file:
+            kwargs["load_file"] = str(args.rainbow_dqn_load_file)
+        base = LegacyRoboAtariAdapter(
+            agent_name="rainbow_dqn",
+            module_name="algorithms.rainbow_dqn.agent_rainbow",
+            import_error_hint=(
+                "agent=rainbow_dqn requires roboatari/algorithms/rainbow_dqn/agent_rainbow.py "
+                "and its dependencies (torch plus the local roboatari package imports)."
+            ),
+            data_dir=str(Path(args.logdir)),
+            seed=int(args.seed),
+            num_actions=int(num_actions),
+            total_frames=int(total_frames),
+            agent_kwargs=kwargs,
+        )
+    elif args.agent == "sac":
+        from benchmark.agents_legacy_roboatari import LegacyRoboAtariAdapter  # pylint: disable=import-outside-toplevel
+
+        kwargs = {
+            "gpu": int(args.sac_gpu),
+            "eval_mode": bool(int(args.sac_eval_mode)),
+        }
+        if args.sac_load_file:
+            kwargs["load_file"] = str(args.sac_load_file)
+        base = LegacyRoboAtariAdapter(
+            agent_name="sac",
+            module_name="algorithms.sac.agent_sac",
+            import_error_hint=(
+                "agent=sac requires roboatari/algorithms/sac/agent_sac.py and its dependencies "
+                "(torch, cv2, wandb, and the local roboatari package imports)."
+            ),
+            data_dir=str(Path(args.logdir)),
+            seed=int(args.seed),
+            num_actions=int(num_actions),
+            total_frames=int(total_frames),
+            agent_kwargs=kwargs,
+        )
+    elif args.agent == "swift_sarsa":
+        from benchmark.agents_legacy_roboatari import LegacyRoboAtariAdapter  # pylint: disable=import-outside-toplevel
+
+        kwargs = {
+            "gpu": int(args.swift_sarsa_gpu),
+        }
+        if args.swift_sarsa_load_file:
+            kwargs["load_file"] = str(args.swift_sarsa_load_file)
+        if args.swift_sarsa_sarsa_weights_path:
+            kwargs["sarsa_weights_path"] = str(args.swift_sarsa_sarsa_weights_path)
+        if args.swift_sarsa_ppo_weights_path:
+            kwargs["ppo_weights_path"] = str(args.swift_sarsa_ppo_weights_path)
+        base = LegacyRoboAtariAdapter(
+            agent_name="swift_sarsa",
+            module_name="algorithms.swift_sarsa.agent_ss",
+            import_error_hint=(
+                "agent=swift_sarsa requires roboatari/algorithms/swift_sarsa/agent_ss.py and its dependencies "
+                "(swift_sarsa bindings, torch, cv2, and the local roboatari package imports)."
+            ),
+            data_dir=str(Path(args.logdir)),
+            seed=int(args.seed),
+            num_actions=int(num_actions),
+            total_frames=int(total_frames),
+            agent_kwargs=kwargs,
+        )
+    elif args.agent == "r2d2":
+        from benchmark.agents_legacy_roboatari import LegacyRoboAtariAdapter  # pylint: disable=import-outside-toplevel
+
+        kwargs = {
+            "gpu": int(args.r2d2_gpu),
+        }
+        if args.r2d2_load_file:
+            kwargs["load_file"] = str(args.r2d2_load_file)
+        base = LegacyRoboAtariAdapter(
+            agent_name="r2d2",
+            module_name="algorithms.r2d2.agent_r2d2",
+            import_error_hint=(
+                "agent=r2d2 requires roboatari/algorithms/r2d2/agent_r2d2.py and its dependencies "
+                "(torch, cv2, and the local roboatari package imports)."
+            ),
+            data_dir=str(Path(args.logdir)),
+            seed=int(args.seed),
+            num_actions=int(num_actions),
+            total_frames=int(total_frames),
+            agent_kwargs=kwargs,
+        )
     elif args.agent == "ppo":
         try:
             from benchmark.agents_ppo import PPOAgent, PPOConfig  # pylint: disable=import-outside-toplevel
@@ -525,6 +895,7 @@ def build_agent(args: argparse.Namespace, num_actions: int, total_frames: int):
                 "agent=bbf requires benchmark.agents_bbf plus root agent_bbf.py dependencies "
                 "(torch, gymnasium, and ALE stack)."
             ) from exc
+        bbf_runtime = _resolve_bbf_runtime_settings(args)
 
         bbf_config = BBFAdapterConfig(
             learning_starts=int(args.bbf_learning_starts),
@@ -542,6 +913,19 @@ def build_agent(args: argparse.Namespace, num_actions: int, total_frames: int):
             num_actions=int(num_actions),
             total_frames=int(total_frames),
             config=bbf_config,
+            full_action_space=bool(
+                bbf_runtime.get(
+                    "full_action_space_effective",
+                    bool(int(getattr(args, "full_action_space", 1))),
+                )
+            ),
+            parity_mode=bool(bbf_runtime.get("native_parity_mode", False)),
+            action_space_mode=str(
+                bbf_runtime.get(
+                    "action_space_mode",
+                    "canonical_full" if bool(int(getattr(args, "full_action_space", 1))) else "local_minimal",
+                )
+            ),
         )
     else:
         try:
@@ -587,7 +971,10 @@ def build_config_payload(
     env: ALEAtariEnv,
     runner_config,
     run_dir: Path,
+    *,
+    bbf_runtime: Optional[Mapping[str, object]] = None,
 ) -> Dict:
+    resolved_bbf_runtime = dict(bbf_runtime or {})
     payload = {
         "game": args.game,
         "seed": int(args.seed),
@@ -611,6 +998,29 @@ def build_config_payload(
         "delay_target_ring_buffer_size": (
             None if args.delay_target_ring_buffer_size is None else int(args.delay_target_ring_buffer_size)
         ),
+        "roboatari_dqn_config": {
+            "gpu": int(getattr(args, "roboatari_dqn_gpu", 0)),
+            "load_file": getattr(args, "roboatari_dqn_load_file", None),
+        },
+        "rainbow_dqn_config": {
+            "gpu": int(getattr(args, "rainbow_dqn_gpu", 0)),
+            "load_file": getattr(args, "rainbow_dqn_load_file", None),
+        },
+        "sac_config": {
+            "gpu": int(getattr(args, "sac_gpu", 0)),
+            "load_file": getattr(args, "sac_load_file", None),
+            "eval_mode": bool(int(getattr(args, "sac_eval_mode", 0))),
+        },
+        "swift_sarsa_config": {
+            "gpu": int(getattr(args, "swift_sarsa_gpu", 0)),
+            "load_file": getattr(args, "swift_sarsa_load_file", None),
+            "sarsa_weights_path": getattr(args, "swift_sarsa_sarsa_weights_path", None),
+            "ppo_weights_path": getattr(args, "swift_sarsa_ppo_weights_path", None),
+        },
+        "r2d2_config": {
+            "gpu": int(getattr(args, "r2d2_gpu", 0)),
+            "load_file": getattr(args, "r2d2_load_file", None),
+        },
         "dqn_config": {
             "gamma": float(args.dqn_gamma),
             "lr": float(args.dqn_lr),
@@ -658,6 +1068,35 @@ def build_config_payload(
             "use_per": bool(int(getattr(args, "bbf_use_per", 1))),
             "use_amp": bool(int(getattr(args, "bbf_use_amp", 0))),
             "torch_compile": bool(int(getattr(args, "bbf_torch_compile", 0))),
+            "native_parity_mode": bool(int(getattr(args, "bbf_native_parity", 0))),
+            "noop_reset_max": int(getattr(args, "bbf_noop_reset_max", 30)),
+            "fire_reset": bool(int(getattr(args, "bbf_fire_reset", 1))),
+            "eval_episodes": int(getattr(args, "bbf_eval_episodes", 0)),
+            "eval_epsilon": float(getattr(args, "bbf_eval_epsilon", 0.001)),
+            "eval_sticky": float(getattr(args, "bbf_eval_sticky", 0.0)),
+            "eval_clip_rewards": bool(int(getattr(args, "bbf_eval_clip_rewards", 0))),
+        },
+        "bbf_runtime": {
+            "native_parity_mode": bool(resolved_bbf_runtime.get("native_parity_mode", False)),
+            "action_space_mode": str(
+                resolved_bbf_runtime.get(
+                    "action_space_mode",
+                    "canonical_full" if bool(args.full_action_space) else "local_minimal",
+                )
+            ),
+            "sticky_effective": float(resolved_bbf_runtime.get("sticky_effective", float(args.sticky))),
+            "full_action_space_effective": bool(
+                resolved_bbf_runtime.get("full_action_space_effective", bool(args.full_action_space))
+            ),
+            "use_canonical_action_adapter": bool(
+                resolved_bbf_runtime.get("use_canonical_action_adapter", bool(args.full_action_space))
+            ),
+            "noop_reset_max_effective": int(resolved_bbf_runtime.get("noop_reset_max", 0)),
+            "fire_reset_requested": bool(
+                resolved_bbf_runtime.get("fire_reset_requested", bool(int(getattr(args, "bbf_fire_reset", 1))))
+            ),
+            "fire_reset_enabled": bool(resolved_bbf_runtime.get("fire_reset_enabled", False)),
+            "fire_reset_supported": bool(resolved_bbf_runtime.get("fire_reset_supported", False)),
         },
         "timestamps": bool(args.timestamps),
         "real_time_mode": bool(args.real_time_mode),
@@ -703,6 +1142,8 @@ def build_run_summary_payload(
     summary: Mapping[str, object],
     *,
     runtime_fingerprint: Optional[Mapping[str, object]] = None,
+    bbf_runtime: Optional[Mapping[str, object]] = None,
+    bbf_eval: Optional[Mapping[str, object]] = None,
 ) -> Dict[str, object]:
     payload: Dict[str, object] = {
         "runner_mode": str(args.runner_mode),
@@ -713,6 +1154,10 @@ def build_run_summary_payload(
         payload["single_run_schema_version"] = CARMACK_SINGLE_RUN_SCHEMA_VERSION
     if runtime_fingerprint is not None:
         payload["runtime_fingerprint"] = dict(runtime_fingerprint)
+    if bbf_runtime is not None:
+        payload["bbf_runtime"] = dict(bbf_runtime)
+    if bbf_eval is not None:
+        payload["bbf_eval"] = dict(bbf_eval)
     return payload
 
 
@@ -799,21 +1244,34 @@ def main() -> None:
     validate_args(args)
     seed_everything(args.seed)
 
+    bbf_runtime = _resolve_bbf_runtime_settings(args)
+    sticky_effective = float(bbf_runtime.get("sticky_effective", float(args.sticky)))
+    full_action_space_effective = bool(bbf_runtime.get("full_action_space_effective", bool(args.full_action_space)))
+
     env_config = ALEEnvConfig(
         game=args.game,
         seed=args.seed,
-        sticky_action_prob=args.sticky,
-        full_action_space=bool(args.full_action_space),
+        sticky_action_prob=sticky_effective,
+        full_action_space=full_action_space_effective,
         life_loss_termination=bool(args.life_loss_termination),
     )
     ale_env = ALEAtariEnv(env_config)
     env = ale_env
     if str(args.agent) == "bbf":
-        env = _CanonicalActionSetEnvAdapter(
+        bbf_reset_env = _BBFResetSemanticsEnvAdapter(
             ale_env,
-            global_action_set=_resolve_global_action_set(),
-            default_action_idx=int(args.default_action_idx),
+            seed=int(args.seed),
+            noop_max=int(bbf_runtime.get("noop_reset_max", 0)),
+            enable_fire_reset=bool(bbf_runtime.get("fire_reset_enabled", False)),
         )
+        bbf_runtime["fire_reset_supported"] = bool(getattr(bbf_reset_env, "fire_reset_supported", False))
+        env = bbf_reset_env
+        if bool(bbf_runtime.get("use_canonical_action_adapter", True)):
+            env = _CanonicalActionSetEnvAdapter(
+                env,
+                global_action_set=_resolve_global_action_set(),
+                default_action_idx=int(args.default_action_idx),
+            )
 
     if args.default_action_idx < 0 or args.default_action_idx >= len(env.action_set):
         raise ValueError(f"--default-action-idx must be in [0, {len(env.action_set) - 1}]")
@@ -858,7 +1316,7 @@ def main() -> None:
             default_action_idx=args.default_action_idx,
             include_timestamps=bool(args.timestamps),
         )
-    config_payload = build_config_payload(args, env, runner_config, run_dir)
+    config_payload = build_config_payload(args, env, runner_config, run_dir, bbf_runtime=bbf_runtime)
     runtime_fingerprint = build_runtime_fingerprint_payload(args, config_payload)
     config_payload_with_fingerprint = dict(config_payload)
     config_payload_with_fingerprint["runtime_fingerprint"] = dict(runtime_fingerprint)
@@ -887,7 +1345,55 @@ def main() -> None:
         event_writer.close()
         episode_writer.close()
 
-    dump_json(run_dir / "run_summary.json", build_run_summary_payload(args, summary, runtime_fingerprint=runtime_fingerprint))
+    bbf_eval_summary = None
+    if str(args.agent) == "bbf" and int(getattr(args, "bbf_eval_episodes", 0)) > 0:
+        eval_reset_settings = _resolve_bbf_eval_reset_settings(args, bbf_runtime)
+        eval_env_config = ALEEnvConfig(
+            game=args.game,
+            seed=int(args.seed) + 1_000_003,
+            sticky_action_prob=float(getattr(args, "bbf_eval_sticky", 0.0)),
+            full_action_space=bool(full_action_space_effective),
+            life_loss_termination=False,
+        )
+        eval_ale_env = ALEAtariEnv(eval_env_config)
+        eval_env = _BBFResetSemanticsEnvAdapter(
+            eval_ale_env,
+            seed=int(args.seed) + 2_000_003,
+            noop_max=int(eval_reset_settings.get("noop_reset_max", 0)),
+            enable_fire_reset=bool(eval_reset_settings.get("fire_reset_enabled", False)),
+        )
+        if bool(bbf_runtime.get("use_canonical_action_adapter", True)):
+            eval_env = _CanonicalActionSetEnvAdapter(
+                eval_env,
+                global_action_set=_resolve_global_action_set(),
+                default_action_idx=int(args.default_action_idx),
+            )
+
+        evaluate_fn = getattr(agent, "evaluate", None)
+        if callable(evaluate_fn):
+            bbf_eval_summary = evaluate_fn(
+                eval_env,
+                episodes=int(args.bbf_eval_episodes),
+                epsilon=float(args.bbf_eval_epsilon),
+                seed=int(args.seed) + 3_000_003,
+                clip_rewards=bool(int(args.bbf_eval_clip_rewards)),
+            )
+            if isinstance(bbf_eval_summary, Mapping):
+                bbf_eval_summary = dict(bbf_eval_summary)
+                bbf_eval_summary["protocol"] = "benchmark_bbf_eval_v1"
+                dump_json(run_dir / "bbf_eval_summary.json", bbf_eval_summary)
+                print(f"BBF eval summary: {bbf_eval_summary}")
+
+    dump_json(
+        run_dir / "run_summary.json",
+        build_run_summary_payload(
+            args,
+            summary,
+            runtime_fingerprint=runtime_fingerprint,
+            bbf_runtime=bbf_runtime if str(args.agent) == "bbf" else None,
+            bbf_eval=bbf_eval_summary if isinstance(bbf_eval_summary, Mapping) else None,
+        ),
+    )
     print(f"Run complete: {run_dir}")
     print(f"Summary: {summary}")
 

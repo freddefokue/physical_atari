@@ -3,11 +3,16 @@ from __future__ import annotations
 from argparse import Namespace
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from benchmark.carmack_runner import CARMACK_SINGLE_RUN_PROFILE, CARMACK_SINGLE_RUN_SCHEMA_VERSION, CarmackRunnerConfig
+from benchmark.runner import EnvStep
+from benchmark.run_single_game import _BBFResetSemanticsEnvAdapter
 from benchmark.run_single_game import _CanonicalActionSetEnvAdapter
 from benchmark.run_single_game import _FrameFromStepAdapter
+from benchmark.run_single_game import _resolve_bbf_eval_reset_settings
+from benchmark.run_single_game import _resolve_bbf_runtime_settings
 from benchmark.run_single_game import build_agent
 from benchmark.run_single_game import build_runtime_fingerprint_payload
 from benchmark.run_single_game import build_config_payload
@@ -51,6 +56,36 @@ def test_validate_args_ppo_requires_carmack_mode():
         validate_args(args)
 
 
+def test_validate_args_dqn_requires_carmack_mode():
+    args = Namespace(runner_mode="standard", frame_skip=1, agent="dqn", real_time_fps=60.0)
+    with pytest.raises(ValueError, match=r"agent dqn currently requires --runner-mode carmack_compat"):
+        validate_args(args)
+
+
+def test_validate_args_rainbow_dqn_requires_carmack_mode():
+    args = Namespace(runner_mode="standard", frame_skip=1, agent="rainbow_dqn", real_time_fps=60.0)
+    with pytest.raises(ValueError, match=r"agent rainbow_dqn currently requires --runner-mode carmack_compat"):
+        validate_args(args)
+
+
+def test_validate_args_sac_requires_carmack_mode():
+    args = Namespace(runner_mode="standard", frame_skip=1, agent="sac", real_time_fps=60.0)
+    with pytest.raises(ValueError, match=r"agent sac currently requires --runner-mode carmack_compat"):
+        validate_args(args)
+
+
+def test_validate_args_swift_sarsa_requires_carmack_mode():
+    args = Namespace(runner_mode="standard", frame_skip=1, agent="swift_sarsa", real_time_fps=60.0)
+    with pytest.raises(ValueError, match=r"agent swift_sarsa currently requires --runner-mode carmack_compat"):
+        validate_args(args)
+
+
+def test_validate_args_r2d2_requires_carmack_mode():
+    args = Namespace(runner_mode="standard", frame_skip=1, agent="r2d2", real_time_fps=60.0)
+    with pytest.raises(ValueError, match=r"agent r2d2 currently requires --runner-mode carmack_compat"):
+        validate_args(args)
+
+
 def test_validate_args_ppo_requires_positive_decision_interval():
     args = Namespace(
         runner_mode="carmack_compat",
@@ -75,6 +110,22 @@ def test_validate_args_bbf_requires_full_action_space():
         validate_args(args)
 
 
+def test_validate_args_bbf_native_parity_allows_minimal_action_space():
+    args = Namespace(
+        runner_mode="carmack_compat",
+        frame_skip=1,
+        agent="bbf",
+        full_action_space=0,
+        bbf_native_parity=1,
+        real_time_fps=60.0,
+        bbf_noop_reset_max=30,
+        bbf_eval_episodes=0,
+        bbf_eval_epsilon=0.001,
+        bbf_eval_sticky=0.0,
+    )
+    validate_args(args)
+
+
 def test_validate_args_bbf_requires_real_time_mode_off():
     args = Namespace(
         runner_mode="carmack_compat",
@@ -85,6 +136,22 @@ def test_validate_args_bbf_requires_real_time_mode_off():
         real_time_fps=60.0,
     )
     with pytest.raises(ValueError, match=r"--agent bbf currently requires --real-time-mode 0"):
+        validate_args(args)
+
+
+def test_validate_args_bbf_native_parity_only_valid_for_bbf():
+    args = Namespace(
+        runner_mode="carmack_compat",
+        frame_skip=1,
+        agent="random",
+        bbf_native_parity=1,
+        real_time_fps=60.0,
+        bbf_noop_reset_max=30,
+        bbf_eval_episodes=0,
+        bbf_eval_epsilon=0.001,
+        bbf_eval_sticky=0.0,
+    )
+    with pytest.raises(ValueError, match=r"--bbf-native-parity is only valid"):
         validate_args(args)
 
 
@@ -115,6 +182,114 @@ def test_parse_args_accepts_ppo_with_carmack_compat(monkeypatch):
     assert args.ppo_decision_interval == 4
 
 
+def test_parse_args_accepts_dqn_with_carmack_compat(monkeypatch):
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_single_game.py",
+            "--game",
+            "pong",
+            "--runner-mode",
+            "carmack_compat",
+            "--frame-skip",
+            "1",
+            "--agent",
+            "dqn",
+        ],
+    )
+    args = parse_args()
+    assert args.agent == "dqn"
+    assert args.runner_mode == "carmack_compat"
+    assert args.roboatari_dqn_gpu == 0
+
+
+def test_parse_args_accepts_rainbow_dqn_with_carmack_compat(monkeypatch):
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_single_game.py",
+            "--game",
+            "pong",
+            "--runner-mode",
+            "carmack_compat",
+            "--frame-skip",
+            "1",
+            "--agent",
+            "rainbow_dqn",
+        ],
+    )
+    args = parse_args()
+    assert args.agent == "rainbow_dqn"
+    assert args.runner_mode == "carmack_compat"
+    assert args.rainbow_dqn_gpu == 0
+
+
+def test_parse_args_accepts_sac_with_carmack_compat(monkeypatch):
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_single_game.py",
+            "--game",
+            "pong",
+            "--runner-mode",
+            "carmack_compat",
+            "--frame-skip",
+            "1",
+            "--agent",
+            "sac",
+        ],
+    )
+    args = parse_args()
+    assert args.agent == "sac"
+    assert args.runner_mode == "carmack_compat"
+    assert args.sac_gpu == 0
+    assert args.sac_eval_mode == 0
+
+
+def test_parse_args_accepts_swift_sarsa_with_carmack_compat(monkeypatch):
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_single_game.py",
+            "--game",
+            "pong",
+            "--runner-mode",
+            "carmack_compat",
+            "--frame-skip",
+            "1",
+            "--agent",
+            "swift_sarsa",
+        ],
+    )
+    args = parse_args()
+    assert args.agent == "swift_sarsa"
+    assert args.runner_mode == "carmack_compat"
+    assert args.swift_sarsa_gpu == 0
+    assert args.swift_sarsa_load_file is None
+
+
+def test_parse_args_accepts_r2d2_with_carmack_compat(monkeypatch):
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_single_game.py",
+            "--game",
+            "pong",
+            "--runner-mode",
+            "carmack_compat",
+            "--frame-skip",
+            "1",
+            "--agent",
+            "r2d2",
+        ],
+    )
+    args = parse_args()
+    assert args.agent == "r2d2"
+    assert args.runner_mode == "carmack_compat"
+    assert args.r2d2_gpu == 0
+    assert args.r2d2_load_file is None
+
+
 def test_parse_args_accepts_bbf_with_carmack_compat(monkeypatch):
     monkeypatch.setattr(
         "sys.argv",
@@ -136,6 +311,29 @@ def test_parse_args_accepts_bbf_with_carmack_compat(monkeypatch):
     assert args.agent == "bbf"
     assert args.runner_mode == "carmack_compat"
     assert args.bbf_learning_starts == 2000
+
+
+def test_parse_args_accepts_bbf_native_parity_switch(monkeypatch):
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_single_game.py",
+            "--game",
+            "pong",
+            "--runner-mode",
+            "carmack_compat",
+            "--frame-skip",
+            "1",
+            "--agent",
+            "bbf",
+            "--bbf-native-parity",
+            "1",
+        ],
+    )
+    args = parse_args()
+    assert args.agent == "bbf"
+    assert args.bbf_native_parity == 1
+    assert args.bbf_noop_reset_max == 30
 
 
 def test_canonical_action_adapter_maps_global_indices_to_local_actions():
@@ -164,6 +362,127 @@ def test_canonical_action_adapter_maps_global_indices_to_local_actions():
     # global idx 1 -> ALE action 1 (illegal for this game) -> fallback to default ALE action 1; missing -> local idx 0
     wrapped.step(1)
     assert env.calls == [0, 1, 0]
+
+
+def test_resolve_bbf_runtime_settings_native_parity_forces_sticky_zero_and_minimal_actions():
+    args = Namespace(
+        agent="bbf",
+        bbf_native_parity=1,
+        sticky=0.25,
+        full_action_space=1,
+        bbf_noop_reset_max=30,
+        bbf_fire_reset=1,
+    )
+    settings = _resolve_bbf_runtime_settings(args)
+    assert settings["native_parity_mode"] is True
+    assert settings["sticky_effective"] == pytest.approx(0.0)
+    assert settings["full_action_space_effective"] is False
+    assert settings["action_space_mode"] == "local_minimal"
+    assert settings["use_canonical_action_adapter"] is False
+    assert settings["fire_reset_enabled"] is True
+
+
+def test_resolve_bbf_runtime_settings_canonical_mode_preserves_full_action_space():
+    args = Namespace(
+        agent="bbf",
+        bbf_native_parity=0,
+        sticky=0.25,
+        full_action_space=1,
+        bbf_noop_reset_max=30,
+        bbf_fire_reset=1,
+    )
+    settings = _resolve_bbf_runtime_settings(args)
+    assert settings["native_parity_mode"] is False
+    assert settings["sticky_effective"] == pytest.approx(0.25)
+    assert settings["full_action_space_effective"] is True
+    assert settings["action_space_mode"] == "canonical_full"
+    assert settings["use_canonical_action_adapter"] is True
+    assert settings["fire_reset_enabled"] is False
+
+
+def test_resolve_bbf_eval_reset_settings_uses_runtime_effective_values():
+    args = Namespace(
+        bbf_noop_reset_max=30,
+        bbf_fire_reset=1,
+    )
+    settings = _resolve_bbf_eval_reset_settings(
+        args,
+        bbf_runtime={
+            "noop_reset_max": 0,
+            "fire_reset_enabled": False,
+        },
+    )
+    assert settings["noop_reset_max"] == 0
+    assert settings["fire_reset_enabled"] is False
+
+
+def test_bbf_reset_adapter_applies_noop_steps_on_reset():
+    class _Env:
+        def __init__(self) -> None:
+            self.action_set = [0, 1, 2]
+            self.reset_calls = 0
+            self.step_calls = []
+
+        def get_action_meanings(self):
+            return ["NOOP", "FIRE", "UP"]
+
+        def reset(self):
+            self.reset_calls += 1
+            return np.zeros((4, 4, 3), dtype=np.uint8)
+
+        def lives(self):
+            return 3
+
+        def step(self, action_idx: int):
+            self.step_calls.append(int(action_idx))
+            return EnvStep(
+                obs_rgb=np.zeros((4, 4, 3), dtype=np.uint8),
+                reward=0.0,
+                terminated=False,
+                truncated=False,
+                lives=3,
+                termination_reason=None,
+            )
+
+    env = _Env()
+    wrapped = _BBFResetSemanticsEnvAdapter(env, seed=0, noop_max=5, enable_fire_reset=False)
+    wrapped.reset()
+    assert env.reset_calls == 1
+    assert len(env.step_calls) >= 1
+    assert all(call == 0 for call in env.step_calls)
+
+
+def test_bbf_reset_adapter_applies_fire_reset_when_supported():
+    class _Env:
+        def __init__(self) -> None:
+            self.action_set = [0, 1, 2]
+            self.step_calls = []
+
+        def get_action_meanings(self):
+            return ["NOOP", "FIRE", "UP"]
+
+        def reset(self):
+            return np.zeros((4, 4, 3), dtype=np.uint8)
+
+        def lives(self):
+            return 3
+
+        def step(self, action_idx: int):
+            self.step_calls.append(int(action_idx))
+            return EnvStep(
+                obs_rgb=np.zeros((4, 4, 3), dtype=np.uint8),
+                reward=0.0,
+                terminated=False,
+                truncated=False,
+                lives=3,
+                termination_reason=None,
+            )
+
+    env = _Env()
+    wrapped = _BBFResetSemanticsEnvAdapter(env, seed=0, noop_max=0, enable_fire_reset=True)
+    wrapped.reset()
+    assert wrapped.fire_reset_supported is True
+    assert env.step_calls[:2] == [1, 2]
 
 
 def test_build_config_payload_carmack_marks_agent_owned_cadence():
@@ -291,6 +610,104 @@ def test_build_agent_ppo_builds_or_raises_actionable_import_error():
     assert hasattr(agent, "frame")
 
 
+def test_build_agent_dqn_builds_or_raises_actionable_import_error():
+    args = Namespace(
+        agent="dqn",
+        seed=7,
+        runner_mode="carmack_compat",
+        roboatari_dqn_gpu=0,
+        roboatari_dqn_load_file=None,
+        logdir="./runs",
+        dqn_decision_interval=1,
+        ppo_decision_interval=1,
+    )
+    try:
+        agent = build_agent(args, num_actions=3, total_frames=32)
+    except ImportError as exc:
+        assert "agent=dqn requires roboatari/algorithms/dqn/agent_dqn.py" in str(exc)
+        return
+    assert hasattr(agent, "frame")
+
+
+def test_build_agent_rainbow_dqn_builds_or_raises_actionable_import_error():
+    args = Namespace(
+        agent="rainbow_dqn",
+        seed=7,
+        runner_mode="carmack_compat",
+        rainbow_dqn_gpu=0,
+        rainbow_dqn_load_file=None,
+        logdir="./runs",
+        dqn_decision_interval=1,
+        ppo_decision_interval=1,
+    )
+    try:
+        agent = build_agent(args, num_actions=3, total_frames=32)
+    except ImportError as exc:
+        assert "agent=rainbow_dqn requires roboatari/algorithms/rainbow_dqn/agent_rainbow.py" in str(exc)
+        return
+    assert hasattr(agent, "frame")
+
+
+def test_build_agent_sac_builds_or_raises_actionable_import_error():
+    args = Namespace(
+        agent="sac",
+        seed=7,
+        runner_mode="carmack_compat",
+        sac_gpu=0,
+        sac_load_file=None,
+        sac_eval_mode=0,
+        logdir="./runs",
+        dqn_decision_interval=1,
+        ppo_decision_interval=1,
+    )
+    try:
+        agent = build_agent(args, num_actions=3, total_frames=32)
+    except ImportError as exc:
+        assert "agent=sac requires roboatari/algorithms/sac/agent_sac.py" in str(exc)
+        return
+    assert hasattr(agent, "frame")
+
+
+def test_build_agent_swift_sarsa_builds_or_raises_actionable_import_error():
+    args = Namespace(
+        agent="swift_sarsa",
+        seed=7,
+        runner_mode="carmack_compat",
+        swift_sarsa_gpu=0,
+        swift_sarsa_load_file=None,
+        swift_sarsa_sarsa_weights_path=None,
+        swift_sarsa_ppo_weights_path=None,
+        logdir="./runs",
+        dqn_decision_interval=1,
+        ppo_decision_interval=1,
+    )
+    try:
+        agent = build_agent(args, num_actions=3, total_frames=32)
+    except ImportError as exc:
+        assert "agent=swift_sarsa requires roboatari/algorithms/swift_sarsa/agent_ss.py" in str(exc)
+        return
+    assert hasattr(agent, "frame")
+
+
+def test_build_agent_r2d2_builds_or_raises_actionable_import_error():
+    args = Namespace(
+        agent="r2d2",
+        seed=7,
+        runner_mode="carmack_compat",
+        r2d2_gpu=0,
+        r2d2_load_file=None,
+        logdir="./runs",
+        dqn_decision_interval=1,
+        ppo_decision_interval=1,
+    )
+    try:
+        agent = build_agent(args, num_actions=3, total_frames=32)
+    except ImportError as exc:
+        assert "agent=r2d2 requires roboatari/algorithms/r2d2/agent_r2d2.py" in str(exc)
+        return
+    assert hasattr(agent, "frame")
+
+
 def test_frame_from_step_adapter_does_not_leak_frame_idx():
     class _StepAgent:
         def __init__(self) -> None:
@@ -388,6 +805,135 @@ def test_build_run_summary_payload_carmack_includes_schema_markers():
     assert payload["frames"] == 10
     assert payload["single_run_profile"] == CARMACK_SINGLE_RUN_PROFILE
     assert payload["single_run_schema_version"] == CARMACK_SINGLE_RUN_SCHEMA_VERSION
+
+
+def test_build_config_payload_records_bbf_runtime_mode_fields():
+    class _Env:
+        action_set = [0, 1, 2]
+
+    args = Namespace(
+        game="pong",
+        seed=1,
+        frames=100,
+        frame_skip=1,
+        delay=0,
+        sticky=0.25,
+        full_action_space=1,
+        life_loss_termination=0,
+        agent="bbf",
+        repeat_action_idx=0,
+        default_action_idx=0,
+        runner_mode="carmack_compat",
+        lives_as_episodes=1,
+        max_frames_without_reward=1000,
+        reset_on_life_loss=0,
+        compat_reset_delay_queue_on_reset=0,
+        compat_log_every_frames=0,
+        compat_log_pulses_every=0,
+        compat_log_resets_every=0,
+        delay_target_ring_buffer_size=None,
+        roboatari_dqn_gpu=0,
+        roboatari_dqn_load_file=None,
+        rainbow_dqn_gpu=0,
+        rainbow_dqn_load_file=None,
+        sac_gpu=0,
+        sac_load_file=None,
+        sac_eval_mode=0,
+        swift_sarsa_gpu=0,
+        swift_sarsa_load_file=None,
+        swift_sarsa_sarsa_weights_path=None,
+        swift_sarsa_ppo_weights_path=None,
+        r2d2_gpu=0,
+        r2d2_load_file=None,
+        dqn_gamma=0.99,
+        dqn_lr=1e-4,
+        dqn_buffer_size=10000,
+        dqn_batch_size=32,
+        dqn_train_every=4,
+        dqn_log_train_every=500,
+        dqn_target_update=250,
+        dqn_eps_start=1.0,
+        dqn_eps_end=0.05,
+        dqn_eps_decay_frames=200000,
+        dqn_replay_min=1000,
+        dqn_use_replay=1,
+        dqn_device="cpu",
+        dqn_decision_interval=1,
+        ppo_lr=2.5e-4,
+        ppo_gamma=0.99,
+        ppo_gae_lambda=0.95,
+        ppo_clip_range=0.2,
+        ppo_ent_coef=0.01,
+        ppo_vf_coef=0.5,
+        ppo_max_grad_norm=0.5,
+        ppo_rollout_steps=128,
+        ppo_train_interval=128,
+        ppo_batch_size=32,
+        ppo_epochs=4,
+        ppo_reward_clip=1.0,
+        ppo_obs_size=84,
+        ppo_frame_stack=4,
+        ppo_grayscale=1,
+        ppo_normalize_advantages=1,
+        ppo_deterministic_actions=0,
+        ppo_device="auto",
+        ppo_decision_interval=4,
+        bbf_learning_starts=2000,
+        bbf_buffer_size=200000,
+        bbf_batch_size=32,
+        bbf_replay_ratio=64,
+        bbf_reset_interval=20000,
+        bbf_no_resets_after=100000,
+        bbf_use_per=1,
+        bbf_use_amp=0,
+        bbf_torch_compile=0,
+        bbf_native_parity=1,
+        bbf_noop_reset_max=30,
+        bbf_fire_reset=1,
+        bbf_eval_episodes=5,
+        bbf_eval_epsilon=0.001,
+        bbf_eval_sticky=0.0,
+        bbf_eval_clip_rewards=0,
+        timestamps=0,
+        real_time_mode=0,
+        real_time_fps=60.0,
+        logdir="runs",
+    )
+    payload = build_config_payload(
+        args=args,
+        env=_Env(),
+        runner_config=CarmackRunnerConfig(total_frames=100, include_timestamps=False),
+        run_dir=Path("runs/test"),
+        bbf_runtime={
+            "native_parity_mode": True,
+            "action_space_mode": "local_minimal",
+            "sticky_effective": 0.0,
+            "full_action_space_effective": False,
+            "use_canonical_action_adapter": False,
+            "noop_reset_max": 30,
+            "fire_reset_enabled": True,
+            "fire_reset_supported": True,
+        },
+    )
+    assert payload["bbf_runtime"]["native_parity_mode"] is True
+    assert payload["bbf_runtime"]["sticky_effective"] == pytest.approx(0.0)
+    assert payload["bbf_runtime"]["full_action_space_effective"] is False
+    assert payload["bbf_runtime"]["action_space_mode"] == "local_minimal"
+
+
+def test_build_run_summary_payload_includes_bbf_runtime_and_eval():
+    args = Namespace(runner_mode="carmack_compat")
+    summary = {"frames": 10}
+    payload = build_run_summary_payload(
+        args,
+        summary,
+        bbf_runtime={"native_parity_mode": True, "action_space_mode": "local_minimal"},
+        bbf_eval={"episodes": 3, "mean_return": 12.0, "std_return": 1.0},
+    )
+    assert payload["bbf_runtime"]["native_parity_mode"] is True
+    assert payload["bbf_runtime"]["action_space_mode"] == "local_minimal"
+    assert payload["bbf_eval"]["episodes"] == 3
+    assert payload["bbf_eval"]["mean_return"] == pytest.approx(12.0)
 
 
 def test_frame_from_step_adapter_get_stats_graceful_fallback():

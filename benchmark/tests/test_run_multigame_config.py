@@ -167,6 +167,44 @@ def test_run_multigame_cli_accepts_ppo_agent():
     assert args.ppo_decision_interval == 4
 
 
+def test_run_multigame_cli_accepts_dqn_agent():
+    args = parse_args(["--games", "pong", "--agent", "dqn"])
+    assert args.agent == "dqn"
+    assert args.roboatari_dqn_gpu == 0
+    assert args.roboatari_dqn_load_file is None
+
+
+def test_run_multigame_cli_accepts_rainbow_dqn_agent():
+    args = parse_args(["--games", "pong", "--agent", "rainbow_dqn"])
+    assert args.agent == "rainbow_dqn"
+    assert args.rainbow_dqn_gpu == 0
+    assert args.rainbow_dqn_load_file is None
+
+
+def test_run_multigame_cli_accepts_sac_agent():
+    args = parse_args(["--games", "pong", "--agent", "sac"])
+    assert args.agent == "sac"
+    assert args.sac_gpu == 0
+    assert args.sac_load_file is None
+    assert args.sac_eval_mode == 0
+
+
+def test_run_multigame_cli_accepts_swift_sarsa_agent():
+    args = parse_args(["--games", "pong", "--agent", "swift_sarsa"])
+    assert args.agent == "swift_sarsa"
+    assert args.swift_sarsa_gpu == 0
+    assert args.swift_sarsa_load_file is None
+    assert args.swift_sarsa_sarsa_weights_path is None
+    assert args.swift_sarsa_ppo_weights_path is None
+
+
+def test_run_multigame_cli_accepts_r2d2_agent():
+    args = parse_args(["--games", "pong", "--agent", "r2d2"])
+    assert args.agent == "r2d2"
+    assert args.r2d2_gpu == 0
+    assert args.r2d2_load_file is None
+
+
 def test_run_multigame_cli_accepts_bbf_agent():
     args = parse_args(["--games", "pong", "--agent", "bbf"])
     assert args.agent == "bbf"
@@ -206,6 +244,127 @@ def test_run_multigame_config_parses_ppo_agent_config(tmp_path):
     assert args.ppo_device == "cpu"
     assert args.ppo_grayscale == 1
     assert args.ppo_decision_interval == 6
+
+
+def test_run_multigame_config_parses_dqn_agent_config(tmp_path):
+    config_path = tmp_path / "cfg_dqn.json"
+    payload = {
+        "games": ["pong"],
+        "agent": "dqn",
+        "runner_mode": "carmack_compat",
+        "decision_interval": 1,
+        "agent_config": {
+            "gpu": 2,
+            "load_file": "/tmp/dqn.model",
+        },
+    }
+    with config_path.open("w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
+
+    args = parse_args(["--config", str(config_path)])
+    assert args.agent == "dqn"
+    assert args.runner_mode == "carmack_compat"
+    assert args.decision_interval == 1
+    assert args.roboatari_dqn_gpu == 2
+    assert args.roboatari_dqn_load_file == "/tmp/dqn.model"
+
+
+def test_run_multigame_config_parses_rainbow_dqn_agent_config(tmp_path):
+    config_path = tmp_path / "cfg_rainbow.json"
+    payload = {
+        "games": ["pong"],
+        "agent": "rainbow_dqn",
+        "runner_mode": "carmack_compat",
+        "decision_interval": 1,
+        "agent_config": {
+            "gpu": 3,
+            "load_file": "/tmp/rainbow.model",
+        },
+    }
+    with config_path.open("w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
+
+    args = parse_args(["--config", str(config_path)])
+    assert args.agent == "rainbow_dqn"
+    assert args.runner_mode == "carmack_compat"
+    assert args.decision_interval == 1
+    assert args.rainbow_dqn_gpu == 3
+    assert args.rainbow_dqn_load_file == "/tmp/rainbow.model"
+
+
+def test_run_multigame_config_parses_sac_agent_config(tmp_path):
+    config_path = tmp_path / "cfg_sac.json"
+    payload = {
+        "games": ["pong"],
+        "agent": "sac",
+        "runner_mode": "carmack_compat",
+        "decision_interval": 1,
+        "agent_config": {
+            "gpu": 1,
+            "load_file": "/tmp/sac.model",
+            "eval_mode": 1,
+        },
+    }
+    with config_path.open("w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
+
+    args = parse_args(["--config", str(config_path)])
+    assert args.agent == "sac"
+    assert args.runner_mode == "carmack_compat"
+    assert args.decision_interval == 1
+    assert args.sac_gpu == 1
+    assert args.sac_load_file == "/tmp/sac.model"
+    assert args.sac_eval_mode == 1
+
+
+def test_run_multigame_config_parses_swift_sarsa_agent_config(tmp_path):
+    config_path = tmp_path / "cfg_swift_sarsa.json"
+    payload = {
+        "games": ["pong"],
+        "agent": "swift_sarsa",
+        "runner_mode": "carmack_compat",
+        "decision_interval": 1,
+        "agent_config": {
+            "gpu": 2,
+            "load_file": "/tmp/swift_sarsa.npz",
+            "sarsa_weights_path": "/tmp/swift_only.npz",
+            "ppo_weights_path": "/tmp/ppo_backbone.zip",
+        },
+    }
+    with config_path.open("w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
+
+    args = parse_args(["--config", str(config_path)])
+    assert args.agent == "swift_sarsa"
+    assert args.runner_mode == "carmack_compat"
+    assert args.decision_interval == 1
+    assert args.swift_sarsa_gpu == 2
+    assert args.swift_sarsa_load_file == "/tmp/swift_sarsa.npz"
+    assert args.swift_sarsa_sarsa_weights_path == "/tmp/swift_only.npz"
+    assert args.swift_sarsa_ppo_weights_path == "/tmp/ppo_backbone.zip"
+
+
+def test_run_multigame_config_parses_r2d2_agent_config(tmp_path):
+    config_path = tmp_path / "cfg_r2d2.json"
+    payload = {
+        "games": ["pong"],
+        "agent": "r2d2",
+        "runner_mode": "carmack_compat",
+        "decision_interval": 1,
+        "agent_config": {
+            "gpu": 1,
+            "load_file": "/tmp/r2d2.pt",
+        },
+    }
+    with config_path.open("w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
+
+    args = parse_args(["--config", str(config_path)])
+    assert args.agent == "r2d2"
+    assert args.runner_mode == "carmack_compat"
+    assert args.decision_interval == 1
+    assert args.r2d2_gpu == 1
+    assert args.r2d2_load_file == "/tmp/r2d2.pt"
 
 
 def test_run_multigame_config_parses_bbf_agent_config(tmp_path):
@@ -249,6 +408,36 @@ def test_run_multigame_config_parses_bbf_agent_config(tmp_path):
 def test_validate_args_ppo_requires_positive_decision_interval():
     args = parse_args(["--games", "pong", "--agent", "ppo", "--ppo-decision-interval", "0"])
     with pytest.raises(ValueError, match=r"--ppo-decision-interval must be > 0"):
+        validate_args(args)
+
+
+def test_validate_args_dqn_requires_carmack_mode():
+    args = parse_args(["--games", "pong", "--agent", "dqn"])
+    with pytest.raises(ValueError, match=r"agent=dqn currently requires --runner-mode carmack_compat"):
+        validate_args(args)
+
+
+def test_validate_args_rainbow_dqn_requires_carmack_mode():
+    args = parse_args(["--games", "pong", "--agent", "rainbow_dqn"])
+    with pytest.raises(ValueError, match=r"agent=rainbow_dqn currently requires --runner-mode carmack_compat"):
+        validate_args(args)
+
+
+def test_validate_args_sac_requires_carmack_mode():
+    args = parse_args(["--games", "pong", "--agent", "sac"])
+    with pytest.raises(ValueError, match=r"agent=sac currently requires --runner-mode carmack_compat"):
+        validate_args(args)
+
+
+def test_validate_args_swift_sarsa_requires_carmack_mode():
+    args = parse_args(["--games", "pong", "--agent", "swift_sarsa"])
+    with pytest.raises(ValueError, match=r"agent=swift_sarsa currently requires --runner-mode carmack_compat"):
+        validate_args(args)
+
+
+def test_validate_args_r2d2_requires_carmack_mode():
+    args = parse_args(["--games", "pong", "--agent", "r2d2"])
+    with pytest.raises(ValueError, match=r"agent=r2d2 currently requires --runner-mode carmack_compat"):
         validate_args(args)
 
 

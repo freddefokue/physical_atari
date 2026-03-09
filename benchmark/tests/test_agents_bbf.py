@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from benchmark.agents_bbf import BBFAgentAdapter, BBFAdapterConfig
+from benchmark.runner import EnvStep
 from benchmark.run_multigame import build_agent as build_multigame_agent
 from benchmark.run_single_game import build_agent as build_single_game_agent
 
@@ -215,11 +216,12 @@ def test_build_agent_bbf_single_game_uses_adapter(monkeypatch):
             return dict(self._kwargs)
 
     class _Adapter:
-        def __init__(self, *, seed, num_actions, total_frames, config):
+        def __init__(self, *, seed, num_actions, total_frames, config, **kwargs):
             self.seed = int(seed)
             self.num_actions = int(num_actions)
             self.total_frames = int(total_frames)
             self.config = config
+            self.extra = dict(kwargs)
 
         def frame(self, obs_rgb, reward, boundary):
             del obs_rgb, reward, boundary
@@ -249,6 +251,8 @@ def test_build_agent_bbf_single_game_uses_adapter(monkeypatch):
     assert agent.seed == 5
     assert agent.num_actions == 18
     assert agent.total_frames == 123
+    assert agent.extra["parity_mode"] is False
+    assert agent.extra["action_space_mode"] == "canonical_full"
 
 
 def test_build_agent_bbf_multigame_import_error_is_actionable(monkeypatch):
@@ -309,6 +313,9 @@ def test_bbf_adapter_get_stats_exposes_stable_bbf_scalars(monkeypatch):
     stats = adapter.get_stats()
 
     assert stats["phase"] == "training"
+    assert stats["bbf_parity_mode"] is False
+    assert stats["action_space_mode"] == "canonical_full"
+    assert stats["full_action_space"] is True
     assert stats["replay_size"] == 1234
     assert stats["replay_add_count"] == 2500
     assert stats["buffer_size"] == 200000
@@ -351,3 +358,40 @@ def test_bbf_adapter_phase_stays_warmup_until_update_gate_or_grad_steps(monkeypa
 
     stats = adapter.get_stats()
     assert stats["phase"] == "warmup"
+
+
+def test_bbf_adapter_evaluate_returns_native_style_summary(monkeypatch):
+    router = _FakeImportRouter()
+    monkeypatch.setattr("benchmark.agents_bbf.importlib.import_module", router)
+
+    adapter = BBFAgentAdapter(seed=0, num_actions=6, total_frames=40, config=BBFAdapterConfig())
+
+    class _EvalEnv:
+        def __init__(self) -> None:
+            self.action_set = list(range(6))
+            self._steps = 0
+
+        def reset(self):
+            self._steps = 0
+            return np.zeros((12, 12, 3), dtype=np.uint8)
+
+        def step(self, action_idx: int):
+            del action_idx
+            self._steps += 1
+            terminated = bool(self._steps >= 4)
+            return EnvStep(
+                obs_rgb=np.full((12, 12, 3), fill_value=self._steps, dtype=np.uint8),
+                reward=1.0,
+                terminated=terminated,
+                truncated=False,
+                lives=3,
+                termination_reason="scripted_end" if terminated else None,
+            )
+
+    summary = adapter.evaluate(_EvalEnv(), episodes=3, epsilon=0.0, seed=1, clip_rewards=False)
+    assert summary is not None
+    assert summary["episodes"] == 3
+    assert summary["mean_return"] == pytest.approx(4.0)
+    assert summary["std_return"] == pytest.approx(0.0)
+    assert len(summary["episode_returns"]) == 3
+    assert len(summary["episode_lengths"]) == 3

@@ -80,6 +80,19 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
     set_if_present("delay_target_ring_buffer_size", ["delay_target_ring_buffer_size"], int)
     set_if_present("delay_target_lr_log2", ["delay_target_lr_log2"], int)
     set_if_present("delay_target_base_lr_log2", ["delay_target_base_lr_log2"], int)
+    set_if_present("roboatari_dqn_gpu", ["roboatari_dqn_gpu"], int)
+    set_if_present("roboatari_dqn_load_file", ["roboatari_dqn_load_file"], str)
+    set_if_present("rainbow_dqn_gpu", ["rainbow_dqn_gpu"], int)
+    set_if_present("rainbow_dqn_load_file", ["rainbow_dqn_load_file"], str)
+    set_if_present("sac_gpu", ["sac_gpu"], int)
+    set_if_present("sac_load_file", ["sac_load_file"], str)
+    set_if_present("sac_eval_mode", ["sac_eval_mode"], int)
+    set_if_present("swift_sarsa_gpu", ["swift_sarsa_gpu"], int)
+    set_if_present("swift_sarsa_load_file", ["swift_sarsa_load_file"], str)
+    set_if_present("swift_sarsa_sarsa_weights_path", ["swift_sarsa_sarsa_weights_path"], str)
+    set_if_present("swift_sarsa_ppo_weights_path", ["swift_sarsa_ppo_weights_path"], str)
+    set_if_present("r2d2_gpu", ["r2d2_gpu"], int)
+    set_if_present("r2d2_load_file", ["r2d2_load_file"], str)
     set_if_present("ppo_lr", ["ppo_lr"], float)
     set_if_present("ppo_gamma", ["ppo_gamma"], float)
     set_if_present("ppo_gae_lambda", ["ppo_gae_lambda"], float)
@@ -154,6 +167,19 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "delay_target_ring_buffer_size",
         "delay_target_lr_log2",
         "delay_target_base_lr_log2",
+        "roboatari_dqn_gpu",
+        "roboatari_dqn_load_file",
+        "rainbow_dqn_gpu",
+        "rainbow_dqn_load_file",
+        "sac_gpu",
+        "sac_load_file",
+        "sac_eval_mode",
+        "swift_sarsa_gpu",
+        "swift_sarsa_load_file",
+        "swift_sarsa_sarsa_weights_path",
+        "swift_sarsa_ppo_weights_path",
+        "r2d2_gpu",
+        "r2d2_load_file",
         "ppo_lr",
         "ppo_gamma",
         "ppo_gae_lambda",
@@ -207,6 +233,19 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "delay_target_ring_buffer_size": int,
         "delay_target_lr_log2": int,
         "delay_target_base_lr_log2": int,
+        "roboatari_dqn_gpu": int,
+        "roboatari_dqn_load_file": str,
+        "rainbow_dqn_gpu": int,
+        "rainbow_dqn_load_file": str,
+        "sac_gpu": int,
+        "sac_load_file": str,
+        "sac_eval_mode": int,
+        "swift_sarsa_gpu": int,
+        "swift_sarsa_load_file": str,
+        "swift_sarsa_sarsa_weights_path": str,
+        "swift_sarsa_ppo_weights_path": str,
+        "r2d2_gpu": int,
+        "r2d2_load_file": str,
         "ppo_lr": float,
         "ppo_gamma": float,
         "ppo_gae_lambda": float,
@@ -257,6 +296,19 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "delay_target_ring_buffer_size",
         "delay_target_lr_log2",
         "delay_target_base_lr_log2",
+        "roboatari_dqn_gpu",
+        "roboatari_dqn_load_file",
+        "rainbow_dqn_gpu",
+        "rainbow_dqn_load_file",
+        "sac_gpu",
+        "sac_load_file",
+        "sac_eval_mode",
+        "swift_sarsa_gpu",
+        "swift_sarsa_load_file",
+        "swift_sarsa_sarsa_weights_path",
+        "swift_sarsa_ppo_weights_path",
+        "r2d2_gpu",
+        "r2d2_load_file",
         "ppo_lr",
         "ppo_gamma",
         "ppo_gae_lambda",
@@ -326,6 +378,53 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
                 defaults[arg_name] = int(value)
             else:
                 defaults[arg_name] = value
+
+    if str(config_data.get("agent", "")).strip() == "dqn":
+        dqn_legacy_field_to_arg = {
+            "gpu": "roboatari_dqn_gpu",
+            "load_file": "roboatari_dqn_load_file",
+        }
+        for field_name, arg_name in dqn_legacy_field_to_arg.items():
+            if field_name in merged_cfg and merged_cfg[field_name] is not None:
+                defaults[arg_name] = merged_cfg[field_name]
+    if str(config_data.get("agent", "")).strip() == "rainbow_dqn":
+        rainbow_field_to_arg = {
+            "gpu": "rainbow_dqn_gpu",
+            "load_file": "rainbow_dqn_load_file",
+        }
+        for field_name, arg_name in rainbow_field_to_arg.items():
+            if field_name in merged_cfg and merged_cfg[field_name] is not None:
+                defaults[arg_name] = merged_cfg[field_name]
+    if str(config_data.get("agent", "")).strip() == "sac":
+        sac_field_to_arg = {
+            "gpu": "sac_gpu",
+            "load_file": "sac_load_file",
+            "eval_mode": "sac_eval_mode",
+        }
+        for field_name, arg_name in sac_field_to_arg.items():
+            if field_name in merged_cfg and merged_cfg[field_name] is not None:
+                if arg_name == "sac_eval_mode":
+                    defaults[arg_name] = int(merged_cfg[field_name])
+                else:
+                    defaults[arg_name] = merged_cfg[field_name]
+    if str(config_data.get("agent", "")).strip() == "swift_sarsa":
+        swift_sarsa_field_to_arg = {
+            "gpu": "swift_sarsa_gpu",
+            "load_file": "swift_sarsa_load_file",
+            "sarsa_weights_path": "swift_sarsa_sarsa_weights_path",
+            "ppo_weights_path": "swift_sarsa_ppo_weights_path",
+        }
+        for field_name, arg_name in swift_sarsa_field_to_arg.items():
+            if field_name in merged_cfg and merged_cfg[field_name] is not None:
+                defaults[arg_name] = merged_cfg[field_name]
+    if str(config_data.get("agent", "")).strip() == "r2d2":
+        r2d2_field_to_arg = {
+            "gpu": "r2d2_gpu",
+            "load_file": "r2d2_load_file",
+        }
+        for field_name, arg_name in r2d2_field_to_arg.items():
+            if field_name in merged_cfg and merged_cfg[field_name] is not None:
+                defaults[arg_name] = merged_cfg[field_name]
 
     bbf_field_to_arg = {
         "buffer_size": "bbf_buffer_size",
@@ -411,7 +510,7 @@ def _build_parser(defaults: Optional[Dict[str, Any]] = None) -> argparse.Argumen
     parser.add_argument(
         "--agent",
         type=str,
-        choices=["random", "repeat", "tinydqn", "delay_target", "ppo", "bbf"],
+        choices=["random", "repeat", "tinydqn", "delay_target", "dqn", "rainbow_dqn", "sac", "swift_sarsa", "r2d2", "ppo", "bbf"],
         default="random",
         help="Agent type.",
     )
@@ -455,6 +554,45 @@ def _build_parser(defaults: Optional[Dict[str, Any]] = None) -> argparse.Argumen
         default=None,
         help="Optional override for agent_delay_target base_lr_log2 (CNN backbone LR = 2**base_lr_log2).",
     )
+    parser.add_argument("--roboatari-dqn-gpu", type=int, default=0, help="GPU index for RoboAtari DQN.")
+    parser.add_argument(
+        "--roboatari-dqn-load-file",
+        type=str,
+        default=None,
+        help="Optional model file path to load into RoboAtari DQN.",
+    )
+    parser.add_argument("--rainbow-dqn-gpu", type=int, default=0, help="GPU index for RoboAtari Rainbow DQN.")
+    parser.add_argument(
+        "--rainbow-dqn-load-file",
+        type=str,
+        default=None,
+        help="Optional model file path to load into RoboAtari Rainbow DQN.",
+    )
+    parser.add_argument("--sac-gpu", type=int, default=0, help="GPU index for RoboAtari SAC.")
+    parser.add_argument("--sac-load-file", type=str, default=None, help="Optional model file path to load into RoboAtari SAC.")
+    parser.add_argument(
+        "--sac-eval-mode",
+        type=int,
+        choices=[0, 1],
+        default=0,
+        help="Run RoboAtari SAC with training disabled (1=yes, 0=no).",
+    )
+    parser.add_argument("--swift-sarsa-gpu", type=int, default=0, help="GPU index for RoboAtari Swift SARSA.")
+    parser.add_argument("--swift-sarsa-load-file", type=str, default=None, help="Optional Swift SARSA weights file path.")
+    parser.add_argument(
+        "--swift-sarsa-sarsa-weights-path",
+        type=str,
+        default=None,
+        help="Optional explicit Swift SARSA weights path.",
+    )
+    parser.add_argument(
+        "--swift-sarsa-ppo-weights-path",
+        type=str,
+        default=None,
+        help="Optional PPO checkpoint path for the Swift SARSA feature extractor.",
+    )
+    parser.add_argument("--r2d2-gpu", type=int, default=0, help="GPU index for RoboAtari R2D2.")
+    parser.add_argument("--r2d2-load-file", type=str, default=None, help="Optional model file path for RoboAtari R2D2.")
     parser.add_argument("--dqn-gamma", type=float, default=0.99, help="TinyDQN discount factor.")
     parser.add_argument("--dqn-lr", type=float, default=1e-4, help="TinyDQN Adam learning rate.")
     parser.add_argument("--dqn-buffer-size", type=int, default=10000, help="TinyDQN replay buffer size.")
@@ -660,6 +798,31 @@ def validate_args(args: argparse.Namespace) -> None:
         )
     if str(args.agent) == "delay_target" and str(args.runner_mode) == "standard" and int(args.decision_interval) != 1:
         raise ValueError("agent=delay_target currently requires --decision-interval 1 to avoid double frame-skipping.")
+    if str(args.agent) == "dqn" and str(args.runner_mode) != "carmack_compat":
+        raise ValueError(
+            "agent=dqn currently requires --runner-mode carmack_compat "
+            "so the legacy RoboAtari frame-agent receives raw per-frame observations."
+        )
+    if str(args.agent) == "rainbow_dqn" and str(args.runner_mode) != "carmack_compat":
+        raise ValueError(
+            "agent=rainbow_dqn currently requires --runner-mode carmack_compat "
+            "so the legacy RoboAtari frame-agent receives raw per-frame observations."
+        )
+    if str(args.agent) == "sac" and str(args.runner_mode) != "carmack_compat":
+        raise ValueError(
+            "agent=sac currently requires --runner-mode carmack_compat "
+            "so the legacy RoboAtari frame-agent receives raw per-frame observations."
+        )
+    if str(args.agent) == "swift_sarsa" and str(args.runner_mode) != "carmack_compat":
+        raise ValueError(
+            "agent=swift_sarsa currently requires --runner-mode carmack_compat "
+            "so the legacy RoboAtari frame-agent receives raw per-frame observations."
+        )
+    if str(args.agent) == "r2d2" and str(args.runner_mode) != "carmack_compat":
+        raise ValueError(
+            "agent=r2d2 currently requires --runner-mode carmack_compat "
+            "so the legacy RoboAtari frame-agent receives raw per-frame observations."
+        )
     if str(args.agent) == "bbf" and str(args.runner_mode) != "carmack_compat":
         raise ValueError(
             "agent=bbf currently requires --runner-mode carmack_compat "
@@ -711,6 +874,146 @@ def build_agent(args: argparse.Namespace, num_actions: int, total_frames: int):
         if base_lr_log2 is not None:
             adapter_kwargs["base_lr_log2"] = int(base_lr_log2)
         agent = DelayTargetAdapter(
+            data_dir=str(Path(args.logdir)),
+            seed=int(args.seed),
+            num_actions=int(num_actions),
+            total_frames=int(total_frames),
+            agent_kwargs=adapter_kwargs,
+        )
+        return agent, agent.get_config()
+    if args.agent == "dqn":
+        try:
+            from benchmark.agents_legacy_roboatari import LegacyRoboAtariAdapter  # pylint: disable=import-outside-toplevel
+        except ImportError as exc:  # pragma: no cover - optional dependency stack
+            raise ImportError(
+                "agent=dqn requires benchmark.agents_legacy_roboatari plus roboatari/algorithms/dqn dependencies."
+            ) from exc
+
+        adapter_kwargs: Dict[str, Any] = {
+            "gpu": int(args.roboatari_dqn_gpu),
+        }
+        if args.roboatari_dqn_load_file:
+            adapter_kwargs["load_file"] = str(args.roboatari_dqn_load_file)
+        agent = LegacyRoboAtariAdapter(
+            agent_name="dqn",
+            module_name="algorithms.dqn.agent_dqn",
+            import_error_hint=(
+                "agent=dqn requires roboatari/algorithms/dqn/agent_dqn.py and its dependencies "
+                "(torch plus the local roboatari package imports)."
+            ),
+            data_dir=str(Path(args.logdir)),
+            seed=int(args.seed),
+            num_actions=int(num_actions),
+            total_frames=int(total_frames),
+            agent_kwargs=adapter_kwargs,
+        )
+        return agent, agent.get_config()
+    if args.agent == "rainbow_dqn":
+        try:
+            from benchmark.agents_legacy_roboatari import LegacyRoboAtariAdapter  # pylint: disable=import-outside-toplevel
+        except ImportError as exc:  # pragma: no cover - optional dependency stack
+            raise ImportError(
+                "agent=rainbow_dqn requires benchmark.agents_legacy_roboatari plus roboatari/algorithms/rainbow_dqn dependencies."
+            ) from exc
+
+        adapter_kwargs: Dict[str, Any] = {
+            "gpu": int(args.rainbow_dqn_gpu),
+        }
+        if args.rainbow_dqn_load_file:
+            adapter_kwargs["load_file"] = str(args.rainbow_dqn_load_file)
+        agent = LegacyRoboAtariAdapter(
+            agent_name="rainbow_dqn",
+            module_name="algorithms.rainbow_dqn.agent_rainbow",
+            import_error_hint=(
+                "agent=rainbow_dqn requires roboatari/algorithms/rainbow_dqn/agent_rainbow.py "
+                "and its dependencies (torch plus the local roboatari package imports)."
+            ),
+            data_dir=str(Path(args.logdir)),
+            seed=int(args.seed),
+            num_actions=int(num_actions),
+            total_frames=int(total_frames),
+            agent_kwargs=adapter_kwargs,
+        )
+        return agent, agent.get_config()
+    if args.agent == "sac":
+        try:
+            from benchmark.agents_legacy_roboatari import LegacyRoboAtariAdapter  # pylint: disable=import-outside-toplevel
+        except ImportError as exc:  # pragma: no cover - optional dependency stack
+            raise ImportError(
+                "agent=sac requires benchmark.agents_legacy_roboatari plus roboatari/algorithms/sac dependencies."
+            ) from exc
+
+        adapter_kwargs: Dict[str, Any] = {
+            "gpu": int(args.sac_gpu),
+            "eval_mode": bool(int(args.sac_eval_mode)),
+        }
+        if args.sac_load_file:
+            adapter_kwargs["load_file"] = str(args.sac_load_file)
+        agent = LegacyRoboAtariAdapter(
+            agent_name="sac",
+            module_name="algorithms.sac.agent_sac",
+            import_error_hint=(
+                "agent=sac requires roboatari/algorithms/sac/agent_sac.py and its dependencies "
+                "(torch, cv2, wandb, and the local roboatari package imports)."
+            ),
+            data_dir=str(Path(args.logdir)),
+            seed=int(args.seed),
+            num_actions=int(num_actions),
+            total_frames=int(total_frames),
+            agent_kwargs=adapter_kwargs,
+        )
+        return agent, agent.get_config()
+    if args.agent == "swift_sarsa":
+        try:
+            from benchmark.agents_legacy_roboatari import LegacyRoboAtariAdapter  # pylint: disable=import-outside-toplevel
+        except ImportError as exc:  # pragma: no cover - optional dependency stack
+            raise ImportError(
+                "agent=swift_sarsa requires benchmark.agents_legacy_roboatari plus roboatari/algorithms/swift_sarsa dependencies."
+            ) from exc
+
+        adapter_kwargs: Dict[str, Any] = {
+            "gpu": int(args.swift_sarsa_gpu),
+        }
+        if args.swift_sarsa_load_file:
+            adapter_kwargs["load_file"] = str(args.swift_sarsa_load_file)
+        if args.swift_sarsa_sarsa_weights_path:
+            adapter_kwargs["sarsa_weights_path"] = str(args.swift_sarsa_sarsa_weights_path)
+        if args.swift_sarsa_ppo_weights_path:
+            adapter_kwargs["ppo_weights_path"] = str(args.swift_sarsa_ppo_weights_path)
+        agent = LegacyRoboAtariAdapter(
+            agent_name="swift_sarsa",
+            module_name="algorithms.swift_sarsa.agent_ss",
+            import_error_hint=(
+                "agent=swift_sarsa requires roboatari/algorithms/swift_sarsa/agent_ss.py and its dependencies "
+                "(swift_sarsa bindings, torch, cv2, and the local roboatari package imports)."
+            ),
+            data_dir=str(Path(args.logdir)),
+            seed=int(args.seed),
+            num_actions=int(num_actions),
+            total_frames=int(total_frames),
+            agent_kwargs=adapter_kwargs,
+        )
+        return agent, agent.get_config()
+    if args.agent == "r2d2":
+        try:
+            from benchmark.agents_legacy_roboatari import LegacyRoboAtariAdapter  # pylint: disable=import-outside-toplevel
+        except ImportError as exc:  # pragma: no cover - optional dependency stack
+            raise ImportError(
+                "agent=r2d2 requires benchmark.agents_legacy_roboatari plus roboatari/algorithms/r2d2 dependencies."
+            ) from exc
+
+        adapter_kwargs: Dict[str, Any] = {
+            "gpu": int(args.r2d2_gpu),
+        }
+        if args.r2d2_load_file:
+            adapter_kwargs["load_file"] = str(args.r2d2_load_file)
+        agent = LegacyRoboAtariAdapter(
+            agent_name="r2d2",
+            module_name="algorithms.r2d2.agent_r2d2",
+            import_error_hint=(
+                "agent=r2d2 requires roboatari/algorithms/r2d2/agent_r2d2.py and its dependencies "
+                "(torch, cv2, and the local roboatari package imports)."
+            ),
             data_dir=str(Path(args.logdir)),
             seed=int(args.seed),
             num_actions=int(num_actions),
@@ -885,6 +1188,29 @@ def build_config_payload(
         "runner_mode": str(args.runner_mode),
         "agent": str(args.agent),
         "agent_config": dict(agent_config),
+        "roboatari_dqn_config": {
+            "gpu": int(args.roboatari_dqn_gpu),
+            "load_file": args.roboatari_dqn_load_file,
+        },
+        "rainbow_dqn_config": {
+            "gpu": int(args.rainbow_dqn_gpu),
+            "load_file": args.rainbow_dqn_load_file,
+        },
+        "sac_config": {
+            "gpu": int(args.sac_gpu),
+            "load_file": args.sac_load_file,
+            "eval_mode": bool(int(args.sac_eval_mode)),
+        },
+        "swift_sarsa_config": {
+            "gpu": int(args.swift_sarsa_gpu),
+            "load_file": args.swift_sarsa_load_file,
+            "sarsa_weights_path": args.swift_sarsa_sarsa_weights_path,
+            "ppo_weights_path": args.swift_sarsa_ppo_weights_path,
+        },
+        "r2d2_config": {
+            "gpu": int(args.r2d2_gpu),
+            "load_file": args.r2d2_load_file,
+        },
         "ppo_config": {
             "learning_rate": float(args.ppo_lr),
             "gamma": float(args.ppo_gamma),
