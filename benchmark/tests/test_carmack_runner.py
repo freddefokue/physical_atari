@@ -476,16 +476,24 @@ def test_carmack_runner_bbf_stats_use_bbf_train_log_branch(capsys):
     out = capsys.readouterr().out
 
     assert summary["frames"] == 2
-    assert "[train] frame=1" in out
-    assert "phase=training" in out
+    assert "[bbf] f=1" in out
+    assert " train replay=" in out
     assert "replay=120/50000" in out
-    assert "learning_starts=2000" in out
-    assert "train_steps=" in out
-    assert "grad_steps=9" in out
+    assert "g=9" in out
     assert "loss=2.314" in out
     assert "spr=0.842" in out
-    assert "avg_q=1.92" in out
+    assert "q=1.92" in out
     assert "gamma=0.9710" in out
+    assert "ret=0.0" in out
+    assert "len=1" in out
+    assert "fps_total=" not in out
+    assert "train_steps=" not in out
+    assert "train_sps=" not in out
+    assert "train_sps_total=" not in out
+    assert "learning_starts=" not in out
+    assert "resets=" not in out
+    assert "phase=" not in out
+    assert "avg_q=" not in out
     assert "err_avg=" not in out
 
 

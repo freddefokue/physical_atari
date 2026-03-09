@@ -380,49 +380,33 @@ class CarmackCompatRunner:
         ) -> Optional[str]:
             if not _is_bbf_stats(stats):
                 return None
-            parts = [f"[train] frame={int(frame)}"]
+            del fps_total, train_sps, train_sps_total, resets_value, train_steps_fallback
+            parts = [f"[bbf] f={int(frame)}"]
             if fps is not None:
-                parts.append(f"fps={float(fps):.2f}")
-            if fps_total is not None:
-                parts.append(f"fps_total={float(fps_total):.2f}")
+                parts.append(f"fps={float(fps):.1f}")
 
             phase = stats.get("phase")
             if isinstance(phase, str) and phase:
-                parts.append(f"phase={phase}")
+                phase_token = "train" if phase == "training" else str(phase)
+                parts.append(phase_token)
 
             replay_add = _coerce_optional_int(stats.get("replay_add_count"))
             replay_size = _coerce_optional_int(stats.get("replay_size"))
             buffer_size = _coerce_optional_int(stats.get("buffer_size"))
-            learning_starts = _coerce_optional_int(stats.get("learning_starts"))
             replay_fill = replay_size if replay_size is not None else replay_add
             if replay_fill is not None and buffer_size is not None:
                 parts.append(f"replay={replay_fill}/{buffer_size}")
             elif replay_fill is not None:
                 parts.append(f"replay={replay_fill}")
-            if learning_starts is not None:
-                parts.append(f"learning_starts={learning_starts}")
-
-            train_steps_value = _coerce_optional_int(stats.get("train_steps"))
-            if train_steps_value is None:
-                train_steps_value = train_steps_fallback
-            if train_steps_value is not None:
-                parts.append(f"train_steps={int(train_steps_value)}")
 
             grad_steps_value = _coerce_optional_int(stats.get("grad_steps"))
             if grad_steps_value is not None:
-                parts.append(f"grad_steps={int(grad_steps_value)}")
-
-            if train_sps is not None:
-                parts.append(f"train_sps={float(train_sps):.2f}")
-            if train_sps_total is not None:
-                parts.append(f"train_sps_total={float(train_sps_total):.2f}")
+                parts.append(f"g={int(grad_steps_value)}")
 
             if episode_return_value is not None:
-                parts.append(f"episode_return={float(episode_return_value):.3f}")
+                parts.append(f"ret={float(episode_return_value):.1f}")
             if episode_length_value is not None:
-                parts.append(f"episode_length={int(episode_length_value)}")
-            if resets_value is not None:
-                parts.append(f"resets={int(resets_value)}")
+                parts.append(f"len={int(episode_length_value)}")
 
             loss_value = _coerce_optional_float(stats.get("last_train_loss"))
             if loss_value is not None:
@@ -432,7 +416,7 @@ class CarmackCompatRunner:
                 parts.append(f"spr={spr_value:.3f}")
             avg_q_value = _coerce_optional_float(stats.get("last_train_avg_q"))
             if avg_q_value is not None:
-                parts.append(f"avg_q={avg_q_value:.2f}")
+                parts.append(f"q={avg_q_value:.2f}")
             gamma_value = _coerce_optional_float(stats.get("last_train_gamma"))
             if gamma_value is not None:
                 parts.append(f"gamma={gamma_value:.4f}")

@@ -97,13 +97,13 @@ class RecordingFrameAgentWithBBFStats(RecordingFrameAgent):
 
     def get_stats(self):
         return {
-            "phase": "warmup",
+            "phase": "training",
             "replay_add_count": 45,
             "replay_size": 45,
             "buffer_size": 50000,
             "learning_starts": 2000,
             "train_steps": int(self._train_steps),
-            "grad_steps": 0,
+            "grad_steps": 7200,
             "last_train_loss": 1.8823,
             "last_train_spr_loss": 0.6404,
             "last_train_avg_q": 2.113,
@@ -474,14 +474,20 @@ def test_carmack_multigame_bbf_stats_use_bbf_train_log_branch(capsys):
     out = capsys.readouterr().out
 
     assert summary["frames"] == 2
-    assert "[train] frame=1 game=pong visit_idx=0 cycle_idx=0" in out
-    assert "phase=warmup" in out
+    assert "[bbf] f=1 game=pong v=0 c=0" in out
+    assert " train replay=" in out
     assert "replay=45/50000" in out
-    assert "learning_starts=2000" in out
-    assert "train_steps=" in out
-    assert "grad_steps=0" in out
+    assert "g=7200" in out
     assert "loss=1.882" in out
     assert "spr=0.640" in out
-    assert "avg_q=2.11" in out
+    assert "q=2.11" in out
     assert "gamma=0.9780" in out
+    assert "visit_idx=" not in out
+    assert "cycle_idx=" not in out
+    assert "train_steps=" not in out
+    assert "train_sps=" not in out
+    assert "train_sps_total=" not in out
+    assert "learning_starts=" not in out
+    assert "phase=" not in out
+    assert "avg_q=" not in out
     assert "train_loss_ema=" not in out
