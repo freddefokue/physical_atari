@@ -93,6 +93,25 @@ class LegacyRoboAtariAdapter:
         )
 
     @staticmethod
+    def _map_legacy_end_of_episode_code(boundary: Mapping[str, Any], *, terminated: bool, truncated: bool) -> int:
+        for key in ("boundary_cause", "termination_reason", "env_termination_reason"):
+            raw_value = boundary.get(key)
+            if raw_value is None:
+                continue
+            normalized = str(raw_value).strip().lower()
+            if normalized in LegacyRoboAtariAdapter._LEGACY_END_OF_EPISODE_CODES:
+                return int(LegacyRoboAtariAdapter._LEGACY_END_OF_EPISODE_CODES[normalized])
+            if "life_loss" in normalized:
+                return 1
+            if "timeout" in normalized or "truncat" in normalized or "visit_switch" in normalized:
+                return 3
+        if terminated:
+            return 2
+        if truncated:
+            return 3
+        return 0
+
+    @staticmethod
     def _parse_boundary(boundary: Any) -> Tuple[bool, bool, int]:
         if isinstance(boundary, Mapping):
             terminated = bool(boundary.get("terminated", False))
@@ -101,17 +120,24 @@ class LegacyRoboAtariAdapter:
                 end_of_episode = int(boundary["legacy_end_of_episode"])
             elif "end_of_episode_code" in boundary:
                 end_of_episode = int(boundary["end_of_episode_code"])
-            elif "end_of_episode_pulse" in boundary:
-                end_of_episode = int(bool(boundary["end_of_episode_pulse"]))
             else:
-                end_of_episode = int(terminated or truncated)
+                end_of_episode = LegacyRoboAtariAdapter._map_legacy_end_of_episode_code(
+                    boundary,
+                    terminated=terminated,
+                    truncated=truncated,
+                )
+                if end_of_episode <= 0 and "end_of_episode_pulse" in boundary:
+                    end_of_episode = int(bool(boundary["end_of_episode_pulse"]))
             return terminated, truncated, end_of_episode
         ended = bool(boundary)
         return ended, False, int(ended)
 
     def frame(self, obs_rgb, reward, boundary) -> int:
         _terminated, _truncated, end_of_episode = self._parse_boundary(boundary)
-        action_idx = int(self._agent.frame(obs_rgb, float(reward), int(end_of_episode)))
+        agent_obs = obs_rgb
+        if isinstance(boundary, Mapping) and "transition_obs_rgb" in boundary:
+            agent_obs = boundary["transition_obs_rgb"]
+        action_idx = int(self._agent.frame(agent_obs, float(reward), int(end_of_episode)))
         self._decision_steps += 1
         if action_idx < 0 or action_idx >= self._num_actions:
             raise ValueError(
@@ -127,7 +153,15 @@ class LegacyRoboAtariAdapter:
             "end_of_episode_pulse": bool(terminated) or bool(truncated),
         }
         if isinstance(info, Mapping):
-            for key in ("legacy_end_of_episode", "end_of_episode_code"):
+            for key in (
+                "legacy_end_of_episode",
+                "end_of_episode_code",
+                "boundary_cause",
+                "termination_reason",
+                "env_termination_reason",
+                "transition_obs_rgb",
+                "reset_obs_rgb",
+            ):
                 if key in info:
                     boundary[key] = info[key]
         return self.frame(obs_rgb, reward, boundary)
@@ -162,3 +196,13 @@ class LegacyRoboAtariAdapter:
                 if key not in stats and hasattr(owner, key):
                     stats[str(key)] = _to_json_scalar(getattr(owner, key))
         return stats
+    _LEGACY_END_OF_EPISODE_CODES = {
+        "life_loss": 1,
+        "life_loss_reset": 1,
+        "terminated": 2,
+        "game_over": 2,
+        "truncated": 3,
+        "timeout": 3,
+        "no_reward_timeout": 3,
+        "visit_switch": 3,
+    }

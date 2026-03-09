@@ -47,8 +47,22 @@ def test_legacy_roboatari_adapter_maps_boundary_payloads_and_stats(monkeypatch):
     )
 
     obs = np.zeros((210, 160, 3), dtype=np.uint8)
-    assert adapter.frame(obs, reward=1.25, boundary={"terminated": False, "truncated": True, "end_of_episode_code": 3}) == 2
-    assert adapter.step(obs, reward=0.5, terminated=True, truncated=False, info={}) == 2
+    transition_obs = np.full((210, 160, 3), fill_value=17, dtype=np.uint8)
+    assert (
+        adapter.frame(
+            obs,
+            reward=1.25,
+            boundary={
+                "terminated": False,
+                "truncated": True,
+                "boundary_cause": "no_reward_timeout",
+                "transition_obs_rgb": transition_obs,
+                "reset_obs_rgb": obs,
+            },
+        )
+        == 2
+    )
+    assert adapter.step(obs, reward=0.5, terminated=True, truncated=False, info={"boundary_cause": "life_loss"}) == 2
     assert adapter._agent.calls == [((210, 160, 3), 1.25, 3), ((210, 160, 3), 0.5, 1)]  # pylint: disable=protected-access
 
     stats = adapter.get_stats()
@@ -58,6 +72,40 @@ def test_legacy_roboatari_adapter_maps_boundary_payloads_and_stats(monkeypatch):
     assert stats["training_steps"] == 4
     assert stats["epsilon"] == 0.25
     assert stats["loss_ema"] == 1.5
+
+
+def test_legacy_roboatari_adapter_maps_runner_boundary_causes_to_legacy_codes(monkeypatch):
+    class _FakeAgent:
+        def __init__(self, data_dir, seed, num_actions, total_frames, **kwargs):
+            del data_dir, seed, num_actions, total_frames, kwargs
+            self.calls = []
+
+        def frame(self, observation_rgb8, reward, end_of_episode):
+            del observation_rgb8, reward
+            self.calls.append(int(end_of_episode))
+            return 0
+
+    monkeypatch.setattr(
+        "benchmark.agents_legacy_roboatari.importlib.import_module",
+        lambda name: type("_Module", (), {"Agent": _FakeAgent})(),
+    )
+    adapter = LegacyRoboAtariAdapter(
+        agent_name="sac",
+        module_name="algorithms.sac.agent_sac",
+        import_error_hint="unused",
+        data_dir="/tmp/runs",
+        seed=0,
+        num_actions=3,
+        total_frames=10,
+        agent_kwargs={},
+    )
+
+    obs = np.zeros((210, 160, 3), dtype=np.uint8)
+    adapter.frame(obs, 0.0, {"terminated": False, "truncated": True, "boundary_cause": "life_loss"})
+    adapter.frame(obs, 0.0, {"terminated": True, "truncated": False, "termination_reason": "terminated"})
+    adapter.frame(obs, 0.0, {"terminated": False, "truncated": True, "boundary_cause": "visit_switch"})
+
+    assert adapter._agent.calls == [1, 2, 3]  # pylint: disable=protected-access
 
 
 def test_legacy_roboatari_adapter_raises_on_invalid_action(monkeypatch):
