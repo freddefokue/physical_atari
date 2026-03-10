@@ -14,6 +14,7 @@ import numpy as np
 
 from benchmark.agents import RandomAgent, RepeatActionAgent
 from benchmark.ale_env import ALEAtariEnv, ALEEnvConfig
+from benchmark.bbf_runtime import BBFResetSemanticsEnvAdapter
 from benchmark.carmack_multigame_runner import (
     CARMACK_MULTI_RUN_PROFILE,
     CARMACK_MULTI_RUN_SCHEMA_VERSION,
@@ -43,6 +44,38 @@ def _load_config_file(path: Optional[str]) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("--config must contain a JSON object")
     return payload
+
+
+def _resolve_bbf_runtime_settings(args: argparse.Namespace) -> Dict[str, Any]:
+    if str(getattr(args, "agent", "")) != "bbf":
+        return {}
+
+    native_reset_semantics_requested = bool(int(getattr(args, "bbf_native_reset_semantics", 0)))
+    native_reset_semantics_enabled = bool(native_reset_semantics_requested)
+    sticky_requested = float(getattr(args, "sticky", 0.25))
+    sticky_effective = 0.0 if native_reset_semantics_enabled else float(sticky_requested)
+    full_action_space_requested = bool(int(getattr(args, "full_action_space", 1)))
+    full_action_space_effective = True
+    action_space_mode = "canonical_full"
+    noop_reset_max_requested = int(getattr(args, "bbf_noop_reset_max", 30))
+    noop_reset_max = int(noop_reset_max_requested) if native_reset_semantics_enabled else 0
+    fire_reset_requested = bool(int(getattr(args, "bbf_fire_reset", 1)))
+    fire_reset_enabled = bool(native_reset_semantics_enabled and fire_reset_requested)
+    runtime_mode = "native_reset_semantics" if native_reset_semantics_enabled else "benchmark_standard"
+    return {
+        "runtime_mode": str(runtime_mode),
+        "native_reset_semantics_requested": bool(native_reset_semantics_requested),
+        "native_reset_semantics_enabled": bool(native_reset_semantics_enabled),
+        "sticky_requested": float(sticky_requested),
+        "sticky_effective": float(sticky_effective),
+        "full_action_space_requested": bool(full_action_space_requested),
+        "full_action_space_effective": bool(full_action_space_effective),
+        "action_space_mode": str(action_space_mode),
+        "noop_reset_max_requested": int(noop_reset_max_requested),
+        "noop_reset_max": int(noop_reset_max),
+        "fire_reset_requested": bool(fire_reset_requested),
+        "fire_reset_enabled": bool(fire_reset_enabled),
+    }
 
 
 def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -115,6 +148,9 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
     set_if_present("bbf_use_per", ["bbf_use_per"], int)
     set_if_present("bbf_use_amp", ["bbf_use_amp"], int)
     set_if_present("bbf_torch_compile", ["bbf_torch_compile"], int)
+    set_if_present("bbf_native_reset_semantics", ["bbf_native_reset_semantics"], int)
+    set_if_present("bbf_noop_reset_max", ["bbf_noop_reset_max"], int)
+    set_if_present("bbf_fire_reset", ["bbf_fire_reset"], int)
     set_if_present("default_action_idx", ["default_action_idx"], int)
     set_if_present("log_episode_every", ["log_episode_every", "episode_log_interval"], int)
     set_if_present("log_train_every", ["log_train_every", "train_log_interval"], int)
@@ -196,6 +232,9 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "bbf_use_per",
         "bbf_use_amp",
         "bbf_torch_compile",
+        "bbf_native_reset_semantics",
+        "bbf_noop_reset_max",
+        "bbf_fire_reset",
     ]:
         if key in config_data and config_data[key] is not None:
             merged_cfg[key] = config_data[key]
@@ -256,6 +295,9 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "bbf_use_per": int,
         "bbf_use_amp": int,
         "bbf_torch_compile": int,
+        "bbf_native_reset_semantics": int,
+        "bbf_noop_reset_max": int,
+        "bbf_fire_reset": int,
     }
     for arg_name in [
         "dqn_gamma",
@@ -313,6 +355,9 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "bbf_use_per",
         "bbf_use_amp",
         "bbf_torch_compile",
+        "bbf_native_reset_semantics",
+        "bbf_noop_reset_max",
+        "bbf_fire_reset",
     ]:
         if arg_name in merged_cfg and merged_cfg[arg_name] is not None:
             defaults[arg_name] = arg_cast[arg_name](merged_cfg[arg_name])
@@ -346,11 +391,22 @@ def _coerce_config_defaults(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "use_per": "bbf_use_per",
         "use_amp": "bbf_use_amp",
         "torch_compile": "bbf_torch_compile",
+        "native_reset_semantics": "bbf_native_reset_semantics",
+        "noop_reset_max": "bbf_noop_reset_max",
+        "fire_reset": "bbf_fire_reset",
     }
     for field_name, arg_name in field_to_arg.items():
         if field_name in merged_cfg and merged_cfg[field_name] is not None:
             value = merged_cfg[field_name]
-            if arg_name in {"dqn_use_replay", "delay_target_use_cuda_graphs", "bbf_use_per", "bbf_use_amp", "bbf_torch_compile"}:
+            if arg_name in {
+                "dqn_use_replay",
+                "delay_target_use_cuda_graphs",
+                "bbf_use_per",
+                "bbf_use_amp",
+                "bbf_torch_compile",
+                "bbf_native_reset_semantics",
+                "bbf_fire_reset",
+            }:
                 defaults[arg_name] = int(value)
             else:
                 defaults[arg_name] = value
@@ -671,6 +727,26 @@ def _build_parser(defaults: Optional[Dict[str, Any]] = None) -> argparse.Argumen
         help="Enable torch.compile for BBF.",
     )
     parser.add_argument(
+        "--bbf-native-reset-semantics",
+        type=int,
+        choices=[0, 1],
+        default=0,
+        help="Enable BBF-native reset/startup semantics in multi-game mode.",
+    )
+    parser.add_argument(
+        "--bbf-noop-reset-max",
+        type=int,
+        default=30,
+        help="Maximum number of BBF-style startup no-ops when native reset semantics are enabled.",
+    )
+    parser.add_argument(
+        "--bbf-fire-reset",
+        type=int,
+        choices=[0, 1],
+        default=1,
+        help="Enable FIRE startup when BBF native reset semantics are active and the game supports it.",
+    )
+    parser.add_argument(
         "--default-action-idx",
         type=int,
         default=0,
@@ -763,6 +839,14 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("agent=bbf requires --full-action-space 1 (canonical action mapping).")
     if str(args.agent) == "bbf" and bool(int(getattr(args, "real_time_mode", 0))):
         raise ValueError("agent=bbf currently requires --real-time-mode 0.")
+    if str(args.agent) != "bbf" and bool(int(getattr(args, "bbf_native_reset_semantics", 0))):
+        raise ValueError("--bbf-native-reset-semantics is only valid with --agent bbf.")
+    if str(args.agent) != "bbf" and int(getattr(args, "bbf_noop_reset_max", 30)) != 30:
+        raise ValueError("--bbf-noop-reset-max is only valid with --agent bbf.")
+    if str(args.agent) != "bbf" and bool(int(getattr(args, "bbf_fire_reset", 1))) is not True:
+        raise ValueError("--bbf-fire-reset is only valid with --agent bbf.")
+    if int(getattr(args, "bbf_noop_reset_max", 30)) < 0:
+        raise ValueError("--bbf-noop-reset-max must be >= 0.")
     if str(args.agent) == "tinydqn" and int(args.dqn_decision_interval) <= 0:
         raise ValueError("--dqn-decision-interval must be > 0 for --agent tinydqn.")
     if str(args.agent) == "ppo" and int(getattr(args, "ppo_decision_interval", 1)) <= 0:
@@ -908,11 +992,15 @@ def build_agent(args: argparse.Namespace, num_actions: int, total_frames: int):
             use_amp=bool(int(args.bbf_use_amp)),
             torch_compile=bool(int(args.bbf_torch_compile)),
         )
+        bbf_runtime = _resolve_bbf_runtime_settings(args)
         agent = BBFAgentAdapter(
             seed=int(args.seed),
             num_actions=int(num_actions),
             total_frames=int(total_frames),
             config=bbf_config,
+            full_action_space=True,
+            action_space_mode=str(bbf_runtime.get("action_space_mode", "canonical_full")),
+            native_reset_semantics=bool(bbf_runtime.get("native_reset_semantics_enabled", False)),
         )
         return agent, bbf_config.as_dict()
     try:
@@ -1008,8 +1096,10 @@ def build_config_payload(
     resolved_action_sets: Dict[str, List[int]],
     agent_config: Dict[str, object],
     config_file_data: Dict[str, Any],
+    bbf_runtime: Optional[Dict[str, Any]] = None,
 ) -> Dict:
     scoring_defaults = resolve_scoring_defaults(config_file_data)
+    resolved_bbf_runtime = dict(bbf_runtime or {})
     payload = {
         "games": [str(game) for game in games],
         "num_cycles": int(args.num_cycles),
@@ -1069,6 +1159,39 @@ def build_config_payload(
             "use_per": bool(int(args.bbf_use_per)),
             "use_amp": bool(int(args.bbf_use_amp)),
             "torch_compile": bool(int(args.bbf_torch_compile)),
+            "native_reset_semantics": bool(int(getattr(args, "bbf_native_reset_semantics", 0))),
+            "noop_reset_max": int(getattr(args, "bbf_noop_reset_max", 30)),
+            "fire_reset": bool(int(getattr(args, "bbf_fire_reset", 1))),
+        },
+        "bbf_runtime": {
+            "runtime_mode": str(resolved_bbf_runtime.get("runtime_mode", "benchmark_standard")),
+            "native_reset_semantics_requested": bool(
+                resolved_bbf_runtime.get("native_reset_semantics_requested", False)
+            ),
+            "native_reset_semantics_enabled": bool(
+                resolved_bbf_runtime.get("native_reset_semantics_enabled", False)
+            ),
+            "action_space_mode": str(resolved_bbf_runtime.get("action_space_mode", "canonical_full")),
+            "sticky_requested": float(resolved_bbf_runtime.get("sticky_requested", float(args.sticky))),
+            "sticky_effective": float(resolved_bbf_runtime.get("sticky_effective", float(args.sticky))),
+            "full_action_space_requested": bool(
+                resolved_bbf_runtime.get("full_action_space_requested", bool(args.full_action_space))
+            ),
+            "full_action_space_effective": bool(
+                resolved_bbf_runtime.get("full_action_space_effective", bool(args.full_action_space))
+            ),
+            "noop_reset_max_requested": int(
+                resolved_bbf_runtime.get("noop_reset_max_requested", int(getattr(args, "bbf_noop_reset_max", 30)))
+            ),
+            "noop_reset_max_effective": int(resolved_bbf_runtime.get("noop_reset_max", 0)),
+            "fire_reset_requested": bool(
+                resolved_bbf_runtime.get("fire_reset_requested", bool(int(getattr(args, "bbf_fire_reset", 1))))
+            ),
+            "fire_reset_enabled": bool(resolved_bbf_runtime.get("fire_reset_enabled", False)),
+            "fire_reset_supported": bool(resolved_bbf_runtime.get("fire_reset_supported", False)),
+            "fire_reset_supported_by_game": dict(
+                resolved_bbf_runtime.get("fire_reset_supported_by_game", {})
+            ),
         },
         "repeat_action_idx": int(args.repeat_action_idx),
         "default_action_idx": int(args.default_action_idx),
@@ -1166,6 +1289,7 @@ def main() -> None:
     config_file_data = dict(getattr(args, "_config_data", {}))
     games = parse_games_csv(args.games)
     seed_everything(args.seed)
+    bbf_runtime = _resolve_bbf_runtime_settings(args)
 
     schedule = Schedule(
         ScheduleConfig(
@@ -1178,14 +1302,24 @@ def main() -> None:
         )
     )
 
+    sticky_effective = float(bbf_runtime.get("sticky_effective", float(args.sticky)))
+    full_action_space_effective = bool(bbf_runtime.get("full_action_space_effective", bool(args.full_action_space)))
     env_config = ALEEnvConfig(
         game=games[0],
         seed=args.seed,
-        sticky_action_prob=args.sticky,
-        full_action_space=bool(args.full_action_space),
+        sticky_action_prob=sticky_effective,
+        full_action_space=full_action_space_effective,
         life_loss_termination=bool(args.life_loss_termination),
     )
-    env = ALEAtariEnv(env_config)
+    ale_env = ALEAtariEnv(env_config)
+    env = ale_env
+    if str(args.agent) == "bbf":
+        env = BBFResetSemanticsEnvAdapter(
+            ale_env,
+            seed=int(args.seed),
+            noop_max=int(bbf_runtime.get("noop_reset_max", 0)),
+            enable_fire_reset=bool(bbf_runtime.get("fire_reset_enabled", False)),
+        )
 
     global_action_set = tuple(resolve_global_action_set())
     if args.default_action_idx < 0 or args.default_action_idx >= len(global_action_set):
@@ -1226,6 +1360,13 @@ def main() -> None:
             agent = FrameFromStepAdapter(agent, decision_interval=decision_interval)
 
     resolved_action_sets = resolve_action_sets(env, games)
+    if str(args.agent) == "bbf":
+        fire_reset_supported_by_game = {str(game_id): False for game_id in games}
+        for game_id in games:
+            env.load_game(str(game_id))
+            fire_reset_supported_by_game[str(game_id)] = bool(getattr(env, "fire_reset_supported", False))
+        bbf_runtime["fire_reset_supported_by_game"] = fire_reset_supported_by_game
+        bbf_runtime["fire_reset_supported"] = bool(any(fire_reset_supported_by_game.values()))
     action_mappings = build_action_mappings(resolved_action_sets, global_action_set, args.default_action_idx)
 
     run_dir = make_run_dir(Path(args.logdir), "multigame", args.seed)
@@ -1242,6 +1383,7 @@ def main() -> None:
         resolved_action_sets,
         agent_config,
         config_file_data,
+        bbf_runtime=bbf_runtime,
     )
     config_payload["resolved_action_mappings"] = action_mappings
     dump_json(run_dir / "config.json", config_payload)

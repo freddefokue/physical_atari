@@ -277,6 +277,55 @@ def test_build_agent_bbf_multigame_import_error_is_actionable(monkeypatch):
         build_multigame_agent(args, num_actions=18, total_frames=200)
 
 
+def test_build_agent_bbf_multigame_passes_native_reset_semantics(monkeypatch):
+    class _Cfg:
+        def __init__(self, **kwargs):
+            self._kwargs = dict(kwargs)
+
+        def as_dict(self):
+            return dict(self._kwargs)
+
+    class _Adapter:
+        def __init__(self, *, seed, num_actions, total_frames, config, **kwargs):
+            self.seed = int(seed)
+            self.num_actions = int(num_actions)
+            self.total_frames = int(total_frames)
+            self.config = config
+            self.extra = dict(kwargs)
+
+        def frame(self, obs_rgb, reward, boundary):
+            del obs_rgb, reward, boundary
+            return 0
+
+    monkeypatch.setitem(sys.modules, "benchmark.agents_bbf", types.SimpleNamespace(BBFAgentAdapter=_Adapter, BBFAdapterConfig=_Cfg))
+
+    args = argparse.Namespace(
+        agent="bbf",
+        seed=11,
+        bbf_learning_starts=2000,
+        bbf_buffer_size=200000,
+        bbf_batch_size=32,
+        bbf_replay_ratio=64,
+        bbf_reset_interval=20000,
+        bbf_no_resets_after=100000,
+        bbf_use_per=1,
+        bbf_use_amp=0,
+        bbf_torch_compile=0,
+        bbf_native_reset_semantics=1,
+        bbf_noop_reset_max=17,
+        bbf_fire_reset=1,
+        full_action_space=1,
+        sticky=0.25,
+    )
+
+    agent, cfg = build_multigame_agent(args, num_actions=18, total_frames=200)
+    assert isinstance(agent, _Adapter)
+    assert cfg["buffer_size"] == 200000
+    assert agent.extra["full_action_space"] is True
+    assert agent.extra["action_space_mode"] == "canonical_full"
+    assert agent.extra["native_reset_semantics"] is True
+
+
 def test_bbf_adapter_get_stats_exposes_stable_bbf_scalars(monkeypatch):
     router = _FakeImportRouter()
     monkeypatch.setattr("benchmark.agents_bbf.importlib.import_module", router)

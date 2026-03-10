@@ -1,10 +1,20 @@
 from __future__ import annotations
 
 import json
+from argparse import Namespace
+from pathlib import Path
 
 import pytest
 
-from benchmark.run_multigame import collect_agent_stats, parse_args, validate_args
+from benchmark.carmack_multigame_runner import CarmackMultiGameRunnerConfig
+from benchmark.run_multigame import (
+    _resolve_bbf_runtime_settings,
+    build_config_payload,
+    collect_agent_stats,
+    parse_args,
+    validate_args,
+)
+from benchmark.schedule import Schedule, ScheduleConfig
 
 
 def test_run_multigame_config_defaults_and_cli_override(tmp_path):
@@ -197,6 +207,27 @@ def test_run_multigame_cli_accepts_bbf_agent():
     assert args.bbf_use_per == 1
 
 
+def test_run_multigame_cli_accepts_bbf_native_reset_flags():
+    args = parse_args(
+        [
+            "--games",
+            "pong",
+            "--agent",
+            "bbf",
+            "--bbf-native-reset-semantics",
+            "1",
+            "--bbf-noop-reset-max",
+            "17",
+            "--bbf-fire-reset",
+            "0",
+        ]
+    )
+    assert args.agent == "bbf"
+    assert args.bbf_native_reset_semantics == 1
+    assert args.bbf_noop_reset_max == 17
+    assert args.bbf_fire_reset == 0
+
+
 def test_run_multigame_config_parses_ppo_agent_config(tmp_path):
     config_path = tmp_path / "cfg_ppo.json"
     payload = {
@@ -319,6 +350,9 @@ def test_run_multigame_config_parses_bbf_agent_config(tmp_path):
             "use_per": 0,
             "use_amp": 1,
             "torch_compile": 1,
+            "native_reset_semantics": 1,
+            "noop_reset_max": 9,
+            "fire_reset": 0,
         },
     }
     with config_path.open("w", encoding="utf-8") as fh:
@@ -337,6 +371,9 @@ def test_run_multigame_config_parses_bbf_agent_config(tmp_path):
     assert args.bbf_use_per == 0
     assert args.bbf_use_amp == 1
     assert args.bbf_torch_compile == 1
+    assert args.bbf_native_reset_semantics == 1
+    assert args.bbf_noop_reset_max == 9
+    assert args.bbf_fire_reset == 0
 
 
 def test_validate_args_ppo_requires_positive_decision_interval():
@@ -407,6 +444,107 @@ def test_validate_args_bbf_requires_real_time_mode_off():
     )
     with pytest.raises(ValueError, match=r"agent=bbf currently requires --real-time-mode 0"):
         validate_args(args)
+
+
+def test_validate_args_bbf_native_reset_semantics_only_valid_for_bbf():
+    args = parse_args(["--games", "pong", "--agent", "random", "--bbf-native-reset-semantics", "1"])
+    with pytest.raises(ValueError, match=r"--bbf-native-reset-semantics is only valid"):
+        validate_args(args)
+
+
+def test_validate_args_bbf_noop_reset_max_only_valid_for_bbf():
+    args = parse_args(["--games", "pong", "--agent", "random", "--bbf-noop-reset-max", "17"])
+    with pytest.raises(ValueError, match=r"--bbf-noop-reset-max is only valid"):
+        validate_args(args)
+
+
+def test_validate_args_bbf_fire_reset_only_valid_for_bbf():
+    args = parse_args(["--games", "pong", "--agent", "random", "--bbf-fire-reset", "0"])
+    with pytest.raises(ValueError, match=r"--bbf-fire-reset is only valid"):
+        validate_args(args)
+
+
+def test_resolve_bbf_runtime_settings_native_reset_semantics_forces_sticky_zero():
+    args = Namespace(
+        agent="bbf",
+        bbf_native_reset_semantics=1,
+        bbf_noop_reset_max=17,
+        bbf_fire_reset=1,
+        sticky=0.25,
+        full_action_space=1,
+    )
+    settings = _resolve_bbf_runtime_settings(args)
+    assert settings["runtime_mode"] == "native_reset_semantics"
+    assert settings["native_reset_semantics_requested"] is True
+    assert settings["native_reset_semantics_enabled"] is True
+    assert settings["sticky_effective"] == pytest.approx(0.0)
+    assert settings["full_action_space_effective"] is True
+    assert settings["action_space_mode"] == "canonical_full"
+    assert settings["noop_reset_max"] == 17
+    assert settings["fire_reset_enabled"] is True
+
+
+def test_build_config_payload_records_bbf_runtime_fields():
+    args = parse_args(
+        [
+            "--games",
+            "pong",
+            "--agent",
+            "bbf",
+            "--runner-mode",
+            "carmack_compat",
+            "--decision-interval",
+            "1",
+            "--full-action-space",
+            "1",
+            "--bbf-native-reset-semantics",
+            "1",
+            "--bbf-noop-reset-max",
+            "11",
+            "--bbf-fire-reset",
+            "1",
+        ]
+    )
+    schedule = Schedule(
+        ScheduleConfig(games=["pong"], base_visit_frames=2, num_cycles=1, seed=0, jitter_pct=0.0, min_visit_frames=1)
+    )
+    runner_config = CarmackMultiGameRunnerConfig(
+        decision_interval=1,
+        delay_frames=int(args.delay),
+        default_action_idx=int(args.default_action_idx),
+        episode_log_interval=int(args.log_episode_every),
+        train_log_interval=int(args.log_train_every),
+        include_timestamps=bool(args.timestamps),
+        global_action_set=tuple(range(18)),
+        real_time_mode=bool(args.real_time_mode),
+        real_time_fps=float(args.real_time_fps),
+    )
+    bbf_runtime = _resolve_bbf_runtime_settings(args)
+    bbf_runtime["fire_reset_supported"] = True
+    bbf_runtime["fire_reset_supported_by_game"] = {"pong": True}
+    payload = build_config_payload(
+        args=args,
+        games=["pong"],
+        run_dir=Path("runs/test"),
+        schedule=schedule,
+        runner_config=runner_config,
+        resolved_action_sets={"pong": [0, 1, 2]},
+        agent_config={"buffer_size": 200000},
+        config_file_data={},
+        bbf_runtime=bbf_runtime,
+    )
+
+    assert payload["bbf_config"]["native_reset_semantics"] is True
+    assert payload["bbf_config"]["noop_reset_max"] == 11
+    assert payload["bbf_config"]["fire_reset"] is True
+    assert payload["bbf_runtime"]["runtime_mode"] == "native_reset_semantics"
+    assert payload["bbf_runtime"]["native_reset_semantics_enabled"] is True
+    assert payload["bbf_runtime"]["sticky_effective"] == pytest.approx(0.0)
+    assert payload["bbf_runtime"]["full_action_space_effective"] is True
+    assert payload["bbf_runtime"]["noop_reset_max_effective"] == 11
+    assert payload["bbf_runtime"]["fire_reset_enabled"] is True
+    assert payload["bbf_runtime"]["fire_reset_supported"] is True
+    assert payload["bbf_runtime"]["fire_reset_supported_by_game"] == {"pong": True}
 
 
 def test_validate_args_requires_positive_real_time_fps():

@@ -72,3 +72,6 @@ bbf_breakout_amp.log
 bbf_verif.log
 bbf_verif_single_game.log
 runs_bbf_parity_breakout.log
+dqn_smoke.log
+rainbow_dqn_smoke.log
+sac_smoke.log

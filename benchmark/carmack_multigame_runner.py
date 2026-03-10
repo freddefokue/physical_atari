@@ -706,6 +706,9 @@ class CarmackMultiGameRunner:
             if fps is not None:
                 parts.append(f"fps={float(fps):.1f}")
 
+            if "bbf_native_reset_semantics" in stats:
+                parts.append("reset=native" if bool(stats.get("bbf_native_reset_semantics")) else "reset=std")
+
             phase = stats.get("phase")
             if isinstance(phase, str) and phase:
                 phase_token = "train" if phase == "training" else str(phase)
