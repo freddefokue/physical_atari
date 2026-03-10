@@ -98,6 +98,9 @@ class RecordingFrameAgentWithBBFStats(RecordingFrameAgent):
 
     def get_stats(self):
         return {
+            "bbf_parity_mode": False,
+            "bbf_native_reset_semantics": True,
+            "action_space_mode": "canonical_full",
             "phase": "training",
             "replay_add_count": 45,
             "replay_size": 45,
@@ -105,6 +108,8 @@ class RecordingFrameAgentWithBBFStats(RecordingFrameAgent):
             "learning_starts": 2000,
             "train_steps": int(self._train_steps),
             "grad_steps": 7200,
+            "decision_steps": 12,
+            "transition_steps": 8,
             "last_train_loss": 1.8823,
             "last_train_spr_loss": 0.6404,
             "last_train_avg_q": 2.113,
@@ -515,9 +520,20 @@ def test_carmack_multigame_bbf_stats_use_bbf_train_log_branch(capsys):
 
     assert summary["frames"] == 2
     assert "[bbf] f=1 game=pong v=0 c=0" in out
+    assert " mode=bench" in out
+    assert " reset=native" in out
+    assert " as=full" in out
     assert " train replay=" in out
     assert "replay=45/50000" in out
+    assert "u=3" in out
     assert "g=7200" in out
+    assert "train_sps=" in out
+    assert "train_sps_t=" in out
+    assert "ret=0.0" in out
+    assert "len=1" in out
+    assert " avg=" not in out
+    assert "d=12" in out
+    assert "t=8" in out
     assert "loss=1.882" in out
     assert "spr=0.640" in out
     assert "q=2.11" in out
@@ -525,7 +541,6 @@ def test_carmack_multigame_bbf_stats_use_bbf_train_log_branch(capsys):
     assert "visit_idx=" not in out
     assert "cycle_idx=" not in out
     assert "train_steps=" not in out
-    assert "train_sps=" not in out
     assert "train_sps_total=" not in out
     assert "learning_starts=" not in out
     assert "phase=" not in out

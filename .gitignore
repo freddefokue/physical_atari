@@ -75,3 +75,7 @@ runs_bbf_parity_breakout.log
 dqn_smoke.log
 rainbow_dqn_smoke.log
 sac_smoke.log
+bbf_full_actions_native_reset.log
+bbf_native_full_actions_resets.log
+dqn_big_smoke.log
+sac_big_smoke.log

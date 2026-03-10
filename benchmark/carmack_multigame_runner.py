@@ -690,13 +690,15 @@ class CarmackMultiGameRunner:
             cycle_idx: int,
             stats: Dict[str, Any],
             fps: Optional[float] = None,
+            episode_return_value: Optional[float] = None,
+            episode_length_value: Optional[int] = None,
             train_sps: Optional[float] = None,
             train_sps_total: Optional[float] = None,
             train_steps_fallback: Optional[int] = None,
+            boundary_cause: Optional[str] = None,
         ) -> Optional[str]:
             if not _is_bbf_stats(stats):
                 return None
-            del train_sps, train_sps_total, train_steps_fallback
             parts = [
                 f"[bbf] f={int(frame)}",
                 f"game={str(game_id)}",
@@ -706,8 +708,19 @@ class CarmackMultiGameRunner:
             if fps is not None:
                 parts.append(f"fps={float(fps):.1f}")
 
+            if "bbf_parity_mode" in stats:
+                parts.append("mode=parity" if bool(stats.get("bbf_parity_mode")) else "mode=bench")
             if "bbf_native_reset_semantics" in stats:
                 parts.append("reset=native" if bool(stats.get("bbf_native_reset_semantics")) else "reset=std")
+            action_space_mode = stats.get("action_space_mode")
+            if isinstance(action_space_mode, str) and action_space_mode:
+                lowered = action_space_mode.lower()
+                if "local" in lowered or "minimal" in lowered:
+                    parts.append("as=min")
+                elif "canonical" in lowered or "full" in lowered:
+                    parts.append("as=full")
+                else:
+                    parts.append(f"as={action_space_mode}")
 
             phase = stats.get("phase")
             if isinstance(phase, str) and phase:
@@ -723,9 +736,34 @@ class CarmackMultiGameRunner:
             elif replay_fill is not None:
                 parts.append(f"replay={replay_fill}")
 
+            train_steps_value = _coerce_optional_int(stats.get("train_steps"))
+            if train_steps_value is None:
+                train_steps_value = _coerce_optional_int(stats.get("train_steps_estimate"))
+            if train_steps_value is None:
+                train_steps_value = _coerce_optional_int(train_steps_fallback)
+            if train_steps_value is not None:
+                parts.append(f"u={int(train_steps_value)}")
+
             grad_steps_value = _coerce_optional_int(stats.get("grad_steps"))
             if grad_steps_value is not None:
                 parts.append(f"g={int(grad_steps_value)}")
+
+            if train_sps is not None:
+                parts.append(f"train_sps={float(train_sps):.1f}")
+            if train_sps_total is not None:
+                parts.append(f"train_sps_t={float(train_sps_total):.1f}")
+
+            if episode_return_value is not None:
+                parts.append(f"ret={float(episode_return_value):.1f}")
+            if episode_length_value is not None:
+                parts.append(f"len={int(episode_length_value)}")
+
+            decision_steps = _coerce_optional_int(stats.get("decision_steps"))
+            if decision_steps is not None:
+                parts.append(f"d={int(decision_steps)}")
+            transition_steps = _coerce_optional_int(stats.get("transition_steps"))
+            if transition_steps is not None:
+                parts.append(f"t={int(transition_steps)}")
 
             loss_value = _coerce_optional_float(stats.get("last_train_loss"))
             if loss_value is not None:
@@ -739,6 +777,8 @@ class CarmackMultiGameRunner:
             gamma_value = _coerce_optional_float(stats.get("last_train_gamma"))
             if gamma_value is not None:
                 parts.append(f"gamma={gamma_value:.4f}")
+            if isinstance(boundary_cause, str) and boundary_cause:
+                parts.append(f"bc={boundary_cause}")
 
             return " ".join(parts)
 
@@ -949,9 +989,14 @@ class CarmackMultiGameRunner:
                             cycle_idx=int(ci),
                             stats=stats,
                             fps=float(fps_window),
+                            episode_return_value=float(event.get("episode_return_so_far", self._episode_return)),
+                            episode_length_value=_coerce_optional_int(
+                                event.get("episode_length_so_far", self._episode_length)
+                            ),
                             train_sps=float(train_sps),
                             train_sps_total=float(train_sps_total),
                             train_steps_fallback=int(train_steps),
+                            boundary_cause=None if boundary.get("boundary_cause") is None else str(boundary.get("boundary_cause")),
                         )
                         if bbf_msg is not None:
                             print(bbf_msg, flush=True)
