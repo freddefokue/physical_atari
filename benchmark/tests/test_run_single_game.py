@@ -74,18 +74,6 @@ def test_validate_args_sac_requires_carmack_mode():
         validate_args(args)
 
 
-def test_validate_args_swift_sarsa_requires_carmack_mode():
-    args = Namespace(runner_mode="standard", frame_skip=1, agent="swift_sarsa", real_time_fps=60.0)
-    with pytest.raises(ValueError, match=r"agent swift_sarsa currently requires --runner-mode carmack_compat"):
-        validate_args(args)
-
-
-def test_validate_args_r2d2_requires_carmack_mode():
-    args = Namespace(runner_mode="standard", frame_skip=1, agent="r2d2", real_time_fps=60.0)
-    with pytest.raises(ValueError, match=r"agent r2d2 currently requires --runner-mode carmack_compat"):
-        validate_args(args)
-
-
 def test_validate_args_ppo_requires_positive_decision_interval():
     args = Namespace(
         runner_mode="carmack_compat",
@@ -259,50 +247,6 @@ def test_parse_args_accepts_sac_with_carmack_compat(monkeypatch):
     assert args.runner_mode == "carmack_compat"
     assert args.sac_gpu == 0
     assert args.sac_eval_mode == 0
-
-
-def test_parse_args_accepts_swift_sarsa_with_carmack_compat(monkeypatch):
-    monkeypatch.setattr(
-        "sys.argv",
-        [
-            "run_single_game.py",
-            "--game",
-            "pong",
-            "--runner-mode",
-            "carmack_compat",
-            "--frame-skip",
-            "1",
-            "--agent",
-            "swift_sarsa",
-        ],
-    )
-    args = parse_args()
-    assert args.agent == "swift_sarsa"
-    assert args.runner_mode == "carmack_compat"
-    assert args.swift_sarsa_gpu == 0
-    assert args.swift_sarsa_load_file is None
-
-
-def test_parse_args_accepts_r2d2_with_carmack_compat(monkeypatch):
-    monkeypatch.setattr(
-        "sys.argv",
-        [
-            "run_single_game.py",
-            "--game",
-            "pong",
-            "--runner-mode",
-            "carmack_compat",
-            "--frame-skip",
-            "1",
-            "--agent",
-            "r2d2",
-        ],
-    )
-    args = parse_args()
-    assert args.agent == "r2d2"
-    assert args.runner_mode == "carmack_compat"
-    assert args.r2d2_gpu == 0
-    assert args.r2d2_load_file is None
 
 
 def test_parse_args_accepts_bbf_with_carmack_compat(monkeypatch):
@@ -616,6 +560,13 @@ def test_build_config_payload_carmack_marks_agent_owned_cadence():
         compat_log_pulses_every=0,
         compat_log_resets_every=1,
         delay_target_ring_buffer_size=None,
+        roboatari_dqn_gpu=0,
+        roboatari_dqn_load_file=None,
+        rainbow_dqn_gpu=2,
+        rainbow_dqn_load_file="/tmp/rainbow_ckpt.pth",
+        sac_gpu=0,
+        sac_load_file=None,
+        sac_eval_mode=0,
         dqn_gamma=0.99,
         dqn_lr=1e-4,
         dqn_buffer_size=10000,
@@ -674,6 +625,9 @@ def test_build_config_payload_carmack_marks_agent_owned_cadence():
     assert rc["frame_skip_enforced"] == 1
     assert rc["real_time_mode"] is True
     assert rc["real_time_fps"] == pytest.approx(55.0)
+    rainbow_cfg = payload["rainbow_dqn_config"]
+    assert rainbow_cfg["gpu"] == 2
+    assert rainbow_cfg["load_file"] == "/tmp/rainbow_ckpt.pth"
     ppo_cfg = payload["ppo_config"]
     assert ppo_cfg["learning_rate"] == pytest.approx(2.5e-4)
     assert ppo_cfg["gamma"] == pytest.approx(0.99)
@@ -730,7 +684,7 @@ def test_build_agent_dqn_builds_or_raises_actionable_import_error():
     try:
         agent = build_agent(args, num_actions=3, total_frames=32)
     except ImportError as exc:
-        assert "agent=dqn requires roboatari/algorithms/dqn/agent_dqn.py" in str(exc)
+        assert "agent=dqn requires torch" in str(exc)
         return
     assert hasattr(agent, "frame")
 
@@ -749,7 +703,7 @@ def test_build_agent_rainbow_dqn_builds_or_raises_actionable_import_error():
     try:
         agent = build_agent(args, num_actions=3, total_frames=32)
     except ImportError as exc:
-        assert "agent=rainbow_dqn requires roboatari/algorithms/rainbow_dqn/agent_rainbow.py" in str(exc)
+        assert "agent=rainbow_dqn requires torch" in str(exc)
         return
     assert hasattr(agent, "frame")
 
@@ -769,47 +723,7 @@ def test_build_agent_sac_builds_or_raises_actionable_import_error():
     try:
         agent = build_agent(args, num_actions=3, total_frames=32)
     except ImportError as exc:
-        assert "agent=sac requires roboatari/algorithms/sac/agent_sac.py" in str(exc)
-        return
-    assert hasattr(agent, "frame")
-
-
-def test_build_agent_swift_sarsa_builds_or_raises_actionable_import_error():
-    args = Namespace(
-        agent="swift_sarsa",
-        seed=7,
-        runner_mode="carmack_compat",
-        swift_sarsa_gpu=0,
-        swift_sarsa_load_file=None,
-        swift_sarsa_sarsa_weights_path=None,
-        swift_sarsa_ppo_weights_path=None,
-        logdir="./runs",
-        dqn_decision_interval=1,
-        ppo_decision_interval=1,
-    )
-    try:
-        agent = build_agent(args, num_actions=3, total_frames=32)
-    except ImportError as exc:
-        assert "agent=swift_sarsa requires roboatari/algorithms/swift_sarsa/agent_ss.py" in str(exc)
-        return
-    assert hasattr(agent, "frame")
-
-
-def test_build_agent_r2d2_builds_or_raises_actionable_import_error():
-    args = Namespace(
-        agent="r2d2",
-        seed=7,
-        runner_mode="carmack_compat",
-        r2d2_gpu=0,
-        r2d2_load_file=None,
-        logdir="./runs",
-        dqn_decision_interval=1,
-        ppo_decision_interval=1,
-    )
-    try:
-        agent = build_agent(args, num_actions=3, total_frames=32)
-    except ImportError as exc:
-        assert "agent=r2d2 requires roboatari/algorithms/r2d2/agent_r2d2.py" in str(exc)
+        assert "agent=sac requires torch" in str(exc)
         return
     assert hasattr(agent, "frame")
 
@@ -945,12 +859,6 @@ def test_build_config_payload_records_bbf_runtime_mode_fields():
         sac_gpu=0,
         sac_load_file=None,
         sac_eval_mode=0,
-        swift_sarsa_gpu=0,
-        swift_sarsa_load_file=None,
-        swift_sarsa_sarsa_weights_path=None,
-        swift_sarsa_ppo_weights_path=None,
-        r2d2_gpu=0,
-        r2d2_load_file=None,
         dqn_gamma=0.99,
         dqn_lr=1e-4,
         dqn_buffer_size=10000,
