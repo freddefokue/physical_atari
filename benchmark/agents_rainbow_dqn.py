@@ -11,6 +11,16 @@ from typing import Any, Deque, Dict, Mapping, Optional, Tuple
 
 import numpy as np
 
+try:  # pragma: no cover - exercised via dependency-missing tests when forced
+    import cv2
+
+    _CV2_AVAILABLE = True
+    _CV2_IMPORT_ERROR: Optional[Exception] = None
+except Exception as exc:  # pragma: no cover - optional dependency path
+    cv2 = None  # type: ignore[assignment]
+    _CV2_AVAILABLE = False
+    _CV2_IMPORT_ERROR = exc
+
 try:  # pragma: no cover - exercised via dependency-missing tests
     import torch
     import torch.nn.functional as F
@@ -132,7 +142,7 @@ class _SumTree:
         self.capacity = 1
         while self.capacity < int(capacity):
             self.capacity *= 2
-        self.tree = torch.zeros(2 * self.capacity, dtype=torch.float32)
+        self.tree = np.zeros(2 * self.capacity, dtype=np.float32)
 
     def update(self, idx: int, priority: float):
         tree_idx = int(idx) + self.capacity
@@ -142,17 +152,17 @@ class _SumTree:
             self.tree[tree_idx] = self.tree[2 * tree_idx] + self.tree[2 * tree_idx + 1]
             tree_idx //= 2
 
-    def total(self) -> torch.Tensor:
-        return self.tree[1]
+    def total(self) -> float:
+        return float(self.tree[1])
 
     def find_prefixsum_idx(self, prefixsum: float) -> int:
         idx = 1
         while idx < self.capacity:
             left = 2 * idx
-            if float(self.tree[left].item()) >= float(prefixsum):
+            if float(self.tree[left]) >= float(prefixsum):
                 idx = left
             else:
-                prefixsum -= float(self.tree[left].item())
+                prefixsum -= float(self.tree[left])
                 idx = left + 1
         return int(idx - self.capacity)
 
@@ -201,18 +211,19 @@ class _PrioritizedReplay:
     def sample(self, batch_size: int):
         indices = []
         priorities = []
-        segment = float(self.tree.total().item()) / float(batch_size)
+        total_priority = max(float(self.tree.total()), 1e-12)
+        segment = total_priority / float(batch_size)
         for i in range(int(batch_size)):
             a = segment * i
             b = segment * (i + 1)
             value = float(np.random.uniform(a, b))
             idx = min(self.find_prefixsum_idx(value), self.size - 1)
             indices.append(idx)
-            priorities.append(float(self.tree.tree[idx + self.tree.capacity].item()))
+            priorities.append(float(self.tree.tree[idx + self.tree.capacity]))
 
         indices_np = np.asarray(indices, dtype=np.int64)
         priorities_np = np.asarray(priorities, dtype=np.float32)
-        probs = priorities_np / max(float(self.tree.total().item()), 1e-12)
+        probs = priorities_np / total_priority
         weights = (self.size * probs) ** (-self.beta)
         weights /= max(float(weights.max()), 1e-12)
         self.beta = min(1.0, self.beta + self.beta_increment)
@@ -295,6 +306,11 @@ class RainbowDQNAgent:
             raise ImportError(
                 "agent=rainbow_dqn requires torch. Install torch (CPU/CUDA build) or use --agent random/--agent repeat."
             ) from _TORCH_IMPORT_ERROR
+        if not _CV2_AVAILABLE:
+            raise ImportError(
+                "agent=rainbow_dqn requires cv2 for RoboAtari-compatible preprocessing. "
+                "Install opencv-python or opencv-python-headless."
+            ) from _CV2_IMPORT_ERROR
         if num_actions <= 0:
             raise ValueError("num_actions must be > 0")
 
@@ -331,9 +347,6 @@ class RainbowDQNAgent:
 
         self.support = torch.linspace(float(self.config.v_min), float(self.config.v_max), int(self.config.num_atoms), device=self.device)
         self.delta_z = float(self.config.v_max - self.config.v_min) / float(self.config.num_atoms - 1)
-        self._resize_rows: Optional[np.ndarray] = None
-        self._resize_cols: Optional[np.ndarray] = None
-        self._source_hw: Optional[Tuple[int, int]] = None
         self._frame_stack: Optional[np.ndarray] = None
         self._last_state: Optional[np.ndarray] = None
         self._last_action = 0
@@ -394,17 +407,13 @@ class RainbowDQNAgent:
             obs = obs.astype(np.uint8)
         if obs.ndim != 3 or obs.shape[-1] < 3:
             raise ValueError(f"expected RGB observation, got shape {obs.shape}")
-
-        height, width = int(obs.shape[0]), int(obs.shape[1])
-        source_hw = (height, width)
-        if self._source_hw != source_hw or self._resize_rows is None or self._resize_cols is None:
-            self._source_hw = source_hw
-            self._resize_rows = np.linspace(0, height - 1, int(self.config.obs_height), dtype=np.int32)
-            self._resize_cols = np.linspace(0, width - 1, int(self.config.obs_width), dtype=np.int32)
-
-        sampled = obs[self._resize_rows][:, self._resize_cols]
-        gray = sampled.astype(np.uint16).sum(axis=2) // 3
-        return np.asarray(gray, dtype=np.uint8)
+        gray = cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)
+        resized = cv2.resize(
+            gray,
+            (int(self.config.obs_width), int(self.config.obs_height)),
+            interpolation=cv2.INTER_AREA,
+        )
+        return np.asarray(resized, dtype=np.uint8)
 
     def _stack_from_frame(self, frame_u8: np.ndarray) -> np.ndarray:
         if self._frame_stack is None:
@@ -529,9 +538,6 @@ class RainbowDQNAgent:
         transition_state = self._stack_from_frame(transition_frame)
         done = self._boundary_done(boundary)
 
-        self._append_transition(float(reward), transition_state, done)
-        self._train_step()
-
         if done and isinstance(boundary, Mapping) and "reset_obs_rgb" in boundary:
             reset_frame = self._preprocess_obs(np.asarray(next_action_obs))
             current_state = self._reset_stack(reset_frame)
@@ -539,6 +545,8 @@ class RainbowDQNAgent:
             current_state = transition_state
 
         action_idx = self._select_action(current_state)
+        self._append_transition(float(reward), transition_state, done)
+        self._train_step()
         self._last_state = np.asarray(current_state, dtype=np.uint8).copy()
         self._last_action = int(action_idx)
         self._decision_steps += 1

@@ -76,6 +76,68 @@ def test_rainbow_dqn_actions_stay_in_bounds():
     assert all(0 <= int(action) < 5 for action in actions)
 
 
+@pytest.mark.skipif(
+    not agents_rainbow_dqn._TORCH_AVAILABLE or not agents_rainbow_dqn._CV2_AVAILABLE,
+    reason="torch/cv2 unavailable",
+)
+def test_rainbow_dqn_preprocess_matches_cv2_reference():
+    agent = agents_rainbow_dqn.RainbowDQNAgent(
+        data_dir="./runs",
+        seed=0,
+        num_actions=4,
+        total_frames=128,
+        config=agents_rainbow_dqn.RainbowDQNConfig(train_start=9999, batch_size=4),
+    )
+    obs = np.zeros((210, 160, 3), dtype=np.uint8)
+    obs[..., 0] = np.arange(160, dtype=np.uint8)[None, :]
+    obs[..., 1] = np.arange(210, dtype=np.uint8)[:, None]
+    obs[..., 2] = 50
+
+    processed = agent._preprocess_obs(obs)  # pylint: disable=protected-access
+    reference = agents_rainbow_dqn.cv2.cvtColor(obs, agents_rainbow_dqn.cv2.COLOR_RGB2GRAY)
+    reference = agents_rainbow_dqn.cv2.resize(
+        reference,
+        (agent.config.obs_width, agent.config.obs_height),
+        interpolation=agents_rainbow_dqn.cv2.INTER_AREA,
+    )
+    assert np.array_equal(processed, reference)
+
+
+@pytest.mark.skipif(not agents_rainbow_dqn._TORCH_AVAILABLE, reason="torch unavailable")
+def test_rainbow_dqn_selects_action_before_observing_previous_transition():
+    agent = agents_rainbow_dqn.RainbowDQNAgent(
+        data_dir="./runs",
+        seed=0,
+        num_actions=4,
+        total_frames=128,
+        config=agents_rainbow_dqn.RainbowDQNConfig(train_start=9999, batch_size=4),
+    )
+    obs = np.zeros((210, 160, 3), dtype=np.uint8)
+    agent.frame(obs, reward=0.0, boundary={"terminated": False, "truncated": False})
+
+    call_order = []
+
+    def _select_action(state_u8):
+        del state_u8
+        call_order.append("select")
+        return 1
+
+    def _append_transition(reward, next_state, done):
+        del reward, next_state, done
+        call_order.append("append")
+
+    def _train_step():
+        call_order.append("train")
+
+    agent._select_action = _select_action  # type: ignore[method-assign]  # pylint: disable=protected-access
+    agent._append_transition = _append_transition  # type: ignore[method-assign]  # pylint: disable=protected-access
+    agent._train_step = _train_step  # type: ignore[method-assign]  # pylint: disable=protected-access
+
+    action = agent.frame(obs, reward=1.0, boundary={"terminated": False, "truncated": False})
+    assert action == 1
+    assert call_order == ["select", "append", "train"]
+
+
 @pytest.mark.skipif(not agents_rainbow_dqn._TORCH_AVAILABLE, reason="torch unavailable")
 def test_rainbow_dqn_step_bridge_preserves_explicit_pulse_and_reset_observation():
     agent = agents_rainbow_dqn.RainbowDQNAgent(
