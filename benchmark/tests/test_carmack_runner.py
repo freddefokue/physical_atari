@@ -88,6 +88,45 @@ class RecordingFrameAgentWithBBFStats(RecordingFrameAgent):
         }
 
 
+class RecordingFrameAgentWithDQNStats(RecordingFrameAgent):
+    def get_stats(self):
+        return {
+            "training_steps": 12,
+            "loss_ema": 0.234,
+            "epsilon": 0.456,
+            "last_avg_q": 1.23,
+            "last_max_q": 2.34,
+            "replay_size": 789,
+        }
+
+
+class RecordingFrameAgentWithRainbowStats(RecordingFrameAgent):
+    def get_stats(self):
+        return {
+            "training_steps": 22,
+            "loss_ema": 0.345,
+            "last_td_error": 0.456,
+            "last_grad_norm": 5.67,
+            "epsilon": 0.0,
+            "last_avg_q": 1.11,
+            "last_max_q": 2.22,
+            "replay_size": 333,
+        }
+
+
+class RecordingFrameAgentWithSACStats(RecordingFrameAgent):
+    def get_stats(self):
+        return {
+            "training_step": 15,
+            "last_total_loss": 1.234,
+            "last_q_loss": 0.765,
+            "last_actor_loss": 0.469,
+            "alpha": 0.123,
+            "policy_entropy": 1.987,
+            "replay_size": 456,
+        }
+
+
 class RecordingBoundaryFrameAgent:
     def __init__(self, action_idx: int = 1) -> None:
         self.action_idx = int(action_idx)
@@ -495,6 +534,55 @@ def test_carmack_runner_bbf_stats_use_bbf_train_log_branch(capsys):
     assert "phase=" not in out
     assert "avg_q=" not in out
     assert "err_avg=" not in out
+
+
+@pytest.mark.parametrize(
+    ("agent_factory", "label", "tokens"),
+    [
+        (
+            RecordingFrameAgentWithDQNStats,
+            "[dqn]",
+            ("u=12", "loss=0.234", "eps=0.456", "q=1.23", "maxq=2.34", "replay=789"),
+        ),
+        (
+            RecordingFrameAgentWithRainbowStats,
+            "[rainbow]",
+            ("u=22", "loss=0.345", "td=0.456", "grad=5.670", "eps=0.000", "q=1.11", "maxq=2.22", "replay=333"),
+        ),
+        (
+            RecordingFrameAgentWithSACStats,
+            "[sac]",
+            ("u=15", "loss=1.234", "q=0.765", "actor=0.469", "alpha=0.123", "ent=1.987", "replay=456"),
+        ),
+    ],
+)
+def test_carmack_runner_value_agents_use_compact_train_logs(capsys, agent_factory, label, tokens):
+    env = ScriptedEnv(
+        action_set=list(range(4)),
+        rewards=[0.0, 1.0],
+        lives_seq=[3, 3],
+        terminated_at={1},
+        truncated_at=set(),
+    )
+    agent = agent_factory(action_idx=1)
+    config = CarmackRunnerConfig(
+        total_frames=2,
+        delay_frames=0,
+        include_timestamps=False,
+        progress_log_interval_frames=1,
+        pulse_log_interval=0,
+        reset_log_interval=1,
+        max_frames_without_reward=999,
+    )
+    summary, _, _ = run_with_memory(env, agent, config)
+    out = capsys.readouterr().out
+
+    assert summary["frames"] == 2
+    assert label in out
+    assert "err 0.0 0.0" not in out
+    assert "targ 0.0" not in out
+    for token in tokens:
+        assert token in out
 
 
 def test_carmack_runner_new_boundary_payload_timeout_marks_truncated():

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Sequence
 
 import numpy as np
+import pytest
 
 from benchmark.carmack_multigame_runner import (
     CARMACK_MULTI_RUN_PROFILE,
@@ -108,6 +109,45 @@ class RecordingFrameAgentWithBBFStats(RecordingFrameAgent):
             "last_train_spr_loss": 0.6404,
             "last_train_avg_q": 2.113,
             "last_train_gamma": 0.97804,
+        }
+
+
+class RecordingFrameAgentWithDQNStats(RecordingFrameAgent):
+    def get_stats(self):
+        return {
+            "training_steps": 12,
+            "loss_ema": 0.234,
+            "epsilon": 0.456,
+            "last_avg_q": 1.23,
+            "last_max_q": 2.34,
+            "replay_size": 789,
+        }
+
+
+class RecordingFrameAgentWithRainbowStats(RecordingFrameAgent):
+    def get_stats(self):
+        return {
+            "training_steps": 22,
+            "loss_ema": 0.345,
+            "last_td_error": 0.456,
+            "last_grad_norm": 5.67,
+            "epsilon": 0.0,
+            "last_avg_q": 1.11,
+            "last_max_q": 2.22,
+            "replay_size": 333,
+        }
+
+
+class RecordingFrameAgentWithSACStats(RecordingFrameAgent):
+    def get_stats(self):
+        return {
+            "training_step": 15,
+            "last_total_loss": 1.234,
+            "last_q_loss": 0.765,
+            "last_actor_loss": 0.469,
+            "alpha": 0.123,
+            "policy_entropy": 1.987,
+            "replay_size": 456,
         }
 
 
@@ -491,3 +531,49 @@ def test_carmack_multigame_bbf_stats_use_bbf_train_log_branch(capsys):
     assert "phase=" not in out
     assert "avg_q=" not in out
     assert "train_loss_ema=" not in out
+
+
+@pytest.mark.parametrize(
+    ("agent_factory", "label", "tokens"),
+    [
+        (
+            RecordingFrameAgentWithDQNStats,
+            "[dqn]",
+            ("u=12", "loss=0.234", "eps=0.456", "q=1.23", "maxq=2.34", "replay=789", "game=pong", "c=0", "v=0"),
+        ),
+        (
+            RecordingFrameAgentWithRainbowStats,
+            "[rainbow]",
+            ("u=22", "loss=0.345", "td=0.456", "grad=5.670", "eps=0.000", "q=1.11", "maxq=2.22", "replay=333", "game=pong", "c=0", "v=0"),
+        ),
+        (
+            RecordingFrameAgentWithSACStats,
+            "[sac]",
+            ("u=15", "loss=1.234", "q=0.765", "actor=0.469", "alpha=0.123", "ent=1.987", "replay=456", "game=pong", "c=0", "v=0"),
+        ),
+    ],
+)
+def test_carmack_multigame_value_agents_use_compact_train_logs(capsys, agent_factory, label, tokens):
+    schedule = Schedule(
+        ScheduleConfig(games=["pong"], base_visit_frames=2, num_cycles=1, seed=0, jitter_pct=0.0, min_visit_frames=1)
+    )
+    env = MockMultiGameEnv(action_sets={"pong": list(range(8))})
+    agent = agent_factory(action_idx=1)
+    config = CarmackMultiGameRunnerConfig(
+        decision_interval=1,
+        delay_frames=0,
+        default_action_idx=0,
+        include_timestamps=False,
+        global_action_set=tuple(range(8)),
+        episode_log_interval=1,
+        train_log_interval=1,
+    )
+    summary, _, _, _ = _run_with_memory(env, agent, schedule, config)
+    out = capsys.readouterr().out
+
+    assert summary["frames"] == 2
+    assert label in out
+    assert "err 0.0 0.0" not in out
+    assert "targ 0.0" not in out
+    for token in tokens:
+        assert token in out

@@ -18,6 +18,151 @@ CARMACK_MULTI_RUN_PROFILE = "carmack_compat"
 CARMACK_MULTI_RUN_SCHEMA_VERSION = "carmack_multi_v1"
 
 
+def _coerce_optional_float(value: Any) -> Optional[float]:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
+
+
+def _coerce_optional_int(value: Any) -> Optional[int]:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return int(value)
+    try:
+        out_f = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(out_f):
+        return None
+    return int(out_f)
+
+
+def _is_ppo_stats(stats: Dict[str, Any]) -> bool:
+    if not isinstance(stats, dict):
+        return False
+    return any(key in stats for key in ("last_policy_loss", "last_value_loss", "approx_kl", "train_updates"))
+
+
+def _is_dqn_stats(stats: Dict[str, Any]) -> bool:
+    if not isinstance(stats, dict):
+        return False
+    required = ("training_steps", "epsilon", "last_avg_q", "last_max_q")
+    return all(key in stats for key in required) and "last_td_error" not in stats and "last_q_loss" not in stats
+
+
+def _is_rainbow_stats(stats: Dict[str, Any]) -> bool:
+    if not isinstance(stats, dict):
+        return False
+    return "training_steps" in stats and ("last_td_error" in stats or "last_grad_norm" in stats)
+
+
+def _is_sac_stats(stats: Dict[str, Any]) -> bool:
+    if not isinstance(stats, dict):
+        return False
+    return any(key in stats for key in ("training_step", "last_q_loss", "last_actor_loss", "alpha"))
+
+
+def _format_avg_token(avg_value: Optional[float]) -> str:
+    if avg_value is None:
+        return "avg=n/a"
+    avg_f = float(avg_value)
+    if not math.isfinite(avg_f) or avg_f <= -998.5:
+        return "avg=n/a"
+    return f"avg={avg_f:.1f}"
+
+
+def _build_value_agent_log(
+    *,
+    frame: int,
+    fps: Optional[float],
+    episode_idx: int,
+    episode_return_value: float,
+    avg_value: Optional[float],
+    stats: Dict[str, Any],
+    game_id: str,
+    visit_idx: int,
+    cycle_idx: int,
+    episode_length_value: Optional[int] = None,
+    ended_by: Optional[str] = None,
+    boundary_cause: Optional[str] = None,
+) -> Optional[str]:
+    if _is_rainbow_stats(stats):
+        label = "rainbow"
+    elif _is_sac_stats(stats):
+        label = "sac"
+    elif _is_dqn_stats(stats):
+        label = "dqn"
+    else:
+        return None
+
+    parts = [f"[{label}] f={int(frame)}"]
+    if fps is not None:
+        parts.append(f"fps={float(fps):.1f}")
+    parts.append(f"ep={int(episode_idx)}")
+    if episode_length_value is not None:
+        parts.append(f"len={int(episode_length_value)}")
+    parts.append(f"ret={float(episode_return_value):.1f}")
+    parts.append(_format_avg_token(avg_value))
+
+    if label == "sac":
+        updates = _coerce_optional_int(stats.get("training_step"))
+        if updates is not None:
+            parts.append(f"u={int(updates)}")
+        loss = _coerce_optional_float(stats.get("last_total_loss"))
+        if loss is not None:
+            parts.append(f"loss={loss:.3f}")
+        q_loss = _coerce_optional_float(stats.get("last_q_loss"))
+        if q_loss is not None:
+            parts.append(f"q={q_loss:.3f}")
+        actor_loss = _coerce_optional_float(stats.get("last_actor_loss"))
+        if actor_loss is not None:
+            parts.append(f"actor={actor_loss:.3f}")
+        alpha = _coerce_optional_float(stats.get("alpha"))
+        if alpha is not None:
+            parts.append(f"alpha={alpha:.3f}")
+        entropy = _coerce_optional_float(stats.get("policy_entropy"))
+        if entropy is not None:
+            parts.append(f"ent={entropy:.3f}")
+    else:
+        updates = _coerce_optional_int(stats.get("training_steps"))
+        if updates is not None:
+            parts.append(f"u={int(updates)}")
+        loss = _coerce_optional_float(stats.get("loss_ema"))
+        if loss is not None:
+            parts.append(f"loss={loss:.3f}")
+        if label == "rainbow":
+            td_error = _coerce_optional_float(stats.get("last_td_error"))
+            if td_error is not None:
+                parts.append(f"td={td_error:.3f}")
+            grad_norm = _coerce_optional_float(stats.get("last_grad_norm"))
+            if grad_norm is not None:
+                parts.append(f"grad={grad_norm:.3f}")
+        epsilon = _coerce_optional_float(stats.get("epsilon"))
+        if epsilon is not None:
+            parts.append(f"eps={epsilon:.3f}")
+        avg_q = _coerce_optional_float(stats.get("last_avg_q"))
+        if avg_q is not None:
+            parts.append(f"q={avg_q:.2f}")
+        max_q = _coerce_optional_float(stats.get("last_max_q"))
+        if max_q is not None:
+            parts.append(f"maxq={max_q:.2f}")
+
+    replay_size = _coerce_optional_int(stats.get("replay_size"))
+    if replay_size is not None:
+        parts.append(f"replay={int(replay_size)}")
+    parts.append(f"game={str(game_id)}")
+    parts.append(f"c={int(cycle_idx)}")
+    parts.append(f"v={int(visit_idx)}")
+    if ended_by is not None:
+        parts.append(f"ended={str(ended_by)}")
+    if boundary_cause is not None:
+        parts.append(f"boundary={str(boundary_cause)}")
+    return " ".join(parts)
+
+
 class CarmackMultiGameEnv(Protocol):
     """Environment interface required by Carmack-compatible multi-game runner."""
 
@@ -419,7 +564,7 @@ class CarmackMultiGameRunner:
             )
             train_steps = stats.get("train_updates", stats.get("train_steps_estimate", None))
             train_steps_str = f'u {train_steps} ' if train_steps is not None else ''
-            if "policy_entropy" in stats:
+            if _is_ppo_stats(stats):
                 def _f(v: Any) -> str:
                     return "n/a" if v is None else f"{float(v):.3f}"
                 print(
@@ -433,18 +578,35 @@ class CarmackMultiGameRunner:
                     flush=True,
                 )
             else:
-                err_avg = float(stats.get("avg_error_ema", 0.0))
-                err_max = float(stats.get("max_error_ema", 0.0))
-                loss = float(stats.get("train_loss_ema", 0.0))
-                target = float(stats.get("target_ema", 0.0))
-                print(
-                    f'0:delay_multigame {common_prefix}'
-                    f'{train_steps_str}'
-                    f'err {err_avg:.1f} {err_max:.1f} '
-                    f'loss {loss:.1f} targ {target:.1f} '
-                    f'{common_suffix}',
-                    flush=True,
+                value_msg = _build_value_agent_log(
+                    frame=int(end_global_frame_idx),
+                    fps=float(episode_fps),
+                    episode_idx=int(self._episode_id),
+                    episode_return_value=float(self._episode_return),
+                    avg_value=float(rolling_avg),
+                    stats=stats,
+                    game_id=str(game_id),
+                    visit_idx=int(visit_idx),
+                    cycle_idx=int(cycle_idx),
+                    episode_length_value=int(self._episode_length),
+                    ended_by=str(ended_by),
+                    boundary_cause=None if boundary_cause is None else str(boundary_cause),
                 )
+                if value_msg is not None:
+                    print(value_msg, flush=True)
+                else:
+                    err_avg = float(stats.get("avg_error_ema", 0.0))
+                    err_max = float(stats.get("max_error_ema", 0.0))
+                    loss = float(stats.get("train_loss_ema", 0.0))
+                    target = float(stats.get("target_ema", 0.0))
+                    print(
+                        f'0:delay_multigame {common_prefix}'
+                        f'{train_steps_str}'
+                        f'err {err_avg:.1f} {err_max:.1f} '
+                        f'loss {loss:.1f} targ {target:.1f} '
+                        f'{common_suffix}',
+                        flush=True,
+                    )
         if self.episode_writer is None:
             return
         self.episode_writer.write(
@@ -511,26 +673,6 @@ class CarmackMultiGameRunner:
         last_logged_frame = 0
         last_log_time = float(run_start_time)
         last_train_steps = 0
-
-        def _coerce_optional_float(value: Any) -> Optional[float]:
-            try:
-                out = float(value)
-            except (TypeError, ValueError):
-                return None
-            return out if math.isfinite(out) else None
-
-        def _coerce_optional_int(value: Any) -> Optional[int]:
-            if isinstance(value, bool):
-                return int(value)
-            if isinstance(value, int):
-                return int(value)
-            try:
-                out_f = float(value)
-            except (TypeError, ValueError):
-                return None
-            if not math.isfinite(out_f):
-                return None
-            return int(out_f)
 
         def _is_bbf_stats(stats: Dict[str, Any]) -> bool:
             if not isinstance(stats, dict):
@@ -773,7 +915,7 @@ class CarmackMultiGameRunner:
                     gm = visit.game_id
                     vi = visit.visit_idx
                     ci = visit.cycle_idx
-                    if "policy_entropy" in stats:
+                    if _is_ppo_stats(stats):
                         def _ft(v: Any) -> str:
                             return "n/a" if v is None else f"{float(v):.3f}"
                         ra = rolling_avg if rolling_avg > -999.0 else 0.0
@@ -812,25 +954,40 @@ class CarmackMultiGameRunner:
                             print(bbf_msg, flush=True)
                         last_train_steps = int(train_steps)
                     else:
-                        msg = (
-                            f"[train] frame={fr} game={gm} visit_idx={vi} fps={fps:.1f}"
+                        value_msg = _build_value_agent_log(
+                            frame=int(fr),
+                            fps=float(fps_window),
+                            episode_idx=int(self._episode_id),
+                            episode_return_value=float(self._episode_return),
+                            avg_value=float(rolling_avg),
+                            stats=stats,
+                            game_id=str(gm),
+                            visit_idx=int(vi),
+                            cycle_idx=int(ci),
+                            episode_length_value=int(self._episode_length),
                         )
-                        for key in (
-                            "frame_count", "u", "episode_number",
-                            "train_loss_ema", "avg_error_ema", "max_error_ema",
-                            "target_ema", "train_steps_estimate",
-                        ):
-                            if key not in stats:
-                                continue
-                            value = stats[key]
-                            if isinstance(value, int):
-                                msg += f" {key}={value}"
-                            else:
-                                try:
-                                    msg += f" {key}={float(value):.3f}"
-                                except (TypeError, ValueError):
+                        if value_msg is not None:
+                            print(value_msg, flush=True)
+                        else:
+                            msg = (
+                                f"[train] frame={fr} game={gm} visit_idx={vi} fps={fps:.1f}"
+                            )
+                            for key in (
+                                "frame_count", "u", "episode_number",
+                                "train_loss_ema", "avg_error_ema", "max_error_ema",
+                                "target_ema", "train_steps_estimate",
+                            ):
+                                if key not in stats:
+                                    continue
+                                value = stats[key]
+                                if isinstance(value, int):
                                     msg += f" {key}={value}"
-                        print(msg, flush=True)
+                                else:
+                                    try:
+                                        msg += f" {key}={float(value):.3f}"
+                                    except (TypeError, ValueError):
+                                        msg += f" {key}={value}"
+                            print(msg, flush=True)
                     last_logged_frame = int(global_frame_idx + 1)
                     last_log_time = float(now)
 

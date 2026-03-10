@@ -17,6 +17,141 @@ CARMACK_SINGLE_RUN_PROFILE = "carmack_compat"
 CARMACK_SINGLE_RUN_SCHEMA_VERSION = "carmack_single_v1"
 
 
+def _coerce_optional_float(value: Any) -> Optional[float]:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
+
+
+def _coerce_optional_int(value: Any) -> Optional[int]:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return int(value)
+    try:
+        out_f = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(out_f):
+        return None
+    return int(out_f)
+
+
+def _is_ppo_stats(stats: Dict[str, Any]) -> bool:
+    if not isinstance(stats, dict):
+        return False
+    return any(key in stats for key in ("last_policy_loss", "last_value_loss", "approx_kl", "train_updates"))
+
+
+def _is_dqn_stats(stats: Dict[str, Any]) -> bool:
+    if not isinstance(stats, dict):
+        return False
+    required = ("training_steps", "epsilon", "last_avg_q", "last_max_q")
+    return all(key in stats for key in required) and "last_td_error" not in stats and "last_q_loss" not in stats
+
+
+def _is_rainbow_stats(stats: Dict[str, Any]) -> bool:
+    if not isinstance(stats, dict):
+        return False
+    return "training_steps" in stats and ("last_td_error" in stats or "last_grad_norm" in stats)
+
+
+def _is_sac_stats(stats: Dict[str, Any]) -> bool:
+    if not isinstance(stats, dict):
+        return False
+    return any(key in stats for key in ("training_step", "last_q_loss", "last_actor_loss", "alpha"))
+
+
+def _format_avg_token(avg_value: Optional[float]) -> str:
+    if avg_value is None:
+        return "avg=n/a"
+    avg_f = float(avg_value)
+    if not math.isfinite(avg_f) or avg_f <= -998.5:
+        return "avg=n/a"
+    return f"avg={avg_f:.1f}"
+
+
+def _build_value_agent_log(
+    *,
+    frame: int,
+    fps: Optional[float],
+    episode_idx: int,
+    episode_return_value: float,
+    avg_value: Optional[float],
+    stats: Dict[str, Any],
+    episode_length_value: Optional[int] = None,
+    context_tokens: Sequence[str] = (),
+) -> Optional[str]:
+    if _is_rainbow_stats(stats):
+        label = "rainbow"
+    elif _is_sac_stats(stats):
+        label = "sac"
+    elif _is_dqn_stats(stats):
+        label = "dqn"
+    else:
+        return None
+
+    parts = [f"[{label}] f={int(frame)}"]
+    if fps is not None:
+        parts.append(f"fps={float(fps):.1f}")
+    parts.append(f"ep={int(episode_idx)}")
+    if episode_length_value is not None:
+        parts.append(f"len={int(episode_length_value)}")
+    parts.append(f"ret={float(episode_return_value):.1f}")
+    parts.append(_format_avg_token(avg_value))
+
+    if label == "sac":
+        updates = _coerce_optional_int(stats.get("training_step"))
+        if updates is not None:
+            parts.append(f"u={int(updates)}")
+        loss = _coerce_optional_float(stats.get("last_total_loss"))
+        if loss is not None:
+            parts.append(f"loss={loss:.3f}")
+        q_loss = _coerce_optional_float(stats.get("last_q_loss"))
+        if q_loss is not None:
+            parts.append(f"q={q_loss:.3f}")
+        actor_loss = _coerce_optional_float(stats.get("last_actor_loss"))
+        if actor_loss is not None:
+            parts.append(f"actor={actor_loss:.3f}")
+        alpha = _coerce_optional_float(stats.get("alpha"))
+        if alpha is not None:
+            parts.append(f"alpha={alpha:.3f}")
+        entropy = _coerce_optional_float(stats.get("policy_entropy"))
+        if entropy is not None:
+            parts.append(f"ent={entropy:.3f}")
+    else:
+        updates = _coerce_optional_int(stats.get("training_steps"))
+        if updates is not None:
+            parts.append(f"u={int(updates)}")
+        loss = _coerce_optional_float(stats.get("loss_ema"))
+        if loss is not None:
+            parts.append(f"loss={loss:.3f}")
+        if label == "rainbow":
+            td_error = _coerce_optional_float(stats.get("last_td_error"))
+            if td_error is not None:
+                parts.append(f"td={td_error:.3f}")
+            grad_norm = _coerce_optional_float(stats.get("last_grad_norm"))
+            if grad_norm is not None:
+                parts.append(f"grad={grad_norm:.3f}")
+        epsilon = _coerce_optional_float(stats.get("epsilon"))
+        if epsilon is not None:
+            parts.append(f"eps={epsilon:.3f}")
+        avg_q = _coerce_optional_float(stats.get("last_avg_q"))
+        if avg_q is not None:
+            parts.append(f"q={avg_q:.2f}")
+        max_q = _coerce_optional_float(stats.get("last_max_q"))
+        if max_q is not None:
+            parts.append(f"maxq={max_q:.2f}")
+
+    replay_size = _coerce_optional_int(stats.get("replay_size"))
+    if replay_size is not None:
+        parts.append(f"replay={int(replay_size)}")
+    parts.extend(str(token) for token in context_tokens if str(token))
+    return " ".join(parts)
+
+
 class CarmackEnv(Protocol):
     """Environment interface needed by Carmack-compatible single-game runner."""
 
@@ -337,26 +472,6 @@ class CarmackCompatRunner:
                 return float(default)
             return out if math.isfinite(out) else float(default)
 
-        def _coerce_optional_float(value: Any) -> Optional[float]:
-            try:
-                out = float(value)
-            except (TypeError, ValueError):
-                return None
-            return out if math.isfinite(out) else None
-
-        def _coerce_optional_int(value: Any) -> Optional[int]:
-            if isinstance(value, bool):
-                return int(value)
-            if isinstance(value, int):
-                return int(value)
-            try:
-                out_f = float(value)
-            except (TypeError, ValueError):
-                return None
-            if not math.isfinite(out_f):
-                return None
-            return int(out_f)
-
         def _is_bbf_stats(stats: Dict[str, Any]) -> bool:
             if not isinstance(stats, dict):
                 return False
@@ -624,7 +739,7 @@ class CarmackCompatRunner:
                         f"{frame_rate:4.0f}/s "
                         f"eps {int(episodes_completed - 1):3},{int(frames):5}={int(event_episode_return):5} "
                     )
-                    if "policy_entropy" in stats:
+                    if _is_ppo_stats(stats):
                         def _f(v: Any) -> str:
                             return "n/a" if v is None else f"{float(v):.3f}"
                         train_updates = stats.get("train_updates", stats.get("train_steps_estimate", 0))
@@ -652,19 +767,31 @@ class CarmackCompatRunner:
                         if bbf_msg is not None:
                             print(bbf_msg, flush=True)
                     else:
-                        err_avg = _coerce_float(stats.get("avg_error_ema", 0.0), default=0.0)
-                        err_max = _coerce_float(stats.get("max_error_ema", 0.0), default=0.0)
-                        loss = _coerce_float(stats.get("train_loss_ema", 0.0), default=0.0)
-                        targ = _coerce_float(stats.get("target_ema", 0.0), default=0.0)
-                        print(
-                            f"{int(self.config.log_rank)}:{self.config.log_name} "
-                            f"{common_prefix}"
-                            f"err {err_avg:.1f} {err_max:.1f} "
-                            f"loss {loss:.1f} "
-                            f"targ {targ:.1f} "
-                            f"avg {avg_for_log:4.1f}",
-                            flush=True,
+                        value_msg = _build_value_agent_log(
+                            frame=int(frame_idx),
+                            fps=float(frame_rate),
+                            episode_idx=int(episodes_completed - 1),
+                            episode_return_value=float(event_episode_return),
+                            avg_value=float(avg_for_log),
+                            stats=stats,
+                            episode_length_value=int(event_episode_length),
                         )
+                        if value_msg is not None:
+                            print(value_msg, flush=True)
+                        else:
+                            err_avg = _coerce_float(stats.get("avg_error_ema", 0.0), default=0.0)
+                            err_max = _coerce_float(stats.get("max_error_ema", 0.0), default=0.0)
+                            loss = _coerce_float(stats.get("train_loss_ema", 0.0), default=0.0)
+                            targ = _coerce_float(stats.get("target_ema", 0.0), default=0.0)
+                            print(
+                                f"{int(self.config.log_rank)}:{self.config.log_name} "
+                                f"{common_prefix}"
+                                f"err {err_avg:.1f} {err_max:.1f} "
+                                f"loss {loss:.1f} "
+                                f"targ {targ:.1f} "
+                                f"avg {avg_for_log:4.1f}",
+                                flush=True,
+                            )
             else:
                 obs_for_agent = step.obs_rgb
 
@@ -720,7 +847,7 @@ class CarmackCompatRunner:
                 last_log_time = float(now)
 
                 fr = frame_idx + 1
-                if "policy_entropy" in stats:
+                if _is_ppo_stats(stats):
                     def _ft(v: Any) -> str:
                         return "n/a" if v is None else f"{float(v):.3f}"
                     ppo_updates = stats.get("train_updates", 0)
@@ -751,35 +878,47 @@ class CarmackCompatRunner:
                     if bbf_msg is not None:
                         print(bbf_msg, flush=True)
                 else:
-                    msg = (
-                        "[train] "
-                        f"frame={fr} "
-                        f"fps={fps:.2f} "
-                        f"fps_total={fps_total:.2f} "
-                        f"train_steps={train_steps} "
-                        f"train_sps={train_sps:.2f} "
-                        f"train_sps_total={train_sps_total:.2f} "
-                        f"episode_return={event_episode_return:.3f} "
-                        f"episode_length={event_episode_length} "
-                        f"resets={episodes_completed}"
+                    value_msg = _build_value_agent_log(
+                        frame=int(fr),
+                        fps=float(fps),
+                        episode_idx=int(episodes_completed),
+                        episode_return_value=float(event_episode_return),
+                        avg_value=float(avg_for_log),
+                        stats=stats,
+                        episode_length_value=int(event_episode_length),
                     )
-                    if "train_loss_ema" in stats:
-                        loss_val = _coerce_optional_float(stats.get("train_loss_ema"))
-                        if loss_val is not None:
-                            msg += f" loss={loss_val:.6f}"
-                    if "avg_error_ema" in stats:
-                        err_avg_val = _coerce_optional_float(stats.get("avg_error_ema"))
-                        if err_avg_val is not None:
-                            msg += f" err_avg={err_avg_val:.6f}"
-                    if "max_error_ema" in stats:
-                        err_max_val = _coerce_optional_float(stats.get("max_error_ema"))
-                        if err_max_val is not None:
-                            msg += f" err_max={err_max_val:.6f}"
-                    if "target_ema" in stats:
-                        targ_val = _coerce_optional_float(stats.get("target_ema"))
-                        if targ_val is not None:
-                            msg += f" target={targ_val:.6f}"
-                    print(msg, flush=True)
+                    if value_msg is not None:
+                        print(value_msg, flush=True)
+                    else:
+                        msg = (
+                            "[train] "
+                            f"frame={fr} "
+                            f"fps={fps:.2f} "
+                            f"fps_total={fps_total:.2f} "
+                            f"train_steps={train_steps} "
+                            f"train_sps={train_sps:.2f} "
+                            f"train_sps_total={train_sps_total:.2f} "
+                            f"episode_return={event_episode_return:.3f} "
+                            f"episode_length={event_episode_length} "
+                            f"resets={episodes_completed}"
+                        )
+                        if "train_loss_ema" in stats:
+                            loss_val = _coerce_optional_float(stats.get("train_loss_ema"))
+                            if loss_val is not None:
+                                msg += f" loss={loss_val:.6f}"
+                        if "avg_error_ema" in stats:
+                            err_avg_val = _coerce_optional_float(stats.get("avg_error_ema"))
+                            if err_avg_val is not None:
+                                msg += f" err_avg={err_avg_val:.6f}"
+                        if "max_error_ema" in stats:
+                            err_max_val = _coerce_optional_float(stats.get("max_error_ema"))
+                            if err_max_val is not None:
+                                msg += f" err_max={err_max_val:.6f}"
+                        if "target_ema" in stats:
+                            targ_val = _coerce_optional_float(stats.get("target_ema"))
+                            if targ_val is not None:
+                                msg += f" target={targ_val:.6f}"
+                        print(msg, flush=True)
 
             event = {
                 "single_run_profile": CARMACK_SINGLE_RUN_PROFILE,
