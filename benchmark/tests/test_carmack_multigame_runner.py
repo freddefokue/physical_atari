@@ -548,6 +548,44 @@ def test_carmack_multigame_bbf_stats_use_bbf_train_log_branch(capsys):
     assert "train_loss_ema=" not in out
 
 
+def test_carmack_multigame_bbf_episode_logs_use_bbf_label_not_delay_fallback(capsys):
+    schedule = Schedule(
+        ScheduleConfig(games=["pong"], base_visit_frames=2, num_cycles=1, seed=0, jitter_pct=0.0, min_visit_frames=1)
+    )
+    env = MockMultiGameEnv(action_sets={"pong": list(range(8))})
+    agent = RecordingFrameAgentWithBBFStats(action_idx=1)
+    config = CarmackMultiGameRunnerConfig(
+        decision_interval=1,
+        delay_frames=0,
+        default_action_idx=0,
+        include_timestamps=False,
+        global_action_set=tuple(range(8)),
+        episode_log_interval=1,
+        train_log_interval=0,
+    )
+    summary, _, _, _ = _run_with_memory(env, agent, schedule, config)
+    out = capsys.readouterr().out
+
+    assert summary["frames"] == 2
+    assert "[bbf_ep] f=1 game=pong v=0 c=0" in out
+    assert " ended=truncated" in out
+    assert " boundary=visit_switch" in out
+    assert " reset=native" in out
+    assert " as=full" in out
+    assert " train replay=45/50000" in out
+    assert "u=3" in out
+    assert "g=7200" in out
+    assert "ret=0.0" in out
+    assert "len=2" in out
+    assert "loss=1.882" in out
+    assert "spr=0.640" in out
+    assert "q=2.11" in out
+    assert "gamma=0.9780" in out
+    assert "0:delay_multigame" not in out
+    assert " err " not in out
+    assert " targ " not in out
+
+
 @pytest.mark.parametrize(
     ("agent_factory", "label", "tokens"),
     [

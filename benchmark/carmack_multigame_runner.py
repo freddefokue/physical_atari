@@ -65,6 +65,15 @@ def _is_sac_stats(stats: Dict[str, Any]) -> bool:
     return any(key in stats for key in ("training_step", "last_q_loss", "last_actor_loss", "alpha"))
 
 
+def _is_bbf_stats(stats: Dict[str, Any]) -> bool:
+    if not isinstance(stats, dict):
+        return False
+    if "last_train_spr_loss" in stats or "replay_add_count" in stats:
+        return True
+    phase = stats.get("phase")
+    return isinstance(phase, str) and phase in {"warmup", "training"}
+
+
 def _format_avg_token(avg_value: Optional[float]) -> str:
     if avg_value is None:
         return "avg=n/a"
@@ -160,6 +169,90 @@ def _build_value_agent_log(
         parts.append(f"ended={str(ended_by)}")
     if boundary_cause is not None:
         parts.append(f"boundary={str(boundary_cause)}")
+    return " ".join(parts)
+
+
+def _build_bbf_episode_log(
+    *,
+    frame: int,
+    fps: Optional[float],
+    game_id: str,
+    visit_idx: int,
+    cycle_idx: int,
+    ended_by: str,
+    boundary_cause: Optional[str],
+    episode_return_value: float,
+    episode_length_value: int,
+    stats: Dict[str, Any],
+) -> Optional[str]:
+    if not _is_bbf_stats(stats):
+        return None
+
+    parts = [
+        f"[bbf_ep] f={int(frame)}",
+        f"game={str(game_id)}",
+        f"v={int(visit_idx)}",
+        f"c={int(cycle_idx)}",
+    ]
+    if fps is not None:
+        parts.append(f"fps={float(fps):.1f}")
+
+    if "bbf_parity_mode" in stats:
+        parts.append("mode=parity" if bool(stats.get("bbf_parity_mode")) else "mode=bench")
+    if "bbf_native_reset_semantics" in stats:
+        parts.append("reset=native" if bool(stats.get("bbf_native_reset_semantics")) else "reset=std")
+
+    action_space_mode = stats.get("action_space_mode")
+    if isinstance(action_space_mode, str) and action_space_mode:
+        lowered = action_space_mode.lower()
+        if "local" in lowered or "minimal" in lowered:
+            parts.append("as=min")
+        elif "canonical" in lowered or "full" in lowered:
+            parts.append("as=full")
+        else:
+            parts.append(f"as={action_space_mode}")
+
+    phase = stats.get("phase")
+    if isinstance(phase, str) and phase:
+        parts.append("train" if str(phase) == "training" else str(phase))
+
+    replay_add = _coerce_optional_int(stats.get("replay_add_count"))
+    replay_size = _coerce_optional_int(stats.get("replay_size"))
+    buffer_size = _coerce_optional_int(stats.get("buffer_size"))
+    replay_fill = replay_size if replay_size is not None else replay_add
+    if replay_fill is not None and buffer_size is not None:
+        parts.append(f"replay={replay_fill}/{buffer_size}")
+    elif replay_fill is not None:
+        parts.append(f"replay={replay_fill}")
+
+    train_steps_value = _coerce_optional_int(stats.get("train_steps"))
+    if train_steps_value is None:
+        train_steps_value = _coerce_optional_int(stats.get("train_steps_estimate"))
+    if train_steps_value is not None:
+        parts.append(f"u={int(train_steps_value)}")
+    grad_steps_value = _coerce_optional_int(stats.get("grad_steps"))
+    if grad_steps_value is not None:
+        parts.append(f"g={int(grad_steps_value)}")
+
+    parts.append(f"ret={float(episode_return_value):.1f}")
+    parts.append(f"len={int(episode_length_value)}")
+    parts.append(f"ended={str(ended_by)}")
+    if boundary_cause is not None:
+        parts.append(f"boundary={str(boundary_cause)}")
+
+    loss_value = _coerce_optional_float(stats.get("last_train_loss"))
+    if loss_value is not None:
+        parts.append(f"loss={loss_value:.3f}")
+    spr_value = _coerce_optional_float(stats.get("last_train_spr_loss"))
+    if spr_value is not None:
+        parts.append(f"spr={spr_value:.3f}")
+    avg_q_value = _coerce_optional_float(stats.get("last_train_avg_q"))
+    if avg_q_value is not None:
+        parts.append(f"q={avg_q_value:.2f}")
+    gamma_value = _coerce_optional_float(stats.get("last_train_gamma"))
+    if gamma_value is not None:
+        parts.append(f"gamma={gamma_value:.4f}")
+
     return " ".join(parts)
 
 
@@ -577,6 +670,23 @@ class CarmackMultiGameRunner:
                     f'{common_suffix}',
                     flush=True,
                 )
+            elif _is_bbf_stats(stats):
+                bbf_episode_msg = _build_bbf_episode_log(
+                    frame=int(end_global_frame_idx),
+                    fps=float(episode_fps),
+                    game_id=str(game_id),
+                    visit_idx=int(visit_idx),
+                    cycle_idx=int(cycle_idx),
+                    ended_by=str(ended_by),
+                    boundary_cause=None if boundary_cause is None else str(boundary_cause),
+                    episode_return_value=float(self._episode_return),
+                    episode_length_value=int(self._episode_length),
+                    stats=stats,
+                )
+                if bbf_episode_msg is not None:
+                    print(bbf_episode_msg, flush=True)
+                else:
+                    print(f"[bbf_ep] f={int(end_global_frame_idx)} game={str(game_id)}", flush=True)
             else:
                 value_msg = _build_value_agent_log(
                     frame=int(end_global_frame_idx),
@@ -673,14 +783,6 @@ class CarmackMultiGameRunner:
         last_logged_frame = 0
         last_log_time = float(run_start_time)
         last_train_steps = 0
-
-        def _is_bbf_stats(stats: Dict[str, Any]) -> bool:
-            if not isinstance(stats, dict):
-                return False
-            if "last_train_spr_loss" in stats or "replay_add_count" in stats:
-                return True
-            phase = stats.get("phase")
-            return isinstance(phase, str) and phase in {"warmup", "training"}
 
         def _build_bbf_train_log(
             *,
