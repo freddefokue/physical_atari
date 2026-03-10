@@ -8,6 +8,8 @@ import pytest
 
 from benchmark.carmack_multigame_runner import CarmackMultiGameRunnerConfig
 from benchmark.run_multigame import (
+    BBF_MULTIGAME_HEARTBEAT_TRAIN_INTERVAL,
+    _resolve_bbf_log_visibility,
     _resolve_bbf_runtime_settings,
     build_config_payload,
     collect_agent_stats,
@@ -484,6 +486,34 @@ def test_resolve_bbf_runtime_settings_native_reset_semantics_forces_sticky_zero(
     assert settings["fire_reset_enabled"] is True
 
 
+def test_resolve_bbf_log_visibility_enables_heartbeat_when_both_logs_disabled():
+    args = Namespace(agent="bbf", log_episode_every=0, log_train_every=0)
+    settings = _resolve_bbf_log_visibility(args)
+    assert settings["requested_log_episode_every"] == 0
+    assert settings["requested_log_train_every"] == 0
+    assert settings["effective_log_episode_every"] == 0
+    assert settings["effective_log_train_every"] == BBF_MULTIGAME_HEARTBEAT_TRAIN_INTERVAL
+    assert settings["progress_heartbeat_active"] is True
+    assert settings["progress_heartbeat_source"] == "bbf_fallback_train_interval"
+
+
+def test_resolve_bbf_log_visibility_respects_explicit_intervals():
+    args = Namespace(agent="bbf", log_episode_every=0, log_train_every=1234)
+    settings = _resolve_bbf_log_visibility(args)
+    assert settings["effective_log_train_every"] == 1234
+    assert settings["progress_heartbeat_active"] is False
+    assert settings["progress_heartbeat_source"] == "requested"
+
+
+def test_resolve_bbf_log_visibility_no_fallback_for_non_bbf():
+    args = Namespace(agent="random", log_episode_every=0, log_train_every=0)
+    settings = _resolve_bbf_log_visibility(args)
+    assert settings["effective_log_episode_every"] == 0
+    assert settings["effective_log_train_every"] == 0
+    assert settings["progress_heartbeat_active"] is False
+    assert settings["progress_heartbeat_source"] == "not_bbf"
+
+
 def test_build_config_payload_records_bbf_runtime_fields():
     args = parse_args(
         [
@@ -512,14 +542,15 @@ def test_build_config_payload_records_bbf_runtime_fields():
         decision_interval=1,
         delay_frames=int(args.delay),
         default_action_idx=int(args.default_action_idx),
-        episode_log_interval=int(args.log_episode_every),
-        train_log_interval=int(args.log_train_every),
+        episode_log_interval=0,
+        train_log_interval=int(BBF_MULTIGAME_HEARTBEAT_TRAIN_INTERVAL),
         include_timestamps=bool(args.timestamps),
         global_action_set=tuple(range(18)),
         real_time_mode=bool(args.real_time_mode),
         real_time_fps=float(args.real_time_fps),
     )
     bbf_runtime = _resolve_bbf_runtime_settings(args)
+    bbf_runtime.update(_resolve_bbf_log_visibility(args))
     bbf_runtime["fire_reset_supported"] = True
     bbf_runtime["fire_reset_supported_by_game"] = {"pong": True}
     payload = build_config_payload(
@@ -545,6 +576,16 @@ def test_build_config_payload_records_bbf_runtime_fields():
     assert payload["bbf_runtime"]["fire_reset_enabled"] is True
     assert payload["bbf_runtime"]["fire_reset_supported"] is True
     assert payload["bbf_runtime"]["fire_reset_supported_by_game"] == {"pong": True}
+    assert payload["log_episode_every"] == 0
+    assert payload["log_train_every"] == 0
+    assert payload["runner_config"]["episode_log_interval"] == 0
+    assert payload["runner_config"]["train_log_interval"] == BBF_MULTIGAME_HEARTBEAT_TRAIN_INTERVAL
+    assert payload["bbf_runtime"]["requested_log_episode_every"] == 0
+    assert payload["bbf_runtime"]["requested_log_train_every"] == 0
+    assert payload["bbf_runtime"]["effective_log_episode_every"] == 0
+    assert payload["bbf_runtime"]["effective_log_train_every"] == BBF_MULTIGAME_HEARTBEAT_TRAIN_INTERVAL
+    assert payload["bbf_runtime"]["progress_heartbeat_active"] is True
+    assert payload["bbf_runtime"]["progress_heartbeat_source"] == "bbf_fallback_train_interval"
 
 
 def test_validate_args_requires_positive_real_time_fps():

@@ -27,6 +27,8 @@ from benchmark.logging_utils import JsonlWriter, dump_json, make_run_dir
 from benchmark.multigame_runner import MultiGameRunner, MultiGameRunnerConfig
 from benchmark.schedule import Schedule, ScheduleConfig
 
+BBF_MULTIGAME_HEARTBEAT_TRAIN_INTERVAL = 10_000
+
 
 def parse_games_csv(value: str) -> List[str]:
     games = [part.strip() for part in str(value).split(",") if part.strip()]
@@ -75,6 +77,35 @@ def _resolve_bbf_runtime_settings(args: argparse.Namespace) -> Dict[str, Any]:
         "noop_reset_max": int(noop_reset_max),
         "fire_reset_requested": bool(fire_reset_requested),
         "fire_reset_enabled": bool(fire_reset_enabled),
+    }
+
+
+def _resolve_bbf_log_visibility(args: argparse.Namespace) -> Dict[str, Any]:
+    requested_episode_log_every = int(getattr(args, "log_episode_every", 0))
+    requested_train_log_every = int(getattr(args, "log_train_every", 0))
+    if str(getattr(args, "agent", "")) != "bbf":
+        return {
+            "requested_log_episode_every": int(requested_episode_log_every),
+            "requested_log_train_every": int(requested_train_log_every),
+            "effective_log_episode_every": int(requested_episode_log_every),
+            "effective_log_train_every": int(requested_train_log_every),
+            "progress_heartbeat_active": False,
+            "progress_heartbeat_source": "not_bbf",
+        }
+
+    heartbeat_active = bool(int(requested_episode_log_every) == 0 and int(requested_train_log_every) == 0)
+    effective_train_log_every = (
+        int(BBF_MULTIGAME_HEARTBEAT_TRAIN_INTERVAL)
+        if heartbeat_active
+        else int(requested_train_log_every)
+    )
+    return {
+        "requested_log_episode_every": int(requested_episode_log_every),
+        "requested_log_train_every": int(requested_train_log_every),
+        "effective_log_episode_every": int(requested_episode_log_every),
+        "effective_log_train_every": int(effective_train_log_every),
+        "progress_heartbeat_active": bool(heartbeat_active),
+        "progress_heartbeat_source": "bbf_fallback_train_interval" if heartbeat_active else "requested",
     }
 
 
@@ -1192,6 +1223,25 @@ def build_config_payload(
             "fire_reset_supported_by_game": dict(
                 resolved_bbf_runtime.get("fire_reset_supported_by_game", {})
             ),
+            "requested_log_episode_every": int(
+                resolved_bbf_runtime.get("requested_log_episode_every", int(args.log_episode_every))
+            ),
+            "requested_log_train_every": int(
+                resolved_bbf_runtime.get("requested_log_train_every", int(args.log_train_every))
+            ),
+            "effective_log_episode_every": int(
+                resolved_bbf_runtime.get("effective_log_episode_every", int(runner_config.episode_log_interval))
+            ),
+            "effective_log_train_every": int(
+                resolved_bbf_runtime.get(
+                    "effective_log_train_every",
+                    int(getattr(runner_config, "train_log_interval", int(args.log_train_every))),
+                )
+            ),
+            "progress_heartbeat_active": bool(resolved_bbf_runtime.get("progress_heartbeat_active", False)),
+            "progress_heartbeat_source": str(
+                resolved_bbf_runtime.get("progress_heartbeat_source", "requested")
+            ),
         },
         "repeat_action_idx": int(args.repeat_action_idx),
         "default_action_idx": int(args.default_action_idx),
@@ -1290,6 +1340,17 @@ def main() -> None:
     games = parse_games_csv(args.games)
     seed_everything(args.seed)
     bbf_runtime = _resolve_bbf_runtime_settings(args)
+    bbf_log_visibility = _resolve_bbf_log_visibility(args)
+    if str(args.agent) == "bbf":
+        bbf_runtime.update(bbf_log_visibility)
+    effective_log_episode_every = int(bbf_log_visibility.get("effective_log_episode_every", int(args.log_episode_every)))
+    effective_log_train_every = int(bbf_log_visibility.get("effective_log_train_every", int(args.log_train_every)))
+    if str(args.agent) == "bbf" and bool(bbf_log_visibility.get("progress_heartbeat_active", False)):
+        print(
+            f"[bbf] heartbeat enabled: train logs every {effective_log_train_every} frames "
+            "(requested --log-train-every=0 and --log-episode-every=0).",
+            flush=True,
+        )
 
     schedule = Schedule(
         ScheduleConfig(
@@ -1330,8 +1391,8 @@ def main() -> None:
             decision_interval=int(args.decision_interval),
             delay_frames=args.delay,
             default_action_idx=args.default_action_idx,
-            episode_log_interval=int(args.log_episode_every),
-            train_log_interval=int(args.log_train_every),
+            episode_log_interval=int(effective_log_episode_every),
+            train_log_interval=int(effective_log_train_every),
             include_timestamps=bool(args.timestamps),
             global_action_set=global_action_set,
             real_time_mode=bool(args.real_time_mode),
@@ -1342,7 +1403,7 @@ def main() -> None:
             decision_interval=args.decision_interval,
             delay_frames=args.delay,
             default_action_idx=args.default_action_idx,
-            episode_log_interval=int(args.log_episode_every),
+            episode_log_interval=int(effective_log_episode_every),
             include_timestamps=bool(args.timestamps),
             global_action_set=global_action_set,
         )
