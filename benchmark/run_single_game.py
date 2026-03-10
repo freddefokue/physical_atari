@@ -176,25 +176,52 @@ class _BBFResetSemanticsEnvAdapter:
 
 
 def _resolve_bbf_runtime_settings(args: argparse.Namespace) -> Dict[str, Any]:
-    """Resolve single-game BBF runtime settings (canonical benchmark vs native parity)."""
+    """
+    Resolve single-game BBF runtime settings.
+
+    Mode split:
+    - parity mode: native reset semantics + local/minimal action-space preset
+    - reset-semantics mode: native reset semantics only; action-space follows --full-action-space
+    - standard mode: benchmark defaults with no native reset semantics
+    """
     if str(getattr(args, "agent", "")) != "bbf":
         return {}
 
     native_parity_mode = bool(int(getattr(args, "bbf_native_parity", 0)))
-    sticky_effective = 0.0 if native_parity_mode else float(getattr(args, "sticky", 0.25))
-    full_action_space_effective = False if native_parity_mode else bool(int(getattr(args, "full_action_space", 1)))
+    native_reset_semantics_requested = bool(int(getattr(args, "bbf_native_reset_semantics", 0)))
+    native_reset_semantics_enabled = bool(native_parity_mode or native_reset_semantics_requested)
+
+    sticky_requested = float(getattr(args, "sticky", 0.25))
+    # Native BBF parity semantics bundle sticky=0.0 with reset/startup behavior.
+    sticky_effective = 0.0 if native_reset_semantics_enabled else float(sticky_requested)
+
+    full_action_space_requested = bool(int(getattr(args, "full_action_space", 1)))
+    full_action_space_effective = False if native_parity_mode else bool(full_action_space_requested)
     action_space_mode = "local_minimal" if not bool(full_action_space_effective) else "canonical_full"
     use_canonical_action_adapter = bool(full_action_space_effective)
-    noop_reset_max = int(getattr(args, "bbf_noop_reset_max", 30)) if native_parity_mode else 0
+    noop_reset_max_requested = int(getattr(args, "bbf_noop_reset_max", 30))
+    noop_reset_max = int(noop_reset_max_requested) if native_reset_semantics_enabled else 0
     fire_reset_requested = bool(int(getattr(args, "bbf_fire_reset", 1)))
-    # Preserve canonical benchmark semantics by only applying FIRE startup in parity mode.
-    fire_reset_enabled = bool(native_parity_mode and fire_reset_requested)
+    fire_reset_enabled = bool(native_reset_semantics_enabled and fire_reset_requested)
+    runtime_mode = (
+        "parity_preset"
+        if native_parity_mode
+        else "native_reset_semantics"
+        if native_reset_semantics_enabled
+        else "benchmark_standard"
+    )
     return {
+        "runtime_mode": str(runtime_mode),
         "native_parity_mode": bool(native_parity_mode),
+        "native_reset_semantics_requested": bool(native_reset_semantics_requested),
+        "native_reset_semantics_enabled": bool(native_reset_semantics_enabled),
+        "sticky_requested": float(sticky_requested),
         "sticky_effective": float(sticky_effective),
+        "full_action_space_requested": bool(full_action_space_requested),
         "full_action_space_effective": bool(full_action_space_effective),
         "action_space_mode": str(action_space_mode),
         "use_canonical_action_adapter": bool(use_canonical_action_adapter),
+        "noop_reset_max_requested": int(noop_reset_max_requested),
         "noop_reset_max": int(noop_reset_max),
         "fire_reset_requested": bool(fire_reset_requested),
         "fire_reset_enabled": bool(fire_reset_enabled),
@@ -208,6 +235,7 @@ def _resolve_bbf_eval_reset_settings(
     """Resolve BBF eval reset semantics from effective runtime settings."""
     runtime = dict(bbf_runtime or {})
     return {
+        "native_reset_semantics_enabled": bool(runtime.get("native_reset_semantics_enabled", False)),
         "noop_reset_max": int(runtime.get("noop_reset_max", int(getattr(args, "bbf_noop_reset_max", 30)))),
         "fire_reset_enabled": bool(runtime.get("fire_reset_enabled", bool(int(getattr(args, "bbf_fire_reset", 1))))),
     }
@@ -534,17 +562,30 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--bbf-native-reset-semantics",
+        type=int,
+        choices=[0, 1],
+        default=0,
+        help=(
+            "Enable BBF native-style reset/startup semantics (no-op reset + FIRE startup + sticky=0.0) "
+            "without forcing minimal action-space mode."
+        ),
+    )
+    parser.add_argument(
         "--bbf-noop-reset-max",
         type=int,
         default=30,
-        help="Max no-op count for BBF native-style reset randomization (used when --bbf-native-parity=1).",
+        help=(
+            "Max no-op count for BBF native-style reset randomization "
+            "(used when parity preset or native reset-semantics mode is enabled)."
+        ),
     )
     parser.add_argument(
         "--bbf-fire-reset",
         type=int,
         choices=[0, 1],
         default=1,
-        help="Enable native-style FIRE reset startup sequence for BBF parity mode.",
+        help="Enable native-style FIRE reset startup sequence when BBF native reset semantics are enabled.",
     )
     parser.add_argument(
         "--bbf-eval-episodes",
@@ -646,12 +687,12 @@ def validate_args(args: argparse.Namespace) -> None:
             "--agent bbf currently requires --runner-mode carmack_compat "
             "so the adapter can reconstruct Atari-style step cadence from frame-level boundaries."
         )
-    if str(args.agent) == "bbf" and not bool(int(getattr(args, "bbf_native_parity", 0))) and int(args.full_action_space) != 1:
-        raise ValueError("--agent bbf requires --full-action-space 1 (canonical action mapping).")
     if str(args.agent) == "bbf" and bool(int(getattr(args, "real_time_mode", 0))):
         raise ValueError("--agent bbf currently requires --real-time-mode 0.")
     if str(args.agent) != "bbf" and bool(int(getattr(args, "bbf_native_parity", 0))):
         raise ValueError("--bbf-native-parity is only valid with --agent bbf.")
+    if str(args.agent) != "bbf" and bool(int(getattr(args, "bbf_native_reset_semantics", 0))):
+        raise ValueError("--bbf-native-reset-semantics is only valid with --agent bbf.")
     if int(getattr(args, "bbf_noop_reset_max", 30)) < 0:
         raise ValueError("--bbf-noop-reset-max must be >= 0.")
     if int(getattr(args, "bbf_eval_episodes", 0)) < 0:
@@ -926,6 +967,7 @@ def build_agent(args: argparse.Namespace, num_actions: int, total_frames: int):
                     "canonical_full" if bool(int(getattr(args, "full_action_space", 1))) else "local_minimal",
                 )
             ),
+            native_reset_semantics=bool(bbf_runtime.get("native_reset_semantics_enabled", False)),
         )
     else:
         try:
@@ -1069,6 +1111,7 @@ def build_config_payload(
             "use_amp": bool(int(getattr(args, "bbf_use_amp", 0))),
             "torch_compile": bool(int(getattr(args, "bbf_torch_compile", 0))),
             "native_parity_mode": bool(int(getattr(args, "bbf_native_parity", 0))),
+            "native_reset_semantics": bool(int(getattr(args, "bbf_native_reset_semantics", 0))),
             "noop_reset_max": int(getattr(args, "bbf_noop_reset_max", 30)),
             "fire_reset": bool(int(getattr(args, "bbf_fire_reset", 1))),
             "eval_episodes": int(getattr(args, "bbf_eval_episodes", 0)),
@@ -1077,19 +1120,31 @@ def build_config_payload(
             "eval_clip_rewards": bool(int(getattr(args, "bbf_eval_clip_rewards", 0))),
         },
         "bbf_runtime": {
+            "runtime_mode": str(resolved_bbf_runtime.get("runtime_mode", "benchmark_standard")),
             "native_parity_mode": bool(resolved_bbf_runtime.get("native_parity_mode", False)),
+            "native_reset_semantics_requested": bool(
+                resolved_bbf_runtime.get("native_reset_semantics_requested", False)
+            ),
+            "native_reset_semantics_enabled": bool(resolved_bbf_runtime.get("native_reset_semantics_enabled", False)),
             "action_space_mode": str(
                 resolved_bbf_runtime.get(
                     "action_space_mode",
                     "canonical_full" if bool(args.full_action_space) else "local_minimal",
                 )
             ),
+            "sticky_requested": float(resolved_bbf_runtime.get("sticky_requested", float(args.sticky))),
             "sticky_effective": float(resolved_bbf_runtime.get("sticky_effective", float(args.sticky))),
+            "full_action_space_requested": bool(
+                resolved_bbf_runtime.get("full_action_space_requested", bool(args.full_action_space))
+            ),
             "full_action_space_effective": bool(
                 resolved_bbf_runtime.get("full_action_space_effective", bool(args.full_action_space))
             ),
             "use_canonical_action_adapter": bool(
                 resolved_bbf_runtime.get("use_canonical_action_adapter", bool(args.full_action_space))
+            ),
+            "noop_reset_max_requested": int(
+                resolved_bbf_runtime.get("noop_reset_max_requested", int(getattr(args, "bbf_noop_reset_max", 30)))
             ),
             "noop_reset_max_effective": int(resolved_bbf_runtime.get("noop_reset_max", 0)),
             "fire_reset_requested": bool(

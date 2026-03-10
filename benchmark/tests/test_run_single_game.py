@@ -104,10 +104,9 @@ def test_validate_args_bbf_requires_carmack_mode():
         validate_args(args)
 
 
-def test_validate_args_bbf_requires_full_action_space():
+def test_validate_args_bbf_allows_minimal_action_space_without_parity():
     args = Namespace(runner_mode="carmack_compat", frame_skip=1, agent="bbf", full_action_space=0, real_time_fps=60.0)
-    with pytest.raises(ValueError, match=r"--agent bbf requires --full-action-space 1"):
-        validate_args(args)
+    validate_args(args)
 
 
 def test_validate_args_bbf_native_parity_allows_minimal_action_space():
@@ -152,6 +151,22 @@ def test_validate_args_bbf_native_parity_only_valid_for_bbf():
         bbf_eval_sticky=0.0,
     )
     with pytest.raises(ValueError, match=r"--bbf-native-parity is only valid"):
+        validate_args(args)
+
+
+def test_validate_args_bbf_native_reset_semantics_only_valid_for_bbf():
+    args = Namespace(
+        runner_mode="carmack_compat",
+        frame_skip=1,
+        agent="random",
+        bbf_native_reset_semantics=1,
+        real_time_fps=60.0,
+        bbf_noop_reset_max=30,
+        bbf_eval_episodes=0,
+        bbf_eval_epsilon=0.001,
+        bbf_eval_sticky=0.0,
+    )
+    with pytest.raises(ValueError, match=r"--bbf-native-reset-semantics is only valid"):
         validate_args(args)
 
 
@@ -333,7 +348,31 @@ def test_parse_args_accepts_bbf_native_parity_switch(monkeypatch):
     args = parse_args()
     assert args.agent == "bbf"
     assert args.bbf_native_parity == 1
+    assert args.bbf_native_reset_semantics == 0
     assert args.bbf_noop_reset_max == 30
+
+
+def test_parse_args_accepts_bbf_native_reset_semantics_switch(monkeypatch):
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_single_game.py",
+            "--game",
+            "pong",
+            "--runner-mode",
+            "carmack_compat",
+            "--frame-skip",
+            "1",
+            "--agent",
+            "bbf",
+            "--bbf-native-reset-semantics",
+            "1",
+        ],
+    )
+    args = parse_args()
+    assert args.agent == "bbf"
+    assert args.bbf_native_parity == 0
+    assert args.bbf_native_reset_semantics == 1
 
 
 def test_canonical_action_adapter_maps_global_indices_to_local_actions():
@@ -368,6 +407,7 @@ def test_resolve_bbf_runtime_settings_native_parity_forces_sticky_zero_and_minim
     args = Namespace(
         agent="bbf",
         bbf_native_parity=1,
+        bbf_native_reset_semantics=0,
         sticky=0.25,
         full_action_space=1,
         bbf_noop_reset_max=30,
@@ -379,6 +419,7 @@ def test_resolve_bbf_runtime_settings_native_parity_forces_sticky_zero_and_minim
     assert settings["full_action_space_effective"] is False
     assert settings["action_space_mode"] == "local_minimal"
     assert settings["use_canonical_action_adapter"] is False
+    assert settings["native_reset_semantics_enabled"] is True
     assert settings["fire_reset_enabled"] is True
 
 
@@ -386,6 +427,7 @@ def test_resolve_bbf_runtime_settings_canonical_mode_preserves_full_action_space
     args = Namespace(
         agent="bbf",
         bbf_native_parity=0,
+        bbf_native_reset_semantics=0,
         sticky=0.25,
         full_action_space=1,
         bbf_noop_reset_max=30,
@@ -397,6 +439,50 @@ def test_resolve_bbf_runtime_settings_canonical_mode_preserves_full_action_space
     assert settings["full_action_space_effective"] is True
     assert settings["action_space_mode"] == "canonical_full"
     assert settings["use_canonical_action_adapter"] is True
+    assert settings["native_reset_semantics_enabled"] is False
+    assert settings["fire_reset_enabled"] is False
+
+
+def test_resolve_bbf_runtime_settings_native_reset_semantics_keeps_full_actions():
+    args = Namespace(
+        agent="bbf",
+        bbf_native_parity=0,
+        bbf_native_reset_semantics=1,
+        sticky=0.25,
+        full_action_space=1,
+        bbf_noop_reset_max=17,
+        bbf_fire_reset=1,
+    )
+    settings = _resolve_bbf_runtime_settings(args)
+    assert settings["native_parity_mode"] is False
+    assert settings["native_reset_semantics_requested"] is True
+    assert settings["native_reset_semantics_enabled"] is True
+    assert settings["full_action_space_effective"] is True
+    assert settings["action_space_mode"] == "canonical_full"
+    assert settings["use_canonical_action_adapter"] is True
+    assert settings["sticky_effective"] == pytest.approx(0.0)
+    assert settings["noop_reset_max"] == 17
+    assert settings["fire_reset_enabled"] is True
+
+
+def test_resolve_bbf_runtime_settings_minimal_actions_without_native_reset_semantics():
+    args = Namespace(
+        agent="bbf",
+        bbf_native_parity=0,
+        bbf_native_reset_semantics=0,
+        sticky=0.15,
+        full_action_space=0,
+        bbf_noop_reset_max=17,
+        bbf_fire_reset=1,
+    )
+    settings = _resolve_bbf_runtime_settings(args)
+    assert settings["runtime_mode"] == "benchmark_standard"
+    assert settings["native_reset_semantics_enabled"] is False
+    assert settings["full_action_space_effective"] is False
+    assert settings["action_space_mode"] == "local_minimal"
+    assert settings["use_canonical_action_adapter"] is False
+    assert settings["sticky_effective"] == pytest.approx(0.15)
+    assert settings["noop_reset_max"] == 0
     assert settings["fire_reset_enabled"] is False
 
 
@@ -408,12 +494,32 @@ def test_resolve_bbf_eval_reset_settings_uses_runtime_effective_values():
     settings = _resolve_bbf_eval_reset_settings(
         args,
         bbf_runtime={
+            "native_reset_semantics_enabled": False,
             "noop_reset_max": 0,
             "fire_reset_enabled": False,
         },
     )
+    assert settings["native_reset_semantics_enabled"] is False
     assert settings["noop_reset_max"] == 0
     assert settings["fire_reset_enabled"] is False
+
+
+def test_resolve_bbf_eval_reset_settings_reports_enabled_mode():
+    args = Namespace(
+        bbf_noop_reset_max=30,
+        bbf_fire_reset=1,
+    )
+    settings = _resolve_bbf_eval_reset_settings(
+        args,
+        bbf_runtime={
+            "native_reset_semantics_enabled": True,
+            "noop_reset_max": 9,
+            "fire_reset_enabled": True,
+        },
+    )
+    assert settings["native_reset_semantics_enabled"] is True
+    assert settings["noop_reset_max"] == 9
+    assert settings["fire_reset_enabled"] is True
 
 
 def test_bbf_reset_adapter_applies_noop_steps_on_reset():
@@ -888,6 +994,7 @@ def test_build_config_payload_records_bbf_runtime_mode_fields():
         bbf_use_amp=0,
         bbf_torch_compile=0,
         bbf_native_parity=1,
+        bbf_native_reset_semantics=0,
         bbf_noop_reset_max=30,
         bbf_fire_reset=1,
         bbf_eval_episodes=5,
@@ -905,20 +1012,35 @@ def test_build_config_payload_records_bbf_runtime_mode_fields():
         runner_config=CarmackRunnerConfig(total_frames=100, include_timestamps=False),
         run_dir=Path("runs/test"),
         bbf_runtime={
+            "runtime_mode": "parity_preset",
             "native_parity_mode": True,
+            "native_reset_semantics_requested": False,
+            "native_reset_semantics_enabled": True,
             "action_space_mode": "local_minimal",
+            "sticky_requested": 0.25,
             "sticky_effective": 0.0,
+            "full_action_space_requested": True,
             "full_action_space_effective": False,
             "use_canonical_action_adapter": False,
+            "noop_reset_max_requested": 30,
             "noop_reset_max": 30,
+            "fire_reset_requested": True,
             "fire_reset_enabled": True,
             "fire_reset_supported": True,
         },
     )
+    assert payload["bbf_runtime"]["runtime_mode"] == "parity_preset"
     assert payload["bbf_runtime"]["native_parity_mode"] is True
+    assert payload["bbf_runtime"]["native_reset_semantics_enabled"] is True
+    assert payload["bbf_runtime"]["sticky_requested"] == pytest.approx(0.25)
     assert payload["bbf_runtime"]["sticky_effective"] == pytest.approx(0.0)
+    assert payload["bbf_runtime"]["full_action_space_requested"] is True
     assert payload["bbf_runtime"]["full_action_space_effective"] is False
     assert payload["bbf_runtime"]["action_space_mode"] == "local_minimal"
+    assert payload["bbf_runtime"]["noop_reset_max_requested"] == 30
+    assert payload["bbf_runtime"]["noop_reset_max_effective"] == 30
+    assert payload["bbf_runtime"]["fire_reset_requested"] is True
+    assert payload["bbf_runtime"]["fire_reset_enabled"] is True
 
 
 def test_build_run_summary_payload_includes_bbf_runtime_and_eval():

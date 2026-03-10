@@ -81,6 +81,7 @@ class BBFAgentAdapter:
         full_action_space: bool = True,
         parity_mode: bool = False,
         action_space_mode: str = "canonical_full",
+        native_reset_semantics: bool = False,
     ) -> None:
         if num_actions <= 0:
             raise ValueError("num_actions must be > 0")
@@ -94,6 +95,7 @@ class BBFAgentAdapter:
         self._agent_full_action_space = bool(full_action_space)
         self._parity_mode = bool(parity_mode)
         self._action_space_mode = str(action_space_mode)
+        self._native_reset_semantics = bool(native_reset_semantics)
 
         bbf_module = self._import_bbf_module()
         gym_module = self._import_gymnasium_module()
@@ -455,6 +457,7 @@ class BBFAgentAdapter:
             "full_action_space": bool(self._agent_full_action_space),
             "parity_mode": bool(self._parity_mode),
             "action_space_mode": str(self._action_space_mode),
+            "native_reset_semantics": bool(self._native_reset_semantics),
             "bbf_action_repeat": int(BBF_ACTION_REPEAT),
             "bbf_obs_size": int(BBF_OBS_SIZE),
         }
@@ -466,6 +469,7 @@ class BBFAgentAdapter:
             "transition_steps": int(self._transition_steps),
             "last_action_idx": int(self._held_action_idx),
             "bbf_parity_mode": bool(self._parity_mode),
+            "bbf_native_reset_semantics": bool(self._native_reset_semantics),
             "action_space_mode": str(self._action_space_mode),
             "full_action_space": bool(self._agent_full_action_space),
             "learning_starts": int(self._config.learning_starts),

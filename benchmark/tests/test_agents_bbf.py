@@ -253,6 +253,7 @@ def test_build_agent_bbf_single_game_uses_adapter(monkeypatch):
     assert agent.total_frames == 123
     assert agent.extra["parity_mode"] is False
     assert agent.extra["action_space_mode"] == "canonical_full"
+    assert agent.extra["native_reset_semantics"] is False
 
 
 def test_build_agent_bbf_multigame_import_error_is_actionable(monkeypatch):
@@ -314,6 +315,7 @@ def test_bbf_adapter_get_stats_exposes_stable_bbf_scalars(monkeypatch):
 
     assert stats["phase"] == "training"
     assert stats["bbf_parity_mode"] is False
+    assert stats["bbf_native_reset_semantics"] is False
     assert stats["action_space_mode"] == "canonical_full"
     assert stats["full_action_space"] is True
     assert stats["replay_size"] == 1234

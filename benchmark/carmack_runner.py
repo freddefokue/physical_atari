@@ -387,6 +387,8 @@ class CarmackCompatRunner:
 
             if "bbf_parity_mode" in stats:
                 parts.append("mode=parity" if bool(stats.get("bbf_parity_mode")) else "mode=bench")
+            if "bbf_native_reset_semantics" in stats:
+                parts.append("reset=native" if bool(stats.get("bbf_native_reset_semantics")) else "reset=std")
             action_space_mode = stats.get("action_space_mode")
             if isinstance(action_space_mode, str) and action_space_mode:
                 lowered = action_space_mode.lower()
