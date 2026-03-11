@@ -195,6 +195,10 @@ class SACAgent:
         self.q2_target = _QHead(int(self.config.feature_dim), int(self.config.value_hidden_dim), self.num_actions).to(self.device)
         self.q1_target.load_state_dict(self.q1.state_dict())
         self.q2_target.load_state_dict(self.q2.state_dict())
+        for param in self.q1_target.parameters():
+            param.requires_grad = False
+        for param in self.q2_target.parameters():
+            param.requires_grad = False
 
         self.q_optimizer = torch.optim.Adam(
             list(self.encoder.parameters()) + list(self.q1.parameters()) + list(self.q2.parameters()),
@@ -202,6 +206,10 @@ class SACAgent:
         )
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=float(self.config.learning_rate))
         self.target_entropy = float(-np.log(1.0 / float(self.num_actions)) * float(self.config.target_entropy_scale))
+        self.min_alpha = 1e-4
+        self.max_alpha = 10.0
+        self.log_alpha_min = float(np.log(self.min_alpha))
+        self.log_alpha_max = float(np.log(self.max_alpha))
         self.log_alpha = torch.tensor([np.log(0.2)], requires_grad=True, device=self.device, dtype=torch.float32)
         self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=float(self.config.learning_rate))
 
@@ -226,7 +234,7 @@ class SACAgent:
         self.last_total_loss: Optional[float] = None
         self.last_actor_loss: Optional[float] = None
         self.last_q_loss: Optional[float] = None
-        self.last_alpha: float = 0.2
+        self.last_alpha: float = float(self._alpha(detach=True).item())
         self.last_entropy: Optional[float] = None
 
         if self.config.load_file is not None and os.path.exists(self.config.load_file):
@@ -320,6 +328,12 @@ class SACAgent:
             for target_param, param in zip(self.q2_target.parameters(), self.q2.parameters()):
                 target_param.data.mul_(1.0 - tau).add_(param.data, alpha=tau)
 
+    def _alpha(self, *, detach: bool) -> torch.Tensor:
+        alpha = self.log_alpha.clamp(self.log_alpha_min, self.log_alpha_max).exp()
+        if detach:
+            alpha = alpha.detach()
+        return alpha
+
     def _train_batch(self) -> None:
         if self.replay.size < max(int(self.config.learning_starts), int(self.config.batch_size)):
             return
@@ -332,7 +346,7 @@ class SACAgent:
             next_log_probs = torch.log_softmax(next_logits, dim=1)
             next_probs = torch.softmax(next_logits, dim=1)
             target_q = torch.min(self.q1_target(next_features), self.q2_target(next_features))
-            alpha = self.log_alpha.exp().clamp(1e-4, 10.0)
+            alpha = self._alpha(detach=True)
             target_v = torch.sum(next_probs * (target_q - alpha * next_log_probs), dim=1)
             td_target = rewards + float(self.config.gamma) * (1.0 - dones) * target_v
 
@@ -343,29 +357,37 @@ class SACAgent:
 
         self.q_optimizer.zero_grad()
         q_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), max_norm=10.0)
+        torch.nn.utils.clip_grad_norm_(self.q1.parameters(), max_norm=10.0)
+        torch.nn.utils.clip_grad_norm_(self.q2.parameters(), max_norm=10.0)
         self.q_optimizer.step()
 
-        features_detached = self.encoder(obs).detach()
-        logits = self.actor(features_detached)
+        current_features = self.encoder(obs)
+        logits = self.actor(current_features.detach())
         log_probs = torch.log_softmax(logits, dim=1)
         probs = torch.softmax(logits, dim=1)
         with torch.no_grad():
-            q_min = torch.min(self.q1(features_detached), self.q2(features_detached))
-            alpha = self.log_alpha.exp().clamp(1e-4, 10.0)
+            q_min = torch.min(self.q1(current_features), self.q2(current_features))
+            alpha = self._alpha(detach=True)
         actor_loss = torch.sum(probs * (alpha * log_probs - q_min), dim=1).mean()
 
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=10.0)
         self.actor_optimizer.step()
 
-        entropy = -(probs * log_probs).sum(dim=1)
-        alpha_loss = -(self.log_alpha * (entropy.detach() - float(self.target_entropy))).mean()
+        with torch.no_grad():
+            entropy = -(probs * log_probs).sum(dim=1).mean()
+
+        target_entropy_t = torch.as_tensor(float(self.target_entropy), device=self.device, dtype=torch.float32)
+        alpha_loss = self._alpha(detach=False) * (entropy.detach() - target_entropy_t)
         self.alpha_optimizer.zero_grad()
         alpha_loss.backward()
         self.alpha_optimizer.step()
+        self.log_alpha.data.clamp_(self.log_alpha_min, self.log_alpha_max)
 
-        self.last_alpha = float(self.log_alpha.exp().clamp(1e-4, 10.0).item())
-        self.last_entropy = float(entropy.mean().item())
+        self.last_alpha = float(self._alpha(detach=True).item())
+        self.last_entropy = float(entropy.item())
         self.last_actor_loss = float(actor_loss.item())
         self.last_q_loss = float(q_loss.item())
         self.last_total_loss = float(actor_loss.item() + q_loss.item())
@@ -451,6 +473,8 @@ class SACAgent:
                 self.q2_target.load_state_dict(checkpoint.get("q2_target", checkpoint["q2"]))
                 if "log_alpha" in checkpoint:
                     self.log_alpha.data.copy_(checkpoint["log_alpha"].to(self.device))
+                    self.log_alpha.data.clamp_(self.log_alpha_min, self.log_alpha_max)
+                self.last_alpha = float(self._alpha(detach=True).item())
                 return
             if "cnn" in checkpoint:
                 self.encoder.load_state_dict(checkpoint["cnn"])
@@ -461,6 +485,8 @@ class SACAgent:
                 self.q2_target.load_state_dict(checkpoint.get("q2_target", checkpoint["q2"]))
                 if "log_alpha" in checkpoint:
                     self.log_alpha.data.copy_(checkpoint["log_alpha"].to(self.device))
+                    self.log_alpha.data.clamp_(self.log_alpha_min, self.log_alpha_max)
+                self.last_alpha = float(self._alpha(detach=True).item())
                 return
             if "model_state_dict" in checkpoint:
                 self.encoder.load_state_dict(checkpoint["model_state_dict"])

@@ -142,6 +142,38 @@ def test_sac_load_model_accepts_original_cnn_checkpoint_schema(tmp_path):
     assert agents_sac.torch.allclose(restored_weight, original_encoder_weight)
 
 
+@pytest.mark.skipif(not agents_sac._TORCH_AVAILABLE, reason="torch unavailable")
+def test_sac_train_batch_decreases_alpha_when_policy_entropy_exceeds_target():
+    agent = agents_sac.SACAgent(
+        data_dir="./runs",
+        seed=0,
+        num_actions=4,
+        total_frames=128,
+        config=agents_sac.SACAgentConfig(
+            frame_skip=1,
+            n_stack=1,
+            batch_size=4,
+            learning_starts=0,
+            learning_rate=1e-2,
+        ),
+    )
+
+    with agents_sac.torch.no_grad():
+        for module in (agent.encoder, agent.actor, agent.q1, agent.q2, agent.q1_target, agent.q2_target):
+            for param in module.parameters():
+                param.zero_()
+
+    obs = np.zeros((1, 128, 128), dtype=np.uint8)
+    for _ in range(4):
+        agent.replay.add(obs=obs, action=0, reward=0.0, next_obs=obs, done=False)
+
+    initial_alpha = float(agent._alpha(detach=True).item())  # pylint: disable=protected-access
+    agent._train_batch()  # pylint: disable=protected-access
+
+    assert agent.last_entropy == pytest.approx(np.log(4.0), rel=1e-4)
+    assert agent.last_alpha < initial_alpha
+
+
 def test_sac_class_raises_clear_error_when_torch_forced_missing(monkeypatch):
     monkeypatch.setattr(agents_sac, "_TORCH_AVAILABLE", False)
     monkeypatch.setattr(agents_sac, "_TORCH_IMPORT_ERROR", ImportError("forced missing torch"))
