@@ -15,17 +15,48 @@ def _rainbow_args() -> argparse.Namespace:
         seed=0,
         rainbow_dqn_gpu=0,
         rainbow_dqn_load_file=None,
+        rainbow_dqn_learning_rate=None,
+        rainbow_dqn_train_start=None,
+        rainbow_dqn_batch_size=None,
+        rainbow_dqn_buffer_size=None,
+        rainbow_dqn_target_update_freq=None,
+        rainbow_dqn_n_step=None,
+        rainbow_dqn_gamma=None,
+        rainbow_dqn_grad_clip=None,
+        rainbow_dqn_priority_alpha=None,
+        rainbow_dqn_priority_beta=None,
         logdir="./runs/v1",
     )
 
 
 @pytest.mark.skipif(not agents_rainbow_dqn._TORCH_AVAILABLE, reason="torch unavailable")
 def test_build_agent_rainbow_dqn_returns_agent_and_config():
-    agent, cfg = build_agent(_rainbow_args(), num_actions=6, total_frames=256)
+    args = _rainbow_args()
+    args.rainbow_dqn_learning_rate = 3e-4
+    args.rainbow_dqn_train_start = 25_000
+    args.rainbow_dqn_batch_size = 64
+    args.rainbow_dqn_buffer_size = 200_000
+    args.rainbow_dqn_target_update_freq = 4_000
+    args.rainbow_dqn_n_step = 5
+    args.rainbow_dqn_gamma = 0.995
+    args.rainbow_dqn_grad_clip = None
+    args.rainbow_dqn_priority_alpha = 0.6
+    args.rainbow_dqn_priority_beta = 0.7
+
+    agent, cfg = build_agent(args, num_actions=6, total_frames=256)
     assert isinstance(agent, agents_rainbow_dqn.RainbowDQNAgent)
     assert isinstance(cfg, dict)
     assert cfg["gpu"] == 0
-    assert cfg["n_step"] == 3
+    assert cfg["learning_rate"] == pytest.approx(3e-4)
+    assert cfg["train_start"] == 25_000
+    assert cfg["batch_size"] == 64
+    assert cfg["buffer_size"] == 200_000
+    assert cfg["target_update_freq"] == 4_000
+    assert cfg["n_step"] == 5
+    assert cfg["gamma"] == pytest.approx(0.995)
+    assert cfg["grad_clip"] is None
+    assert cfg["priority_alpha"] == pytest.approx(0.6)
+    assert cfg["priority_beta"] == pytest.approx(0.7)
 
 
 @pytest.mark.skipif(not agents_rainbow_dqn._TORCH_AVAILABLE, reason="torch unavailable")

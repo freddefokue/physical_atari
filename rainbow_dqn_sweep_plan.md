@@ -7,7 +7,7 @@ The goal is to tune Rainbow DQN for:
 - continual multi-game learning
 - no task ID
 - sticky actions
-- action delay
+- optional latency stress testing
 - long online training
 - revisits and forgetting
 
@@ -19,10 +19,16 @@ Use these benchmark settings as fixed defaults unless explicitly studying benchm
 
 - `runner_mode: "carmack_compat"`
 - `decision_interval: 1`
-- `delay: 6`
+- `delay: 0`
+- `jitter_pct: 0.0`
+- `life_loss_termination: 0`
 - `sticky: 0.25`
 - `full_action_space: 1`
 - `real_time_mode: 0`
+
+Use `delay = 6` only as a secondary latency stress test for finalists, not as the primary sweep benchmark.
+Use `jitter_pct > 0` only as a secondary schedule-robustness stress test, not as the primary sweep benchmark.
+Use `life_loss_termination = 1` only as a secondary training-friendly variant, not as the primary sweep benchmark.
 
 Use the 3-game subset for screening and ranking:
 

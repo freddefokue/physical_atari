@@ -97,3 +97,60 @@ def test_build_agent_delay_target_requires_decision_interval_1():
     with pytest.raises(ValueError, match="requires --decision-interval 1"):
         build_agent(args, num_actions=18, total_frames=100)
 
+
+def test_build_agent_delay_target_passes_exposed_sweep_kwargs(monkeypatch):
+    class _FakeDelayAgent:
+        def __init__(self, data_dir, seed, num_actions, total_frames, **kwargs):
+            self.init = {
+                "data_dir": data_dir,
+                "seed": seed,
+                "num_actions": num_actions,
+                "total_frames": total_frames,
+                "kwargs": kwargs,
+            }
+
+        def frame(self, observation_rgb8, reward, end_of_episode):
+            del observation_rgb8, reward, end_of_episode
+            return 0
+
+    monkeypatch.setitem(sys.modules, "agent_delay_target", types.SimpleNamespace(Agent=_FakeDelayAgent))
+    args = argparse.Namespace(
+        agent="delay_target",
+        runner_mode="carmack_compat",
+        decision_interval=1,
+        delay_target_gpu=1,
+        delay_target_use_cuda_graphs=0,
+        delay_target_load_file="/tmp/example.model",
+        delay_target_ring_buffer_size=32768,
+        delay_target_lr_log2=-17,
+        delay_target_base_lr_log2=-15,
+        delay_target_base_width=96,
+        delay_target_temperature_log2=-5,
+        delay_target_greedy_ramp=250000,
+        delay_target_multisteps_max=48,
+        delay_target_td_lambda=0.9,
+        delay_target_train_batch=64,
+        delay_target_online_batch=8,
+        delay_target_online_loss_scale=1.5,
+        delay_target_train_steps=6,
+        logdir="./runs/v1",
+        seed=3,
+    )
+
+    agent, cfg = build_agent(args, num_actions=18, total_frames=100)
+    assert isinstance(agent, DelayTargetAdapter)
+    assert cfg["gpu"] == 1
+    assert cfg["use_cuda_graphs"] is False
+    assert cfg["load_file"] == "/tmp/example.model"
+    assert cfg["ring_buffer_size"] == 32768
+    assert cfg["lr_log2"] == -17
+    assert cfg["base_lr_log2"] == -15
+    assert cfg["base_width"] == 96
+    assert cfg["temperature_log2"] == -5
+    assert cfg["greedy_ramp"] == 250000
+    assert cfg["multisteps_max"] == 48
+    assert cfg["td_lambda"] == pytest.approx(0.9)
+    assert cfg["train_batch"] == 64
+    assert cfg["online_batch"] == 8
+    assert cfg["online_loss_scale"] == pytest.approx(1.5)
+    assert cfg["train_steps"] == 6

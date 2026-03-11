@@ -225,6 +225,7 @@ def test_parse_args_accepts_rainbow_dqn_with_carmack_compat(monkeypatch):
     assert args.agent == "rainbow_dqn"
     assert args.runner_mode == "carmack_compat"
     assert args.rainbow_dqn_gpu == 0
+    assert args.rainbow_dqn_learning_rate is None
 
 
 def test_parse_args_accepts_sac_with_carmack_compat(monkeypatch):
@@ -247,6 +248,7 @@ def test_parse_args_accepts_sac_with_carmack_compat(monkeypatch):
     assert args.runner_mode == "carmack_compat"
     assert args.sac_gpu == 0
     assert args.sac_eval_mode == 0
+    assert args.sac_learning_rate is None
 
 
 def test_parse_args_accepts_bbf_with_carmack_compat(monkeypatch):
@@ -270,6 +272,198 @@ def test_parse_args_accepts_bbf_with_carmack_compat(monkeypatch):
     assert args.agent == "bbf"
     assert args.runner_mode == "carmack_compat"
     assert args.bbf_learning_starts == 2000
+    assert args.bbf_learning_rate == pytest.approx(1e-4)
+
+
+def test_parse_args_accepts_delay_target_sweep_flags(monkeypatch):
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_single_game.py",
+            "--game",
+            "pong",
+            "--agent",
+            "delay_target",
+            "--delay-target-base-width",
+            "112",
+            "--delay-target-temperature-log2",
+            "-4",
+            "--delay-target-greedy-ramp",
+            "150000",
+            "--delay-target-multisteps-max",
+            "32",
+            "--delay-target-td-lambda",
+            "0.85",
+            "--delay-target-train-batch",
+            "48",
+            "--delay-target-online-batch",
+            "6",
+            "--delay-target-online-loss-scale",
+            "1.75",
+            "--delay-target-train-steps",
+            "5",
+        ],
+    )
+    args = parse_args()
+    assert args.delay_target_base_width == 112
+    assert args.delay_target_temperature_log2 == -4
+    assert args.delay_target_greedy_ramp == 150000
+    assert args.delay_target_multisteps_max == 32
+    assert args.delay_target_td_lambda == pytest.approx(0.85)
+    assert args.delay_target_train_batch == 48
+    assert args.delay_target_online_batch == 6
+    assert args.delay_target_online_loss_scale == pytest.approx(1.75)
+    assert args.delay_target_train_steps == 5
+
+
+def test_parse_args_accepts_rainbow_dqn_sweep_flags(monkeypatch):
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_single_game.py",
+            "--game",
+            "pong",
+            "--runner-mode",
+            "carmack_compat",
+            "--frame-skip",
+            "1",
+            "--agent",
+            "rainbow_dqn",
+            "--rainbow-dqn-learning-rate",
+            "0.0003",
+            "--rainbow-dqn-train-start",
+            "25000",
+            "--rainbow-dqn-batch-size",
+            "64",
+            "--rainbow-dqn-buffer-size",
+            "200000",
+            "--rainbow-dqn-target-update-freq",
+            "4000",
+            "--rainbow-dqn-n-step",
+            "5",
+            "--rainbow-dqn-gamma",
+            "0.995",
+            "--rainbow-dqn-grad-clip",
+            "none",
+            "--rainbow-dqn-priority-alpha",
+            "0.6",
+            "--rainbow-dqn-priority-beta",
+            "0.7",
+        ],
+    )
+    args = parse_args()
+    assert args.rainbow_dqn_learning_rate == pytest.approx(3e-4)
+    assert args.rainbow_dqn_train_start == 25000
+    assert args.rainbow_dqn_batch_size == 64
+    assert args.rainbow_dqn_buffer_size == 200000
+    assert args.rainbow_dqn_target_update_freq == 4000
+    assert args.rainbow_dqn_n_step == 5
+    assert args.rainbow_dqn_gamma == pytest.approx(0.995)
+    assert args.rainbow_dqn_grad_clip is None
+    assert args.rainbow_dqn_priority_alpha == pytest.approx(0.6)
+    assert args.rainbow_dqn_priority_beta == pytest.approx(0.7)
+
+
+def test_parse_args_accepts_sac_sweep_flags(monkeypatch):
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_single_game.py",
+            "--game",
+            "pong",
+            "--runner-mode",
+            "carmack_compat",
+            "--frame-skip",
+            "1",
+            "--agent",
+            "sac",
+            "--sac-learning-rate",
+            "0.0003",
+            "--sac-learning-starts",
+            "5000",
+            "--sac-batch-size",
+            "128",
+            "--sac-buffer-size",
+            "200000",
+            "--sac-gradient-steps",
+            "4",
+            "--sac-tau",
+            "0.01",
+            "--sac-target-entropy-scale",
+            "0.75",
+            "--sac-gamma",
+            "0.995",
+            "--sac-train-freq",
+            "2",
+            "--sac-frame-skip",
+            "6",
+        ],
+    )
+    args = parse_args()
+    assert args.sac_learning_rate == pytest.approx(3e-4)
+    assert args.sac_learning_starts == 5000
+    assert args.sac_batch_size == 128
+    assert args.sac_buffer_size == 200000
+    assert args.sac_gradient_steps == 4
+    assert args.sac_tau == pytest.approx(0.01)
+    assert args.sac_target_entropy_scale == pytest.approx(0.75)
+    assert args.sac_gamma == pytest.approx(0.995)
+    assert args.sac_train_freq == 2
+    assert args.sac_frame_skip == 6
+
+
+def test_parse_args_accepts_bbf_sweep_flags(monkeypatch):
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_single_game.py",
+            "--game",
+            "pong",
+            "--runner-mode",
+            "carmack_compat",
+            "--frame-skip",
+            "1",
+            "--agent",
+            "bbf",
+            "--bbf-learning-rate",
+            "0.0003",
+            "--bbf-encoder-learning-rate",
+            "0.0002",
+            "--bbf-spr-weight",
+            "7.5",
+            "--bbf-jumps",
+            "3",
+            "--bbf-target-update-tau",
+            "0.01",
+            "--bbf-update-horizon",
+            "5",
+            "--bbf-max-update-horizon",
+            "9",
+            "--bbf-min-gamma",
+            "0.98",
+            "--bbf-cycle-steps",
+            "20000",
+            "--bbf-shrink-factor",
+            "0.6",
+            "--bbf-perturb-factor",
+            "0.4",
+            "--bbf-shrink-perturb-keys",
+            "encoder",
+        ],
+    )
+    args = parse_args()
+    assert args.bbf_learning_rate == pytest.approx(3e-4)
+    assert args.bbf_encoder_learning_rate == pytest.approx(2e-4)
+    assert args.bbf_spr_weight == pytest.approx(7.5)
+    assert args.bbf_jumps == 3
+    assert args.bbf_target_update_tau == pytest.approx(0.01)
+    assert args.bbf_update_horizon == 5
+    assert args.bbf_max_update_horizon == 9
+    assert args.bbf_min_gamma == pytest.approx(0.98)
+    assert args.bbf_cycle_steps == 20000
+    assert args.bbf_shrink_factor == pytest.approx(0.6)
+    assert args.bbf_perturb_factor == pytest.approx(0.4)
+    assert args.bbf_shrink_perturb_keys == "encoder"
 
 
 def test_parse_args_accepts_bbf_native_parity_switch(monkeypatch):
@@ -634,6 +828,173 @@ def test_build_config_payload_carmack_marks_agent_owned_cadence():
     assert ppo_cfg["rollout_steps"] == 128
     assert ppo_cfg["device"] == "auto"
     assert ppo_cfg["decision_interval"] == 4
+
+
+def test_build_config_payload_records_exposed_sweep_family_fields():
+    class _Env:
+        action_set = [0, 1, 2]
+
+    args = Namespace(
+        game="breakout",
+        seed=0,
+        frames=100,
+        frame_skip=1,
+        delay=0,
+        sticky=0.0,
+        full_action_space=1,
+        life_loss_termination=0,
+        agent="sac",
+        repeat_action_idx=0,
+        default_action_idx=0,
+        runner_mode="carmack_compat",
+        lives_as_episodes=1,
+        max_frames_without_reward=1000,
+        reset_on_life_loss=0,
+        compat_reset_delay_queue_on_reset=0,
+        compat_log_every_frames=0,
+        compat_log_pulses_every=0,
+        compat_log_resets_every=1,
+        delay_target_gpu=1,
+        delay_target_use_cuda_graphs=0,
+        delay_target_load_file="/tmp/delay.model",
+        delay_target_ring_buffer_size=32768,
+        delay_target_lr_log2=-17,
+        delay_target_base_lr_log2=-15,
+        delay_target_base_width=112,
+        delay_target_temperature_log2=-4,
+        delay_target_greedy_ramp=150000,
+        delay_target_multisteps_max=32,
+        delay_target_td_lambda=0.85,
+        delay_target_train_batch=48,
+        delay_target_online_batch=6,
+        delay_target_online_loss_scale=1.75,
+        delay_target_train_steps=5,
+        roboatari_dqn_gpu=0,
+        roboatari_dqn_load_file=None,
+        rainbow_dqn_gpu=2,
+        rainbow_dqn_load_file="/tmp/rainbow_ckpt.pth",
+        rainbow_dqn_learning_rate=3e-4,
+        rainbow_dqn_train_start=25000,
+        rainbow_dqn_batch_size=64,
+        rainbow_dqn_buffer_size=200000,
+        rainbow_dqn_target_update_freq=4000,
+        rainbow_dqn_n_step=5,
+        rainbow_dqn_gamma=0.995,
+        rainbow_dqn_grad_clip=None,
+        rainbow_dqn_priority_alpha=0.6,
+        rainbow_dqn_priority_beta=0.7,
+        sac_gpu=0,
+        sac_load_file=None,
+        sac_eval_mode=0,
+        sac_learning_rate=3e-4,
+        sac_learning_starts=5000,
+        sac_batch_size=128,
+        sac_buffer_size=200000,
+        sac_gradient_steps=4,
+        sac_tau=0.01,
+        sac_target_entropy_scale=0.75,
+        sac_gamma=0.995,
+        sac_train_freq=2,
+        sac_frame_skip=6,
+        dqn_gamma=0.99,
+        dqn_lr=1e-4,
+        dqn_buffer_size=10000,
+        dqn_batch_size=32,
+        dqn_train_every=4,
+        dqn_log_train_every=500,
+        dqn_target_update=250,
+        dqn_eps_start=1.0,
+        dqn_eps_end=0.05,
+        dqn_eps_decay_frames=200000,
+        dqn_replay_min=1000,
+        dqn_use_replay=1,
+        dqn_device="cpu",
+        dqn_decision_interval=1,
+        ppo_lr=2.5e-4,
+        ppo_gamma=0.99,
+        ppo_gae_lambda=0.95,
+        ppo_clip_range=0.2,
+        ppo_ent_coef=0.01,
+        ppo_vf_coef=0.5,
+        ppo_max_grad_norm=0.5,
+        ppo_rollout_steps=128,
+        ppo_train_interval=128,
+        ppo_batch_size=32,
+        ppo_epochs=4,
+        ppo_reward_clip=1.0,
+        ppo_obs_size=84,
+        ppo_frame_stack=4,
+        ppo_grayscale=1,
+        ppo_normalize_advantages=1,
+        ppo_deterministic_actions=0,
+        ppo_device="auto",
+        ppo_decision_interval=4,
+        bbf_learning_starts=2000,
+        bbf_buffer_size=200000,
+        bbf_batch_size=32,
+        bbf_replay_ratio=64,
+        bbf_learning_rate=3e-4,
+        bbf_encoder_learning_rate=2e-4,
+        bbf_spr_weight=7.5,
+        bbf_jumps=3,
+        bbf_target_update_tau=0.01,
+        bbf_update_horizon=5,
+        bbf_max_update_horizon=9,
+        bbf_min_gamma=0.98,
+        bbf_cycle_steps=20000,
+        bbf_shrink_factor=0.6,
+        bbf_perturb_factor=0.4,
+        bbf_shrink_perturb_keys="encoder",
+        bbf_reset_interval=20000,
+        bbf_no_resets_after=100000,
+        bbf_use_per=1,
+        bbf_use_amp=0,
+        bbf_torch_compile=0,
+        bbf_native_parity=0,
+        bbf_native_reset_semantics=0,
+        bbf_noop_reset_max=30,
+        bbf_fire_reset=1,
+        bbf_eval_episodes=0,
+        bbf_eval_epsilon=0.001,
+        bbf_eval_sticky=0.0,
+        bbf_eval_clip_rewards=0,
+        timestamps=0,
+        real_time_mode=0,
+        real_time_fps=55.0,
+        logdir="runs",
+    )
+    payload = build_config_payload(
+        args=args,
+        env=_Env(),
+        runner_config=CarmackRunnerConfig(
+            total_frames=100,
+            include_timestamps=False,
+            real_time_mode=False,
+            real_time_fps=55.0,
+        ),
+        run_dir=Path("runs/test"),
+    )
+    assert payload["delay_target_config"]["base_width"] == 112
+    assert payload["delay_target_config"]["temperature_log2"] == -4
+    assert payload["delay_target_config"]["train_steps"] == 5
+    assert payload["rainbow_dqn_config"]["learning_rate"] == pytest.approx(3e-4)
+    assert payload["rainbow_dqn_config"]["grad_clip"] is None
+    assert payload["rainbow_dqn_config"]["priority_alpha"] == pytest.approx(0.6)
+    assert payload["sac_config"]["learning_rate"] == pytest.approx(3e-4)
+    assert payload["sac_config"]["target_entropy_scale"] == pytest.approx(0.75)
+    assert payload["sac_config"]["frame_skip"] == 6
+    assert payload["bbf_config"]["learning_rate"] == pytest.approx(3e-4)
+    assert payload["bbf_config"]["encoder_learning_rate"] == pytest.approx(2e-4)
+    assert payload["bbf_config"]["spr_weight"] == pytest.approx(7.5)
+    assert payload["bbf_config"]["jumps"] == 3
+    assert payload["bbf_config"]["target_update_tau"] == pytest.approx(0.01)
+    assert payload["bbf_config"]["update_horizon"] == 5
+    assert payload["bbf_config"]["max_update_horizon"] == 9
+    assert payload["bbf_config"]["min_gamma"] == pytest.approx(0.98)
+    assert payload["bbf_config"]["cycle_steps"] == 20000
+    assert payload["bbf_config"]["shrink_factor"] == pytest.approx(0.6)
+    assert payload["bbf_config"]["perturb_factor"] == pytest.approx(0.4)
+    assert payload["bbf_config"]["shrink_perturb_keys"] == "encoder"
 
 
 def test_build_agent_ppo_builds_or_raises_actionable_import_error():

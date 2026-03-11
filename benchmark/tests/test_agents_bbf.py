@@ -237,6 +237,18 @@ def test_build_agent_bbf_single_game_uses_adapter(monkeypatch):
         bbf_buffer_size=100,
         bbf_batch_size=8,
         bbf_replay_ratio=4,
+        bbf_learning_rate=3e-4,
+        bbf_encoder_learning_rate=2e-4,
+        bbf_spr_weight=7.5,
+        bbf_jumps=3,
+        bbf_target_update_tau=0.01,
+        bbf_update_horizon=5,
+        bbf_max_update_horizon=9,
+        bbf_min_gamma=0.98,
+        bbf_cycle_steps=20_000,
+        bbf_shrink_factor=0.6,
+        bbf_perturb_factor=0.4,
+        bbf_shrink_perturb_keys="encoder",
         bbf_reset_interval=0,
         bbf_no_resets_after=50,
         bbf_use_per=1,
@@ -254,6 +266,18 @@ def test_build_agent_bbf_single_game_uses_adapter(monkeypatch):
     assert agent.extra["parity_mode"] is False
     assert agent.extra["action_space_mode"] == "canonical_full"
     assert agent.extra["native_reset_semantics"] is False
+    assert agent.config.as_dict()["learning_rate"] == pytest.approx(3e-4)
+    assert agent.config.as_dict()["encoder_learning_rate"] == pytest.approx(2e-4)
+    assert agent.config.as_dict()["spr_weight"] == pytest.approx(7.5)
+    assert agent.config.as_dict()["jumps"] == 3
+    assert agent.config.as_dict()["target_update_tau"] == pytest.approx(0.01)
+    assert agent.config.as_dict()["update_horizon"] == 5
+    assert agent.config.as_dict()["max_update_horizon"] == 9
+    assert agent.config.as_dict()["min_gamma"] == pytest.approx(0.98)
+    assert agent.config.as_dict()["cycle_steps"] == 20_000
+    assert agent.config.as_dict()["shrink_factor"] == pytest.approx(0.6)
+    assert agent.config.as_dict()["perturb_factor"] == pytest.approx(0.4)
+    assert agent.config.as_dict()["shrink_perturb_keys"] == "encoder"
 
 
 def test_build_agent_bbf_multigame_import_error_is_actionable(monkeypatch):
@@ -266,6 +290,18 @@ def test_build_agent_bbf_multigame_import_error_is_actionable(monkeypatch):
         bbf_buffer_size=200000,
         bbf_batch_size=32,
         bbf_replay_ratio=64,
+        bbf_learning_rate=1e-4,
+        bbf_encoder_learning_rate=1e-4,
+        bbf_spr_weight=5.0,
+        bbf_jumps=5,
+        bbf_target_update_tau=0.005,
+        bbf_update_horizon=3,
+        bbf_max_update_horizon=10,
+        bbf_min_gamma=0.97,
+        bbf_cycle_steps=10000,
+        bbf_shrink_factor=0.5,
+        bbf_perturb_factor=0.5,
+        bbf_shrink_perturb_keys="encoder,transition_model",
         bbf_reset_interval=20000,
         bbf_no_resets_after=100000,
         bbf_use_per=1,
@@ -306,6 +342,18 @@ def test_build_agent_bbf_multigame_passes_native_reset_semantics(monkeypatch):
         bbf_buffer_size=200000,
         bbf_batch_size=32,
         bbf_replay_ratio=64,
+        bbf_learning_rate=3e-4,
+        bbf_encoder_learning_rate=2e-4,
+        bbf_spr_weight=7.5,
+        bbf_jumps=3,
+        bbf_target_update_tau=0.01,
+        bbf_update_horizon=5,
+        bbf_max_update_horizon=9,
+        bbf_min_gamma=0.98,
+        bbf_cycle_steps=20_000,
+        bbf_shrink_factor=0.6,
+        bbf_perturb_factor=0.4,
+        bbf_shrink_perturb_keys="encoder",
         bbf_reset_interval=20000,
         bbf_no_resets_after=100000,
         bbf_use_per=1,
@@ -321,6 +369,18 @@ def test_build_agent_bbf_multigame_passes_native_reset_semantics(monkeypatch):
     agent, cfg = build_multigame_agent(args, num_actions=18, total_frames=200)
     assert isinstance(agent, _Adapter)
     assert cfg["buffer_size"] == 200000
+    assert cfg["learning_rate"] == pytest.approx(3e-4)
+    assert cfg["encoder_learning_rate"] == pytest.approx(2e-4)
+    assert cfg["spr_weight"] == pytest.approx(7.5)
+    assert cfg["jumps"] == 3
+    assert cfg["target_update_tau"] == pytest.approx(0.01)
+    assert cfg["update_horizon"] == 5
+    assert cfg["max_update_horizon"] == 9
+    assert cfg["min_gamma"] == pytest.approx(0.98)
+    assert cfg["cycle_steps"] == 20_000
+    assert cfg["shrink_factor"] == pytest.approx(0.6)
+    assert cfg["perturb_factor"] == pytest.approx(0.4)
+    assert cfg["shrink_perturb_keys"] == "encoder"
     assert agent.extra["full_action_space"] is True
     assert agent.extra["action_space_mode"] == "canonical_full"
     assert agent.extra["native_reset_semantics"] is True

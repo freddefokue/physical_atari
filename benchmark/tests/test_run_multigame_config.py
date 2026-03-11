@@ -121,6 +121,15 @@ def test_run_multigame_config_parses_delay_target_agent_config(tmp_path):
             "use_cuda_graphs": 0,
             "load_file": "/tmp/example.model",
             "ring_buffer_size": 32768,
+            "base_width": 96,
+            "temperature_log2": -5,
+            "greedy_ramp": 250000,
+            "multisteps_max": 48,
+            "td_lambda": 0.9,
+            "train_batch": 64,
+            "online_batch": 8,
+            "online_loss_scale": 1.5,
+            "train_steps": 6,
         },
     }
     with config_path.open("w", encoding="utf-8") as fh:
@@ -133,6 +142,15 @@ def test_run_multigame_config_parses_delay_target_agent_config(tmp_path):
     assert args.delay_target_use_cuda_graphs == 0
     assert args.delay_target_load_file == "/tmp/example.model"
     assert args.delay_target_ring_buffer_size == 32768
+    assert args.delay_target_base_width == 96
+    assert args.delay_target_temperature_log2 == -5
+    assert args.delay_target_greedy_ramp == 250000
+    assert args.delay_target_multisteps_max == 48
+    assert args.delay_target_td_lambda == pytest.approx(0.9)
+    assert args.delay_target_train_batch == 64
+    assert args.delay_target_online_batch == 8
+    assert args.delay_target_online_loss_scale == pytest.approx(1.5)
+    assert args.delay_target_train_steps == 6
 
 
 def test_run_multigame_config_parses_runner_mode_and_tinydqn_decision_interval(tmp_path):
@@ -191,6 +209,8 @@ def test_run_multigame_cli_accepts_rainbow_dqn_agent():
     assert args.agent == "rainbow_dqn"
     assert args.rainbow_dqn_gpu == 0
     assert args.rainbow_dqn_load_file is None
+    assert args.rainbow_dqn_learning_rate is None
+    assert args.rainbow_dqn_grad_clip is not None
 
 
 def test_run_multigame_cli_accepts_sac_agent():
@@ -199,6 +219,7 @@ def test_run_multigame_cli_accepts_sac_agent():
     assert args.sac_gpu == 0
     assert args.sac_load_file is None
     assert args.sac_eval_mode == 0
+    assert args.sac_learning_rate is None
 
 
 def test_run_multigame_cli_accepts_bbf_agent():
@@ -207,6 +228,175 @@ def test_run_multigame_cli_accepts_bbf_agent():
     assert args.bbf_learning_starts == 2000
     assert args.bbf_buffer_size == 200000
     assert args.bbf_use_per == 1
+    assert args.bbf_learning_rate == pytest.approx(1e-4)
+    assert args.bbf_shrink_perturb_keys == "encoder,transition_model"
+
+
+def test_run_multigame_cli_accepts_delay_target_sweep_flags():
+    args = parse_args(
+        [
+            "--games",
+            "pong",
+            "--agent",
+            "delay_target",
+            "--delay-target-base-width",
+            "112",
+            "--delay-target-temperature-log2",
+            "-4",
+            "--delay-target-greedy-ramp",
+            "150000",
+            "--delay-target-multisteps-max",
+            "32",
+            "--delay-target-td-lambda",
+            "0.85",
+            "--delay-target-train-batch",
+            "48",
+            "--delay-target-online-batch",
+            "6",
+            "--delay-target-online-loss-scale",
+            "1.75",
+            "--delay-target-train-steps",
+            "5",
+        ]
+    )
+    assert args.delay_target_base_width == 112
+    assert args.delay_target_temperature_log2 == -4
+    assert args.delay_target_greedy_ramp == 150000
+    assert args.delay_target_multisteps_max == 32
+    assert args.delay_target_td_lambda == pytest.approx(0.85)
+    assert args.delay_target_train_batch == 48
+    assert args.delay_target_online_batch == 6
+    assert args.delay_target_online_loss_scale == pytest.approx(1.75)
+    assert args.delay_target_train_steps == 5
+
+
+def test_run_multigame_cli_accepts_rainbow_dqn_sweep_flags():
+    args = parse_args(
+        [
+            "--games",
+            "pong",
+            "--agent",
+            "rainbow_dqn",
+            "--rainbow-dqn-learning-rate",
+            "0.0003",
+            "--rainbow-dqn-train-start",
+            "25000",
+            "--rainbow-dqn-batch-size",
+            "64",
+            "--rainbow-dqn-buffer-size",
+            "200000",
+            "--rainbow-dqn-target-update-freq",
+            "4000",
+            "--rainbow-dqn-n-step",
+            "5",
+            "--rainbow-dqn-gamma",
+            "0.995",
+            "--rainbow-dqn-grad-clip",
+            "none",
+            "--rainbow-dqn-priority-alpha",
+            "0.6",
+            "--rainbow-dqn-priority-beta",
+            "0.7",
+        ]
+    )
+    assert args.rainbow_dqn_learning_rate == pytest.approx(3e-4)
+    assert args.rainbow_dqn_train_start == 25000
+    assert args.rainbow_dqn_batch_size == 64
+    assert args.rainbow_dqn_buffer_size == 200000
+    assert args.rainbow_dqn_target_update_freq == 4000
+    assert args.rainbow_dqn_n_step == 5
+    assert args.rainbow_dqn_gamma == pytest.approx(0.995)
+    assert args.rainbow_dqn_grad_clip is None
+    assert args.rainbow_dqn_priority_alpha == pytest.approx(0.6)
+    assert args.rainbow_dqn_priority_beta == pytest.approx(0.7)
+
+
+def test_run_multigame_cli_accepts_sac_sweep_flags():
+    args = parse_args(
+        [
+            "--games",
+            "pong",
+            "--agent",
+            "sac",
+            "--sac-learning-rate",
+            "0.0003",
+            "--sac-learning-starts",
+            "5000",
+            "--sac-batch-size",
+            "128",
+            "--sac-buffer-size",
+            "200000",
+            "--sac-gradient-steps",
+            "4",
+            "--sac-tau",
+            "0.01",
+            "--sac-target-entropy-scale",
+            "0.75",
+            "--sac-gamma",
+            "0.995",
+            "--sac-train-freq",
+            "2",
+            "--sac-frame-skip",
+            "6",
+        ]
+    )
+    assert args.sac_learning_rate == pytest.approx(3e-4)
+    assert args.sac_learning_starts == 5000
+    assert args.sac_batch_size == 128
+    assert args.sac_buffer_size == 200000
+    assert args.sac_gradient_steps == 4
+    assert args.sac_tau == pytest.approx(0.01)
+    assert args.sac_target_entropy_scale == pytest.approx(0.75)
+    assert args.sac_gamma == pytest.approx(0.995)
+    assert args.sac_train_freq == 2
+    assert args.sac_frame_skip == 6
+
+
+def test_run_multigame_cli_accepts_bbf_sweep_flags():
+    args = parse_args(
+        [
+            "--games",
+            "pong",
+            "--agent",
+            "bbf",
+            "--bbf-learning-rate",
+            "0.0003",
+            "--bbf-encoder-learning-rate",
+            "0.0002",
+            "--bbf-spr-weight",
+            "7.5",
+            "--bbf-jumps",
+            "3",
+            "--bbf-target-update-tau",
+            "0.01",
+            "--bbf-update-horizon",
+            "5",
+            "--bbf-max-update-horizon",
+            "9",
+            "--bbf-min-gamma",
+            "0.98",
+            "--bbf-cycle-steps",
+            "20000",
+            "--bbf-shrink-factor",
+            "0.6",
+            "--bbf-perturb-factor",
+            "0.4",
+            "--bbf-shrink-perturb-keys",
+            "encoder",
+        ]
+    )
+    assert args.bbf_learning_rate == pytest.approx(3e-4)
+    assert args.bbf_encoder_learning_rate == pytest.approx(2e-4)
+    assert args.bbf_spr_weight == pytest.approx(7.5)
+    assert args.bbf_jumps == 3
+    assert args.bbf_target_update_tau == pytest.approx(0.01)
+    assert args.bbf_update_horizon == 5
+    assert args.bbf_max_update_horizon == 9
+    assert args.bbf_min_gamma == pytest.approx(0.98)
+    assert args.bbf_cycle_steps == 20000
+    assert args.bbf_shrink_factor == pytest.approx(0.6)
+    assert args.bbf_perturb_factor == pytest.approx(0.4)
+    assert args.bbf_shrink_perturb_keys == "encoder"
 
 
 def test_run_multigame_cli_accepts_bbf_native_reset_flags():
@@ -296,6 +486,16 @@ def test_run_multigame_config_parses_rainbow_dqn_agent_config(tmp_path):
         "agent_config": {
             "gpu": 3,
             "load_file": "/tmp/rainbow.model",
+            "learning_rate": 0.0003,
+            "train_start": 25000,
+            "batch_size": 64,
+            "buffer_size": 200000,
+            "target_update_freq": 4000,
+            "n_step": 5,
+            "gamma": 0.995,
+            "grad_clip": None,
+            "priority_alpha": 0.6,
+            "priority_beta": 0.7,
         },
     }
     with config_path.open("w", encoding="utf-8") as fh:
@@ -307,6 +507,16 @@ def test_run_multigame_config_parses_rainbow_dqn_agent_config(tmp_path):
     assert args.decision_interval == 1
     assert args.rainbow_dqn_gpu == 3
     assert args.rainbow_dqn_load_file == "/tmp/rainbow.model"
+    assert args.rainbow_dqn_learning_rate == pytest.approx(3e-4)
+    assert args.rainbow_dqn_train_start == 25000
+    assert args.rainbow_dqn_batch_size == 64
+    assert args.rainbow_dqn_buffer_size == 200000
+    assert args.rainbow_dqn_target_update_freq == 4000
+    assert args.rainbow_dqn_n_step == 5
+    assert args.rainbow_dqn_gamma == pytest.approx(0.995)
+    assert args.rainbow_dqn_grad_clip is None
+    assert args.rainbow_dqn_priority_alpha == pytest.approx(0.6)
+    assert args.rainbow_dqn_priority_beta == pytest.approx(0.7)
 
 
 def test_run_multigame_config_parses_sac_agent_config(tmp_path):
@@ -320,6 +530,16 @@ def test_run_multigame_config_parses_sac_agent_config(tmp_path):
             "gpu": 1,
             "load_file": "/tmp/sac.model",
             "eval_mode": 1,
+            "learning_rate": 0.0003,
+            "learning_starts": 5000,
+            "batch_size": 128,
+            "buffer_size": 200000,
+            "gradient_steps": 4,
+            "tau": 0.01,
+            "target_entropy_scale": 0.75,
+            "gamma": 0.995,
+            "train_freq": 2,
+            "frame_skip": 6,
         },
     }
     with config_path.open("w", encoding="utf-8") as fh:
@@ -332,6 +552,16 @@ def test_run_multigame_config_parses_sac_agent_config(tmp_path):
     assert args.sac_gpu == 1
     assert args.sac_load_file == "/tmp/sac.model"
     assert args.sac_eval_mode == 1
+    assert args.sac_learning_rate == pytest.approx(3e-4)
+    assert args.sac_learning_starts == 5000
+    assert args.sac_batch_size == 128
+    assert args.sac_buffer_size == 200000
+    assert args.sac_gradient_steps == 4
+    assert args.sac_tau == pytest.approx(0.01)
+    assert args.sac_target_entropy_scale == pytest.approx(0.75)
+    assert args.sac_gamma == pytest.approx(0.995)
+    assert args.sac_train_freq == 2
+    assert args.sac_frame_skip == 6
 
 
 def test_run_multigame_config_parses_bbf_agent_config(tmp_path):
@@ -347,6 +577,18 @@ def test_run_multigame_config_parses_bbf_agent_config(tmp_path):
             "buffer_size": 54321,
             "batch_size": 16,
             "replay_ratio": 8,
+            "learning_rate": 0.0003,
+            "encoder_learning_rate": 0.0002,
+            "spr_weight": 7.5,
+            "jumps": 3,
+            "target_update_tau": 0.01,
+            "update_horizon": 5,
+            "max_update_horizon": 9,
+            "min_gamma": 0.98,
+            "cycle_steps": 20000,
+            "shrink_factor": 0.6,
+            "perturb_factor": 0.4,
+            "shrink_perturb_keys": "encoder",
             "reset_interval": 2500,
             "no_resets_after": 9000,
             "use_per": 0,
@@ -368,6 +610,18 @@ def test_run_multigame_config_parses_bbf_agent_config(tmp_path):
     assert args.bbf_buffer_size == 54321
     assert args.bbf_batch_size == 16
     assert args.bbf_replay_ratio == 8
+    assert args.bbf_learning_rate == pytest.approx(3e-4)
+    assert args.bbf_encoder_learning_rate == pytest.approx(2e-4)
+    assert args.bbf_spr_weight == pytest.approx(7.5)
+    assert args.bbf_jumps == 3
+    assert args.bbf_target_update_tau == pytest.approx(0.01)
+    assert args.bbf_update_horizon == 5
+    assert args.bbf_max_update_horizon == 9
+    assert args.bbf_min_gamma == pytest.approx(0.98)
+    assert args.bbf_cycle_steps == 20000
+    assert args.bbf_shrink_factor == pytest.approx(0.6)
+    assert args.bbf_perturb_factor == pytest.approx(0.4)
+    assert args.bbf_shrink_perturb_keys == "encoder"
     assert args.bbf_reset_interval == 2500
     assert args.bbf_no_resets_after == 9000
     assert args.bbf_use_per == 0
@@ -586,6 +840,154 @@ def test_build_config_payload_records_bbf_runtime_fields():
     assert payload["bbf_runtime"]["effective_log_train_every"] == BBF_MULTIGAME_HEARTBEAT_TRAIN_INTERVAL
     assert payload["bbf_runtime"]["progress_heartbeat_active"] is True
     assert payload["bbf_runtime"]["progress_heartbeat_source"] == "bbf_fallback_train_interval"
+
+
+def test_build_config_payload_records_exposed_sweep_family_config_fields():
+    args = parse_args(
+        [
+            "--games",
+            "pong",
+            "--agent",
+            "sac",
+            "--runner-mode",
+            "carmack_compat",
+            "--decision-interval",
+            "1",
+            "--delay-target-base-width",
+            "112",
+            "--delay-target-temperature-log2",
+            "-4",
+            "--delay-target-greedy-ramp",
+            "150000",
+            "--delay-target-multisteps-max",
+            "32",
+            "--delay-target-td-lambda",
+            "0.85",
+            "--delay-target-train-batch",
+            "48",
+            "--delay-target-online-batch",
+            "6",
+            "--delay-target-online-loss-scale",
+            "1.75",
+            "--delay-target-train-steps",
+            "5",
+            "--rainbow-dqn-learning-rate",
+            "0.0003",
+            "--rainbow-dqn-train-start",
+            "25000",
+            "--rainbow-dqn-batch-size",
+            "64",
+            "--rainbow-dqn-buffer-size",
+            "200000",
+            "--rainbow-dqn-target-update-freq",
+            "4000",
+            "--rainbow-dqn-n-step",
+            "5",
+            "--rainbow-dqn-gamma",
+            "0.995",
+            "--rainbow-dqn-grad-clip",
+            "none",
+            "--rainbow-dqn-priority-alpha",
+            "0.6",
+            "--rainbow-dqn-priority-beta",
+            "0.7",
+            "--sac-learning-rate",
+            "0.0003",
+            "--sac-learning-starts",
+            "5000",
+            "--sac-batch-size",
+            "128",
+            "--sac-buffer-size",
+            "200000",
+            "--sac-gradient-steps",
+            "4",
+            "--sac-tau",
+            "0.01",
+            "--sac-target-entropy-scale",
+            "0.75",
+            "--sac-gamma",
+            "0.995",
+            "--sac-train-freq",
+            "2",
+            "--sac-frame-skip",
+            "6",
+            "--bbf-learning-rate",
+            "0.0003",
+            "--bbf-encoder-learning-rate",
+            "0.0002",
+            "--bbf-spr-weight",
+            "7.5",
+            "--bbf-jumps",
+            "3",
+            "--bbf-target-update-tau",
+            "0.01",
+            "--bbf-update-horizon",
+            "5",
+            "--bbf-max-update-horizon",
+            "9",
+            "--bbf-min-gamma",
+            "0.98",
+            "--bbf-cycle-steps",
+            "20000",
+            "--bbf-shrink-factor",
+            "0.6",
+            "--bbf-perturb-factor",
+            "0.4",
+            "--bbf-shrink-perturb-keys",
+            "encoder",
+        ]
+    )
+    schedule = Schedule(
+        ScheduleConfig(games=["pong"], base_visit_frames=2, num_cycles=1, seed=0, jitter_pct=0.0, min_visit_frames=1)
+    )
+    runner_config = CarmackMultiGameRunnerConfig(
+        decision_interval=1,
+        delay_frames=int(args.delay),
+        default_action_idx=int(args.default_action_idx),
+        episode_log_interval=0,
+        train_log_interval=0,
+        include_timestamps=bool(args.timestamps),
+        global_action_set=tuple(range(18)),
+        real_time_mode=bool(args.real_time_mode),
+        real_time_fps=float(args.real_time_fps),
+    )
+    payload = build_config_payload(
+        args=args,
+        games=["pong"],
+        run_dir=Path("runs/test"),
+        schedule=schedule,
+        runner_config=runner_config,
+        resolved_action_sets={"pong": [0, 1, 2]},
+        agent_config={"base_width": 112},
+        config_file_data={},
+    )
+    assert payload["delay_target_config"]["base_width"] == 112
+    assert payload["delay_target_config"]["temperature_log2"] == -4
+    assert payload["delay_target_config"]["greedy_ramp"] == 150000
+    assert payload["delay_target_config"]["multisteps_max"] == 32
+    assert payload["delay_target_config"]["td_lambda"] == pytest.approx(0.85)
+    assert payload["delay_target_config"]["train_batch"] == 48
+    assert payload["delay_target_config"]["online_batch"] == 6
+    assert payload["delay_target_config"]["online_loss_scale"] == pytest.approx(1.75)
+    assert payload["delay_target_config"]["train_steps"] == 5
+    assert payload["rainbow_dqn_config"]["learning_rate"] == pytest.approx(3e-4)
+    assert payload["rainbow_dqn_config"]["grad_clip"] is None
+    assert payload["rainbow_dqn_config"]["priority_beta"] == pytest.approx(0.7)
+    assert payload["sac_config"]["learning_rate"] == pytest.approx(3e-4)
+    assert payload["sac_config"]["target_entropy_scale"] == pytest.approx(0.75)
+    assert payload["sac_config"]["frame_skip"] == 6
+    assert payload["bbf_config"]["learning_rate"] == pytest.approx(3e-4)
+    assert payload["bbf_config"]["encoder_learning_rate"] == pytest.approx(2e-4)
+    assert payload["bbf_config"]["spr_weight"] == pytest.approx(7.5)
+    assert payload["bbf_config"]["jumps"] == 3
+    assert payload["bbf_config"]["target_update_tau"] == pytest.approx(0.01)
+    assert payload["bbf_config"]["update_horizon"] == 5
+    assert payload["bbf_config"]["max_update_horizon"] == 9
+    assert payload["bbf_config"]["min_gamma"] == pytest.approx(0.98)
+    assert payload["bbf_config"]["cycle_steps"] == 20000
+    assert payload["bbf_config"]["shrink_factor"] == pytest.approx(0.6)
+    assert payload["bbf_config"]["perturb_factor"] == pytest.approx(0.4)
+    assert payload["bbf_config"]["shrink_perturb_keys"] == "encoder"
 
 
 def test_validate_args_requires_positive_real_time_fps():

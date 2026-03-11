@@ -81,6 +81,4 @@ dqn_big_smoke.log
 sac_big_smoke.log
 rainbow_dqn_big_smoke.log
 rainbow_dqn_second_big_smoke.log
-bbf_sweep_plan.md
-delay_target_sweep_plan.md
-ppo_sweep_plan.md
+

@@ -16,17 +16,48 @@ def _sac_args() -> argparse.Namespace:
         sac_gpu=0,
         sac_load_file=None,
         sac_eval_mode=0,
+        sac_learning_rate=None,
+        sac_learning_starts=None,
+        sac_batch_size=None,
+        sac_buffer_size=None,
+        sac_gradient_steps=None,
+        sac_tau=None,
+        sac_target_entropy_scale=None,
+        sac_gamma=None,
+        sac_train_freq=None,
+        sac_frame_skip=None,
         logdir="./runs/v1",
     )
 
 
 @pytest.mark.skipif(not agents_sac._TORCH_AVAILABLE, reason="torch unavailable")
 def test_build_agent_sac_returns_agent_and_config():
-    agent, cfg = build_agent(_sac_args(), num_actions=6, total_frames=256)
+    args = _sac_args()
+    args.sac_learning_rate = 3e-4
+    args.sac_learning_starts = 5_000
+    args.sac_batch_size = 128
+    args.sac_buffer_size = 200_000
+    args.sac_gradient_steps = 4
+    args.sac_tau = 0.01
+    args.sac_target_entropy_scale = 0.75
+    args.sac_gamma = 0.995
+    args.sac_train_freq = 2
+    args.sac_frame_skip = 6
+
+    agent, cfg = build_agent(args, num_actions=6, total_frames=256)
     assert isinstance(agent, agents_sac.SACAgent)
     assert isinstance(cfg, dict)
     assert cfg["gpu"] == 0
-    assert cfg["frame_skip"] == 4
+    assert cfg["learning_rate"] == pytest.approx(3e-4)
+    assert cfg["learning_starts"] == 5_000
+    assert cfg["batch_size"] == 128
+    assert cfg["buffer_size"] == 200_000
+    assert cfg["gradient_steps"] == 4
+    assert cfg["tau"] == pytest.approx(0.01)
+    assert cfg["target_entropy_scale"] == pytest.approx(0.75)
+    assert cfg["gamma"] == pytest.approx(0.995)
+    assert cfg["train_freq"] == 2
+    assert cfg["frame_skip"] == 6
 
 
 @pytest.mark.skipif(not (agents_sac._TORCH_AVAILABLE and agents_sac._CV2_AVAILABLE), reason="torch/cv2 unavailable")

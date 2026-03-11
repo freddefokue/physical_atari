@@ -26,6 +26,57 @@ from benchmark.logging_utils import JsonlWriter, dump_json, make_run_dir
 from benchmark.runner import BenchmarkRunner, RunnerConfig
 
 RUNTIME_FINGERPRINT_SCHEMA_VERSION = "runtime_fingerprint_v1"
+RAINBOW_DQN_GRAD_CLIP_UNSET = object()
+
+RAINBOW_DQN_CONFIG_DEFAULTS: Dict[str, Any] = {
+    "learning_rate": 1e-4,
+    "train_start": 50_000,
+    "batch_size": 32,
+    "buffer_size": 100_000,
+    "target_update_freq": 2_000,
+    "n_step": 3,
+    "gamma": 0.99,
+    "grad_clip": 10.0,
+    "priority_alpha": 0.5,
+    "priority_beta": 0.4,
+}
+
+SAC_CONFIG_DEFAULTS: Dict[str, Any] = {
+    "learning_rate": 1e-4,
+    "learning_starts": 10_000,
+    "batch_size": 64,
+    "buffer_size": 100_000,
+    "gradient_steps": 1,
+    "tau": 0.005,
+    "target_entropy_scale": 0.5,
+    "gamma": 0.99,
+    "train_freq": 1,
+    "frame_skip": 4,
+}
+
+DELAY_TARGET_CONFIG_DEFAULTS: Dict[str, Any] = {
+    "base_width": 80,
+    "temperature_log2": -7,
+    "greedy_ramp": 100_000,
+    "multisteps_max": 64,
+    "td_lambda": 0.95,
+    "train_batch": 32,
+    "online_batch": 4,
+    "online_loss_scale": 2,
+    "train_steps": 4,
+}
+
+
+def _coerce_optional_float_value(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip().lower() in {"none", "null"}:
+        return None
+    return float(value)
+
+
+def _parse_optional_float_arg(value: str) -> Optional[float]:
+    return _coerce_optional_float_value(value)
 
 
 def _resolve_global_action_set() -> Sequence[int]:
@@ -277,6 +328,55 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional override for agent_delay_target base_lr_log2 (CNN backbone LR = 2**base_lr_log2).",
     )
+    parser.add_argument("--delay-target-base-width", type=int, default=None, help="Optional override for agent_delay_target base_width.")
+    parser.add_argument(
+        "--delay-target-temperature-log2",
+        type=int,
+        default=None,
+        help="Optional override for agent_delay_target temperature_log2.",
+    )
+    parser.add_argument(
+        "--delay-target-greedy-ramp",
+        type=int,
+        default=None,
+        help="Optional override for agent_delay_target greedy_ramp.",
+    )
+    parser.add_argument(
+        "--delay-target-multisteps-max",
+        type=int,
+        default=None,
+        help="Optional override for agent_delay_target multisteps_max.",
+    )
+    parser.add_argument(
+        "--delay-target-td-lambda",
+        type=float,
+        default=None,
+        help="Optional override for agent_delay_target td_lambda.",
+    )
+    parser.add_argument(
+        "--delay-target-train-batch",
+        type=int,
+        default=None,
+        help="Optional override for agent_delay_target train_batch.",
+    )
+    parser.add_argument(
+        "--delay-target-online-batch",
+        type=int,
+        default=None,
+        help="Optional override for agent_delay_target online_batch.",
+    )
+    parser.add_argument(
+        "--delay-target-online-loss-scale",
+        type=float,
+        default=None,
+        help="Optional override for agent_delay_target online_loss_scale.",
+    )
+    parser.add_argument(
+        "--delay-target-train-steps",
+        type=int,
+        default=None,
+        help="Optional override for agent_delay_target train_steps.",
+    )
     parser.add_argument("--roboatari-dqn-gpu", type=int, default=0, help="GPU index for RoboAtari DQN.")
     parser.add_argument(
         "--roboatari-dqn-load-file",
@@ -291,6 +391,36 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional model file path for RoboAtari Rainbow DQN.",
     )
+    parser.add_argument("--rainbow-dqn-learning-rate", type=float, default=None, help="Optional override for Rainbow DQN learning_rate.")
+    parser.add_argument("--rainbow-dqn-train-start", type=int, default=None, help="Optional override for Rainbow DQN train_start.")
+    parser.add_argument("--rainbow-dqn-batch-size", type=int, default=None, help="Optional override for Rainbow DQN batch_size.")
+    parser.add_argument("--rainbow-dqn-buffer-size", type=int, default=None, help="Optional override for Rainbow DQN buffer_size.")
+    parser.add_argument(
+        "--rainbow-dqn-target-update-freq",
+        type=int,
+        default=None,
+        help="Optional override for Rainbow DQN target_update_freq.",
+    )
+    parser.add_argument("--rainbow-dqn-n-step", type=int, default=None, help="Optional override for Rainbow DQN n_step.")
+    parser.add_argument("--rainbow-dqn-gamma", type=float, default=None, help="Optional override for Rainbow DQN gamma.")
+    parser.add_argument(
+        "--rainbow-dqn-grad-clip",
+        type=_parse_optional_float_arg,
+        default=RAINBOW_DQN_GRAD_CLIP_UNSET,
+        help="Optional override for Rainbow DQN grad_clip (use 'none' to disable).",
+    )
+    parser.add_argument(
+        "--rainbow-dqn-priority-alpha",
+        type=float,
+        default=None,
+        help="Optional override for Rainbow DQN priority_alpha.",
+    )
+    parser.add_argument(
+        "--rainbow-dqn-priority-beta",
+        type=float,
+        default=None,
+        help="Optional override for Rainbow DQN priority_beta.",
+    )
     parser.add_argument("--sac-gpu", type=int, default=0, help="GPU index for RoboAtari SAC.")
     parser.add_argument("--sac-load-file", type=str, default=None, help="Optional model file path for RoboAtari SAC.")
     parser.add_argument(
@@ -300,6 +430,21 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Run RoboAtari SAC with training disabled (1=yes, 0=no).",
     )
+    parser.add_argument("--sac-learning-rate", type=float, default=None, help="Optional override for SAC learning_rate.")
+    parser.add_argument("--sac-learning-starts", type=int, default=None, help="Optional override for SAC learning_starts.")
+    parser.add_argument("--sac-batch-size", type=int, default=None, help="Optional override for SAC batch_size.")
+    parser.add_argument("--sac-buffer-size", type=int, default=None, help="Optional override for SAC buffer_size.")
+    parser.add_argument("--sac-gradient-steps", type=int, default=None, help="Optional override for SAC gradient_steps.")
+    parser.add_argument("--sac-tau", type=float, default=None, help="Optional override for SAC tau.")
+    parser.add_argument(
+        "--sac-target-entropy-scale",
+        type=float,
+        default=None,
+        help="Optional override for SAC target_entropy_scale.",
+    )
+    parser.add_argument("--sac-gamma", type=float, default=None, help="Optional override for SAC gamma.")
+    parser.add_argument("--sac-train-freq", type=int, default=None, help="Optional override for SAC train_freq.")
+    parser.add_argument("--sac-frame-skip", type=int, default=None, help="Optional override for SAC frame_skip.")
     parser.add_argument("--dqn-gamma", type=float, default=0.99, help="TinyDQN discount factor.")
     parser.add_argument("--dqn-lr", type=float, default=1e-4, help="TinyDQN Adam learning rate.")
     parser.add_argument("--dqn-buffer-size", type=int, default=10000, help="TinyDQN replay buffer size.")
@@ -408,6 +553,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bbf-buffer-size", type=int, default=200000, help="BBF replay buffer size.")
     parser.add_argument("--bbf-batch-size", type=int, default=32, help="BBF batch size.")
     parser.add_argument("--bbf-replay-ratio", type=int, default=64, help="BBF replay ratio.")
+    parser.add_argument("--bbf-learning-rate", type=float, default=1e-4, help="BBF optimizer learning rate.")
+    parser.add_argument(
+        "--bbf-encoder-learning-rate",
+        type=float,
+        default=1e-4,
+        help="BBF encoder optimizer learning rate.",
+    )
+    parser.add_argument("--bbf-spr-weight", type=float, default=5.0, help="BBF SPR loss weight.")
+    parser.add_argument("--bbf-jumps", type=int, default=5, help="BBF SPR prediction jumps.")
+    parser.add_argument("--bbf-target-update-tau", type=float, default=0.005, help="BBF target update tau.")
+    parser.add_argument("--bbf-update-horizon", type=int, default=3, help="BBF update horizon.")
+    parser.add_argument("--bbf-max-update-horizon", type=int, default=10, help="BBF max update horizon.")
+    parser.add_argument("--bbf-min-gamma", type=float, default=0.97, help="BBF minimum scheduled gamma.")
+    parser.add_argument("--bbf-cycle-steps", type=int, default=10_000, help="BBF cycle_steps for schedule annealing.")
+    parser.add_argument("--bbf-shrink-factor", type=float, default=0.5, help="BBF shrink factor for reset perturbation.")
+    parser.add_argument("--bbf-perturb-factor", type=float, default=0.5, help="BBF perturb factor for reset perturbation.")
+    parser.add_argument(
+        "--bbf-shrink-perturb-keys",
+        type=str,
+        default="encoder,transition_model",
+        help="Comma-separated BBF parameter prefixes for shrink+perturb resets.",
+    )
     parser.add_argument(
         "--bbf-reset-interval",
         type=int,
@@ -657,6 +824,24 @@ def build_agent(args: argparse.Namespace, num_actions: int, total_frames: int):
             kwargs["lr_log2"] = int(args.delay_target_lr_log2)
         if args.delay_target_base_lr_log2 is not None:
             kwargs["base_lr_log2"] = int(args.delay_target_base_lr_log2)
+        if getattr(args, "delay_target_base_width", None) is not None:
+            kwargs["base_width"] = int(args.delay_target_base_width)
+        if getattr(args, "delay_target_temperature_log2", None) is not None:
+            kwargs["temperature_log2"] = int(args.delay_target_temperature_log2)
+        if getattr(args, "delay_target_greedy_ramp", None) is not None:
+            kwargs["greedy_ramp"] = int(args.delay_target_greedy_ramp)
+        if getattr(args, "delay_target_multisteps_max", None) is not None:
+            kwargs["multisteps_max"] = int(args.delay_target_multisteps_max)
+        if getattr(args, "delay_target_td_lambda", None) is not None:
+            kwargs["td_lambda"] = float(args.delay_target_td_lambda)
+        if getattr(args, "delay_target_train_batch", None) is not None:
+            kwargs["train_batch"] = int(args.delay_target_train_batch)
+        if getattr(args, "delay_target_online_batch", None) is not None:
+            kwargs["online_batch"] = int(args.delay_target_online_batch)
+        if getattr(args, "delay_target_online_loss_scale", None) is not None:
+            kwargs["online_loss_scale"] = float(args.delay_target_online_loss_scale)
+        if getattr(args, "delay_target_train_steps", None) is not None:
+            kwargs["train_steps"] = int(args.delay_target_train_steps)
         base = DelayTargetAdapter(
             data_dir=str(Path(args.logdir)),
             seed=int(args.seed),
@@ -681,10 +866,32 @@ def build_agent(args: argparse.Namespace, num_actions: int, total_frames: int):
     elif args.agent == "rainbow_dqn":
         from benchmark.agents_rainbow_dqn import RainbowDQNAgent, RainbowDQNConfig  # pylint: disable=import-outside-toplevel
 
-        rainbow_config = RainbowDQNConfig(
-            gpu=int(args.rainbow_dqn_gpu),
-            load_file=None if not args.rainbow_dqn_load_file else str(args.rainbow_dqn_load_file),
-        )
+        rainbow_kwargs: Dict[str, Any] = {
+            "gpu": int(args.rainbow_dqn_gpu),
+            "load_file": None if not args.rainbow_dqn_load_file else str(args.rainbow_dqn_load_file),
+        }
+        if getattr(args, "rainbow_dqn_learning_rate", None) is not None:
+            rainbow_kwargs["learning_rate"] = float(args.rainbow_dqn_learning_rate)
+        if getattr(args, "rainbow_dqn_train_start", None) is not None:
+            rainbow_kwargs["train_start"] = int(args.rainbow_dqn_train_start)
+        if getattr(args, "rainbow_dqn_batch_size", None) is not None:
+            rainbow_kwargs["batch_size"] = int(args.rainbow_dqn_batch_size)
+        if getattr(args, "rainbow_dqn_buffer_size", None) is not None:
+            rainbow_kwargs["buffer_size"] = int(args.rainbow_dqn_buffer_size)
+        if getattr(args, "rainbow_dqn_target_update_freq", None) is not None:
+            rainbow_kwargs["target_update_freq"] = int(args.rainbow_dqn_target_update_freq)
+        if getattr(args, "rainbow_dqn_n_step", None) is not None:
+            rainbow_kwargs["n_step"] = int(args.rainbow_dqn_n_step)
+        if getattr(args, "rainbow_dqn_gamma", None) is not None:
+            rainbow_kwargs["gamma"] = float(args.rainbow_dqn_gamma)
+        grad_clip = getattr(args, "rainbow_dqn_grad_clip", RAINBOW_DQN_GRAD_CLIP_UNSET)
+        if grad_clip is not RAINBOW_DQN_GRAD_CLIP_UNSET:
+            rainbow_kwargs["grad_clip"] = None if grad_clip is None else float(grad_clip)
+        if getattr(args, "rainbow_dqn_priority_alpha", None) is not None:
+            rainbow_kwargs["priority_alpha"] = float(args.rainbow_dqn_priority_alpha)
+        if getattr(args, "rainbow_dqn_priority_beta", None) is not None:
+            rainbow_kwargs["priority_beta"] = float(args.rainbow_dqn_priority_beta)
+        rainbow_config = RainbowDQNConfig(**rainbow_kwargs)
         base = RainbowDQNAgent(
             data_dir=str(Path(args.logdir)),
             seed=int(args.seed),
@@ -695,11 +902,32 @@ def build_agent(args: argparse.Namespace, num_actions: int, total_frames: int):
     elif args.agent == "sac":
         from benchmark.agents_sac import SACAgent, SACAgentConfig  # pylint: disable=import-outside-toplevel
 
-        sac_config = SACAgentConfig(
-            gpu=int(args.sac_gpu),
-            eval_mode=bool(int(args.sac_eval_mode)),
-            load_file=None if not args.sac_load_file else str(args.sac_load_file),
-        )
+        sac_kwargs: Dict[str, Any] = {
+            "gpu": int(args.sac_gpu),
+            "eval_mode": bool(int(args.sac_eval_mode)),
+            "load_file": None if not args.sac_load_file else str(args.sac_load_file),
+        }
+        if getattr(args, "sac_learning_rate", None) is not None:
+            sac_kwargs["learning_rate"] = float(args.sac_learning_rate)
+        if getattr(args, "sac_learning_starts", None) is not None:
+            sac_kwargs["learning_starts"] = int(args.sac_learning_starts)
+        if getattr(args, "sac_batch_size", None) is not None:
+            sac_kwargs["batch_size"] = int(args.sac_batch_size)
+        if getattr(args, "sac_buffer_size", None) is not None:
+            sac_kwargs["buffer_size"] = int(args.sac_buffer_size)
+        if getattr(args, "sac_gradient_steps", None) is not None:
+            sac_kwargs["gradient_steps"] = int(args.sac_gradient_steps)
+        if getattr(args, "sac_tau", None) is not None:
+            sac_kwargs["tau"] = float(args.sac_tau)
+        if getattr(args, "sac_target_entropy_scale", None) is not None:
+            sac_kwargs["target_entropy_scale"] = float(args.sac_target_entropy_scale)
+        if getattr(args, "sac_gamma", None) is not None:
+            sac_kwargs["gamma"] = float(args.sac_gamma)
+        if getattr(args, "sac_train_freq", None) is not None:
+            sac_kwargs["train_freq"] = int(args.sac_train_freq)
+        if getattr(args, "sac_frame_skip", None) is not None:
+            sac_kwargs["frame_skip"] = int(args.sac_frame_skip)
+        sac_config = SACAgentConfig(**sac_kwargs)
         base = SACAgent(
             data_dir=str(Path(args.logdir)),
             seed=int(args.seed),
@@ -751,6 +979,18 @@ def build_agent(args: argparse.Namespace, num_actions: int, total_frames: int):
             buffer_size=int(args.bbf_buffer_size),
             batch_size=int(args.bbf_batch_size),
             replay_ratio=int(args.bbf_replay_ratio),
+            learning_rate=float(getattr(args, "bbf_learning_rate", 1e-4)),
+            encoder_learning_rate=float(getattr(args, "bbf_encoder_learning_rate", 1e-4)),
+            spr_weight=float(getattr(args, "bbf_spr_weight", 5.0)),
+            jumps=int(getattr(args, "bbf_jumps", 5)),
+            target_update_tau=float(getattr(args, "bbf_target_update_tau", 0.005)),
+            update_horizon=int(getattr(args, "bbf_update_horizon", 3)),
+            max_update_horizon=int(getattr(args, "bbf_max_update_horizon", 10)),
+            min_gamma=float(getattr(args, "bbf_min_gamma", 0.97)),
+            cycle_steps=int(getattr(args, "bbf_cycle_steps", 10_000)),
+            shrink_factor=float(getattr(args, "bbf_shrink_factor", 0.5)),
+            perturb_factor=float(getattr(args, "bbf_perturb_factor", 0.5)),
+            shrink_perturb_keys=str(getattr(args, "bbf_shrink_perturb_keys", "encoder,transition_model")),
             reset_interval=int(args.bbf_reset_interval),
             no_resets_after=int(args.bbf_no_resets_after),
             use_per=bool(int(args.bbf_use_per)),
@@ -848,6 +1088,67 @@ def build_config_payload(
         "delay_target_ring_buffer_size": (
             None if args.delay_target_ring_buffer_size is None else int(args.delay_target_ring_buffer_size)
         ),
+        "delay_target_config": {
+            "gpu": int(getattr(args, "delay_target_gpu", 0)),
+            "use_cuda_graphs": bool(int(getattr(args, "delay_target_use_cuda_graphs", 1))),
+            "load_file": getattr(args, "delay_target_load_file", None),
+            "ring_buffer_size": (
+                int(args.delay_target_ring_buffer_size)
+                if getattr(args, "delay_target_ring_buffer_size", None) is not None
+                else None
+            ),
+            "lr_log2": int(args.delay_target_lr_log2) if getattr(args, "delay_target_lr_log2", None) is not None else None,
+            "base_lr_log2": (
+                int(args.delay_target_base_lr_log2)
+                if getattr(args, "delay_target_base_lr_log2", None) is not None
+                else None
+            ),
+            "base_width": (
+                int(args.delay_target_base_width)
+                if getattr(args, "delay_target_base_width", None) is not None
+                else int(DELAY_TARGET_CONFIG_DEFAULTS["base_width"])
+            ),
+            "temperature_log2": (
+                int(args.delay_target_temperature_log2)
+                if getattr(args, "delay_target_temperature_log2", None) is not None
+                else int(DELAY_TARGET_CONFIG_DEFAULTS["temperature_log2"])
+            ),
+            "greedy_ramp": (
+                int(args.delay_target_greedy_ramp)
+                if getattr(args, "delay_target_greedy_ramp", None) is not None
+                else int(DELAY_TARGET_CONFIG_DEFAULTS["greedy_ramp"])
+            ),
+            "multisteps_max": (
+                int(args.delay_target_multisteps_max)
+                if getattr(args, "delay_target_multisteps_max", None) is not None
+                else int(DELAY_TARGET_CONFIG_DEFAULTS["multisteps_max"])
+            ),
+            "td_lambda": (
+                float(args.delay_target_td_lambda)
+                if getattr(args, "delay_target_td_lambda", None) is not None
+                else float(DELAY_TARGET_CONFIG_DEFAULTS["td_lambda"])
+            ),
+            "train_batch": (
+                int(args.delay_target_train_batch)
+                if getattr(args, "delay_target_train_batch", None) is not None
+                else int(DELAY_TARGET_CONFIG_DEFAULTS["train_batch"])
+            ),
+            "online_batch": (
+                int(args.delay_target_online_batch)
+                if getattr(args, "delay_target_online_batch", None) is not None
+                else int(DELAY_TARGET_CONFIG_DEFAULTS["online_batch"])
+            ),
+            "online_loss_scale": (
+                float(args.delay_target_online_loss_scale)
+                if getattr(args, "delay_target_online_loss_scale", None) is not None
+                else float(DELAY_TARGET_CONFIG_DEFAULTS["online_loss_scale"])
+            ),
+            "train_steps": (
+                int(args.delay_target_train_steps)
+                if getattr(args, "delay_target_train_steps", None) is not None
+                else int(DELAY_TARGET_CONFIG_DEFAULTS["train_steps"])
+            ),
+        },
         "roboatari_dqn_config": {
             "gpu": int(getattr(args, "roboatari_dqn_gpu", 0)),
             "load_file": getattr(args, "roboatari_dqn_load_file", None),
@@ -855,11 +1156,111 @@ def build_config_payload(
         "rainbow_dqn_config": {
             "gpu": int(getattr(args, "rainbow_dqn_gpu", 0)),
             "load_file": getattr(args, "rainbow_dqn_load_file", None),
+            "learning_rate": (
+                float(args.rainbow_dqn_learning_rate)
+                if getattr(args, "rainbow_dqn_learning_rate", None) is not None
+                else float(RAINBOW_DQN_CONFIG_DEFAULTS["learning_rate"])
+            ),
+            "train_start": (
+                int(args.rainbow_dqn_train_start)
+                if getattr(args, "rainbow_dqn_train_start", None) is not None
+                else int(RAINBOW_DQN_CONFIG_DEFAULTS["train_start"])
+            ),
+            "batch_size": (
+                int(args.rainbow_dqn_batch_size)
+                if getattr(args, "rainbow_dqn_batch_size", None) is not None
+                else int(RAINBOW_DQN_CONFIG_DEFAULTS["batch_size"])
+            ),
+            "buffer_size": (
+                int(args.rainbow_dqn_buffer_size)
+                if getattr(args, "rainbow_dqn_buffer_size", None) is not None
+                else int(RAINBOW_DQN_CONFIG_DEFAULTS["buffer_size"])
+            ),
+            "target_update_freq": (
+                int(args.rainbow_dqn_target_update_freq)
+                if getattr(args, "rainbow_dqn_target_update_freq", None) is not None
+                else int(RAINBOW_DQN_CONFIG_DEFAULTS["target_update_freq"])
+            ),
+            "n_step": (
+                int(args.rainbow_dqn_n_step)
+                if getattr(args, "rainbow_dqn_n_step", None) is not None
+                else int(RAINBOW_DQN_CONFIG_DEFAULTS["n_step"])
+            ),
+            "gamma": (
+                float(args.rainbow_dqn_gamma)
+                if getattr(args, "rainbow_dqn_gamma", None) is not None
+                else float(RAINBOW_DQN_CONFIG_DEFAULTS["gamma"])
+            ),
+            "grad_clip": (
+                getattr(args, "rainbow_dqn_grad_clip")
+                if getattr(args, "rainbow_dqn_grad_clip", RAINBOW_DQN_GRAD_CLIP_UNSET) is not RAINBOW_DQN_GRAD_CLIP_UNSET
+                else RAINBOW_DQN_CONFIG_DEFAULTS["grad_clip"]
+            ),
+            "priority_alpha": (
+                float(args.rainbow_dqn_priority_alpha)
+                if getattr(args, "rainbow_dqn_priority_alpha", None) is not None
+                else float(RAINBOW_DQN_CONFIG_DEFAULTS["priority_alpha"])
+            ),
+            "priority_beta": (
+                float(args.rainbow_dqn_priority_beta)
+                if getattr(args, "rainbow_dqn_priority_beta", None) is not None
+                else float(RAINBOW_DQN_CONFIG_DEFAULTS["priority_beta"])
+            ),
         },
         "sac_config": {
             "gpu": int(getattr(args, "sac_gpu", 0)),
             "load_file": getattr(args, "sac_load_file", None),
             "eval_mode": bool(int(getattr(args, "sac_eval_mode", 0))),
+            "learning_rate": (
+                float(args.sac_learning_rate)
+                if getattr(args, "sac_learning_rate", None) is not None
+                else float(SAC_CONFIG_DEFAULTS["learning_rate"])
+            ),
+            "learning_starts": (
+                int(args.sac_learning_starts)
+                if getattr(args, "sac_learning_starts", None) is not None
+                else int(SAC_CONFIG_DEFAULTS["learning_starts"])
+            ),
+            "batch_size": (
+                int(args.sac_batch_size)
+                if getattr(args, "sac_batch_size", None) is not None
+                else int(SAC_CONFIG_DEFAULTS["batch_size"])
+            ),
+            "buffer_size": (
+                int(args.sac_buffer_size)
+                if getattr(args, "sac_buffer_size", None) is not None
+                else int(SAC_CONFIG_DEFAULTS["buffer_size"])
+            ),
+            "gradient_steps": (
+                int(args.sac_gradient_steps)
+                if getattr(args, "sac_gradient_steps", None) is not None
+                else int(SAC_CONFIG_DEFAULTS["gradient_steps"])
+            ),
+            "tau": (
+                float(args.sac_tau)
+                if getattr(args, "sac_tau", None) is not None
+                else float(SAC_CONFIG_DEFAULTS["tau"])
+            ),
+            "target_entropy_scale": (
+                float(args.sac_target_entropy_scale)
+                if getattr(args, "sac_target_entropy_scale", None) is not None
+                else float(SAC_CONFIG_DEFAULTS["target_entropy_scale"])
+            ),
+            "gamma": (
+                float(args.sac_gamma)
+                if getattr(args, "sac_gamma", None) is not None
+                else float(SAC_CONFIG_DEFAULTS["gamma"])
+            ),
+            "train_freq": (
+                int(args.sac_train_freq)
+                if getattr(args, "sac_train_freq", None) is not None
+                else int(SAC_CONFIG_DEFAULTS["train_freq"])
+            ),
+            "frame_skip": (
+                int(args.sac_frame_skip)
+                if getattr(args, "sac_frame_skip", None) is not None
+                else int(SAC_CONFIG_DEFAULTS["frame_skip"])
+            ),
         },
         "dqn_config": {
             "gamma": float(args.dqn_gamma),
@@ -903,6 +1304,18 @@ def build_config_payload(
             "buffer_size": int(getattr(args, "bbf_buffer_size", 200000)),
             "batch_size": int(getattr(args, "bbf_batch_size", 32)),
             "replay_ratio": int(getattr(args, "bbf_replay_ratio", 64)),
+            "learning_rate": float(getattr(args, "bbf_learning_rate", 1e-4)),
+            "encoder_learning_rate": float(getattr(args, "bbf_encoder_learning_rate", 1e-4)),
+            "spr_weight": float(getattr(args, "bbf_spr_weight", 5.0)),
+            "jumps": int(getattr(args, "bbf_jumps", 5)),
+            "target_update_tau": float(getattr(args, "bbf_target_update_tau", 0.005)),
+            "update_horizon": int(getattr(args, "bbf_update_horizon", 3)),
+            "max_update_horizon": int(getattr(args, "bbf_max_update_horizon", 10)),
+            "min_gamma": float(getattr(args, "bbf_min_gamma", 0.97)),
+            "cycle_steps": int(getattr(args, "bbf_cycle_steps", 10_000)),
+            "shrink_factor": float(getattr(args, "bbf_shrink_factor", 0.5)),
+            "perturb_factor": float(getattr(args, "bbf_perturb_factor", 0.5)),
+            "shrink_perturb_keys": str(getattr(args, "bbf_shrink_perturb_keys", "encoder,transition_model")),
             "reset_interval": int(getattr(args, "bbf_reset_interval", 20000)),
             "no_resets_after": int(getattr(args, "bbf_no_resets_after", 100000)),
             "use_per": bool(int(getattr(args, "bbf_use_per", 1))),

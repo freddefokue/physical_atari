@@ -36,6 +36,18 @@ class BBFAdapterConfig:
     buffer_size: int = 200_000
     batch_size: int = 32
     replay_ratio: int = 64
+    learning_rate: float = 1e-4
+    encoder_learning_rate: float = 1e-4
+    spr_weight: float = 5.0
+    jumps: int = 5
+    target_update_tau: float = 0.005
+    update_horizon: int = 3
+    max_update_horizon: int = 10
+    min_gamma: float = 0.97
+    cycle_steps: int = 10_000
+    shrink_factor: float = 0.5
+    perturb_factor: float = 0.5
+    shrink_perturb_keys: str = "encoder,transition_model"
     reset_interval: int = 20_000
     no_resets_after: int = 100_000
     use_per: bool = True
@@ -52,6 +64,20 @@ class BBFAdapterConfig:
             raise ValueError("bbf_batch_size must be > 0")
         if self.replay_ratio < 0:
             raise ValueError("bbf_replay_ratio must be >= 0")
+        if self.learning_rate <= 0.0:
+            raise ValueError("bbf_learning_rate must be > 0")
+        if self.encoder_learning_rate <= 0.0:
+            raise ValueError("bbf_encoder_learning_rate must be > 0")
+        if self.jumps < 0:
+            raise ValueError("bbf_jumps must be >= 0")
+        if self.target_update_tau <= 0.0:
+            raise ValueError("bbf_target_update_tau must be > 0")
+        if self.update_horizon <= 0:
+            raise ValueError("bbf_update_horizon must be > 0")
+        if self.max_update_horizon <= 0:
+            raise ValueError("bbf_max_update_horizon must be > 0")
+        if self.cycle_steps < 0:
+            raise ValueError("bbf_cycle_steps must be >= 0")
         if self.reset_interval < 0:
             raise ValueError("bbf_reset_interval must be >= 0")
         if self.no_resets_after < 0:
@@ -114,6 +140,19 @@ class BBFAgentAdapter:
             buffer_size=int(self._config.buffer_size),
             batch_size=int(self._config.batch_size),
             replay_ratio=int(self._config.replay_ratio),
+            learning_rate=float(self._config.learning_rate),
+            encoder_learning_rate=float(self._config.encoder_learning_rate),
+            spr_weight=float(self._config.spr_weight),
+            jumps=int(self._config.jumps),
+            target_update_tau=float(self._config.target_update_tau),
+            tau=float(self._config.target_update_tau),
+            update_horizon=int(self._config.update_horizon),
+            max_update_horizon=int(self._config.max_update_horizon),
+            min_gamma=float(self._config.min_gamma),
+            cycle_steps=int(self._config.cycle_steps),
+            shrink_factor=float(self._config.shrink_factor),
+            perturb_factor=float(self._config.perturb_factor),
+            shrink_perturb_keys=str(self._config.shrink_perturb_keys),
             reset_interval=int(self._config.reset_interval),
             no_resets_after=int(self._config.no_resets_after),
             use_per=bool(self._config.use_per),
