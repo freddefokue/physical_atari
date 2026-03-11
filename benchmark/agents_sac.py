@@ -11,6 +11,16 @@ from typing import Any, Deque, Dict, Mapping, Optional, Tuple
 import numpy as np
 
 try:  # pragma: no cover - exercised via dependency-missing tests
+    import cv2
+
+    _CV2_AVAILABLE = True
+    _CV2_IMPORT_ERROR: Optional[Exception] = None
+except Exception as exc:  # pragma: no cover - optional dependency path
+    cv2 = None  # type: ignore[assignment]
+    _CV2_AVAILABLE = False
+    _CV2_IMPORT_ERROR = exc
+
+try:  # pragma: no cover - exercised via dependency-missing tests
     import torch
     import torch.nn.functional as F
     from torch import nn
@@ -164,6 +174,10 @@ class SACAgent:
         config: Optional[SACAgentConfig] = None,
     ) -> None:
         del data_dir, total_frames
+        if not _CV2_AVAILABLE:
+            raise ImportError(
+                "agent=sac requires cv2. Install opencv-python or opencv-python-headless."
+            ) from _CV2_IMPORT_ERROR
         if not _TORCH_AVAILABLE:
             raise ImportError(
                 "agent=sac requires torch. Install torch (CPU/CUDA build) or use --agent random/--agent repeat."
@@ -219,9 +233,6 @@ class SACAgent:
             seed=self.seed,
         )
 
-        self._resize_rows: Optional[np.ndarray] = None
-        self._resize_cols: Optional[np.ndarray] = None
-        self._source_hw: Optional[Tuple[int, int]] = None
         self._frame_buffer: Deque[np.ndarray] = deque(maxlen=int(self.config.n_stack))
         self._accumulated_reward = 0.0
         self._last_obs: Optional[np.ndarray] = None
@@ -276,17 +287,12 @@ class SACAgent:
             obs = obs.astype(np.uint8)
         if obs.ndim != 3 or obs.shape[-1] < 3:
             raise ValueError(f"expected RGB observation, got shape {obs.shape}")
-
-        height, width = int(obs.shape[0]), int(obs.shape[1])
-        source_hw = (height, width)
-        if self._source_hw != source_hw or self._resize_rows is None or self._resize_cols is None:
-            self._source_hw = source_hw
-            self._resize_rows = np.linspace(0, height - 1, int(self.config.obs_height), dtype=np.int32)
-            self._resize_cols = np.linspace(0, width - 1, int(self.config.obs_width), dtype=np.int32)
-
-        sampled = obs[self._resize_rows][:, self._resize_cols]
-        gray = sampled.astype(np.uint16).sum(axis=2) // 3
-        return np.asarray(gray, dtype=np.uint8)
+        # Match the original RoboAtari SAC wrapper exactly: it applies OpenCV's
+        # BGR-to-grayscale conversion despite the observation variable being named
+        # `*_rgb`, so we preserve that channel-order assumption for checkpoint parity.
+        gray = cv2.cvtColor(obs, cv2.COLOR_BGR2GRAY)
+        resized = cv2.resize(gray, (int(self.config.obs_width), int(self.config.obs_height)), interpolation=cv2.INTER_AREA)
+        return np.asarray(resized, dtype=np.uint8)
 
     def _append_frame(self, frame_u8: np.ndarray) -> None:
         self._frame_buffer.append(np.asarray(frame_u8, dtype=np.uint8).copy())

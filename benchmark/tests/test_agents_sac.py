@@ -29,6 +29,41 @@ def test_build_agent_sac_returns_agent_and_config():
     assert cfg["frame_skip"] == 4
 
 
+@pytest.mark.skipif(not (agents_sac._TORCH_AVAILABLE and agents_sac._CV2_AVAILABLE), reason="torch/cv2 unavailable")
+def test_sac_preprocess_obs_matches_original_opencv_wrapper():
+    agent = agents_sac.SACAgent(
+        data_dir="./runs",
+        seed=0,
+        num_actions=4,
+        total_frames=128,
+        config=agents_sac.SACAgentConfig(frame_skip=1, n_stack=1, learning_starts=9999, batch_size=4),
+    )
+
+    rows = np.arange(210, dtype=np.uint16)[:, None]
+    cols = np.arange(160, dtype=np.uint16)[None, :]
+    obs = np.empty((210, 160, 3), dtype=np.uint8)
+    obs[..., 0] = (rows * 3 + cols * 5) % 256
+    obs[..., 1] = (rows * 7 + cols * 11 + 17) % 256
+    obs[..., 2] = (rows * 13 + cols * 2 + 29) % 256
+
+    expected = agents_sac.cv2.cvtColor(obs, agents_sac.cv2.COLOR_BGR2GRAY)
+    expected = agents_sac.cv2.resize(
+        expected,
+        (agent.config.obs_width, agent.config.obs_height),
+        interpolation=agents_sac.cv2.INTER_AREA,
+    )
+
+    legacy_rows = np.linspace(0, obs.shape[0] - 1, agent.config.obs_height, dtype=np.int32)
+    legacy_cols = np.linspace(0, obs.shape[1] - 1, agent.config.obs_width, dtype=np.int32)
+    legacy = obs[legacy_rows][:, legacy_cols].astype(np.uint16).sum(axis=2) // 3
+    legacy = np.asarray(legacy, dtype=np.uint8)
+
+    processed = agent._preprocess_obs(obs)  # pylint: disable=protected-access
+
+    assert np.array_equal(processed, expected)
+    assert not np.array_equal(processed, legacy)
+
+
 @pytest.mark.skipif(not agents_sac._TORCH_AVAILABLE, reason="torch unavailable")
 def test_sac_uses_transition_obs_for_replay_and_reset_obs_for_next_action():
     agent = agents_sac.SACAgent(
@@ -178,6 +213,19 @@ def test_sac_class_raises_clear_error_when_torch_forced_missing(monkeypatch):
     monkeypatch.setattr(agents_sac, "_TORCH_AVAILABLE", False)
     monkeypatch.setattr(agents_sac, "_TORCH_IMPORT_ERROR", ImportError("forced missing torch"))
     with pytest.raises(ImportError, match="agent=sac requires torch"):
+        agents_sac.SACAgent(
+            data_dir="./runs",
+            seed=0,
+            num_actions=4,
+            total_frames=128,
+            config=agents_sac.SACAgentConfig(),
+        )
+
+
+def test_sac_class_raises_clear_error_when_cv2_forced_missing(monkeypatch):
+    monkeypatch.setattr(agents_sac, "_CV2_AVAILABLE", False)
+    monkeypatch.setattr(agents_sac, "_CV2_IMPORT_ERROR", ImportError("forced missing cv2"))
+    with pytest.raises(ImportError, match="agent=sac requires cv2"):
         agents_sac.SACAgent(
             data_dir="./runs",
             seed=0,
