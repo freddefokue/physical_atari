@@ -1,0 +1,17 @@
+{
+  "family": "delay_target",
+  "agent": "delay_target",
+  "benchmark_config": {
+    "agent": "delay_target",
+    "base_visit_frames": 200000,
+    "delay_target_base_width": 80,
+    "delay_target_temperature_log2": -7,
+    "delay_target_greedy_ramp": 100000,
+    "delay_target_multisteps_max": 64,
+    "delay_target_td_lambda": 0.95,
+    "delay_target_train_batch": 32,
+    "delay_target_online_batch": 4,
+    "delay_target_online_loss_scale": 2,
+    "delay_target_train_steps": 4
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "family": "sac",
+  "agent": "sac",
+  "benchmark_config": {
+    "agent": "sac",
+    "base_visit_frames": 150000,
+    "sac_gamma": 0.99,
+    "sac_train_freq": 1,
+    "sac_frame_skip": 4,
+    "sac_eval_mode": 0
+  }
+}

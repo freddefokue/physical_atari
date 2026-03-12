@@ -1,0 +1,18 @@
+{
+  "family": "bbf",
+  "agent": "bbf",
+  "benchmark_config": {
+    "agent": "bbf",
+    "base_visit_frames": 100000,
+    "bbf_jumps": 5,
+    "bbf_target_update_tau": 0.005,
+    "bbf_update_horizon": 3,
+    "bbf_max_update_horizon": 10,
+    "bbf_min_gamma": 0.97,
+    "bbf_cycle_steps": 10000,
+    "bbf_shrink_factor": 0.5,
+    "bbf_perturb_factor": 0.5,
+    "bbf_shrink_perturb_keys": "encoder,transition_model",
+    "bbf_use_per": 1
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "family": "rainbow_dqn",
+  "agent": "rainbow_dqn",
+  "benchmark_config": {
+    "agent": "rainbow_dqn",
+    "base_visit_frames": 150000,
+    "rainbow_dqn_gamma": 0.99,
+    "rainbow_dqn_grad_clip": 10.0,
+    "rainbow_dqn_priority_alpha": 0.5,
+    "rainbow_dqn_priority_beta": 0.4
+  }
+}

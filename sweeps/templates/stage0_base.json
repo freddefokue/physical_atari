@@ -1,0 +1,26 @@
+{
+  "stage": "stage0",
+  "benchmark_config": {
+    "runner_mode": "carmack_compat",
+    "decision_interval": 1,
+    "delay": 0,
+    "jitter_pct": 0.0,
+    "sticky": 0.25,
+    "full_action_space": 1,
+    "life_loss_termination": 0,
+    "real_time_mode": 0,
+    "real_time_fps": 60.0,
+    "min_visit_frames": 1,
+    "default_action_idx": 0,
+    "log_episode_every": 0,
+    "log_train_every": 0,
+    "timestamps": 1,
+    "games": [
+      "centipede",
+      "ms_pacman",
+      "qbert"
+    ],
+    "num_cycles": 2,
+    "seed": 0
+  }
+}

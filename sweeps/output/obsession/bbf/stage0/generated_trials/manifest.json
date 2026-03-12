@@ -1,0 +1,18 @@
+{
+  "config_count": 1,
+  "family": "bbf",
+  "generated_at": "2026-03-12T11:05:49+00:00",
+  "host": "obsession",
+  "rng_seed": 11,
+  "seed_list": [
+    0
+  ],
+  "stage": "stage0",
+  "trial_count": 1,
+  "trial_files": [
+    "bbf-stage0-c000-s0-23c97a874e.json"
+  ],
+  "trial_ids": [
+    "bbf-stage0-c000-s0-23c97a874e"
+  ]
+}

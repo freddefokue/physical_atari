@@ -1,0 +1,18 @@
+{
+  "family": "ppo",
+  "agent": "ppo",
+  "benchmark_config": {
+    "agent": "ppo",
+    "base_visit_frames": 250000,
+    "ppo_gamma": 0.99,
+    "ppo_gae_lambda": 0.95,
+    "ppo_max_grad_norm": 0.5,
+    "ppo_reward_clip": 1.0,
+    "ppo_obs_size": 84,
+    "ppo_frame_stack": 4,
+    "ppo_grayscale": 1,
+    "ppo_normalize_advantages": 1,
+    "ppo_deterministic_actions": 0,
+    "ppo_device": "cuda"
+  }
+}
